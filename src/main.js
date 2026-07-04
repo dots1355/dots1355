@@ -3,7 +3,8 @@ import * as THREE from 'three';
 import { buildWorld } from './world.js';
 import { makeHumanoid, makeHorse, resolveCollisions, angleLerp, dist2, lambert } from './entities.js';
 import { initAudio, sfx, startMusic, toggleMusic } from './audio.js';
-import { preloadAIAssets } from './textures.js';
+import { preloadAIAssets, generateRemoteAITextures } from './textures.js';
+import { ShaderPass } from '../lib/jsm/postprocessing/ShaderPass.js';
 import { EffectComposer } from '../lib/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from '../lib/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from '../lib/jsm/postprocessing/UnrealBloomPass.js';
@@ -42,6 +43,25 @@ composer.addPass(gtao);
 const bloom = new UnrealBloomPass(
   new THREE.Vector2(window.innerWidth, window.innerHeight), 0.32, 0.6, 0.85);
 composer.addPass(bloom);
+// GTA 风格电影调色:对比度 + 饱和 + 暖高光/冷阴影分离色调
+const gradePass = new ShaderPass({
+  uniforms: { tDiffuse: { value: null } },
+  vertexShader: `
+    varying vec2 vUv;
+    void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  fragmentShader: `
+    uniform sampler2D tDiffuse;
+    varying vec2 vUv;
+    void main() {
+      vec4 c = texture2D(tDiffuse, vUv);
+      vec3 col = (c.rgb - 0.5) * 1.06 + 0.5;
+      float l = dot(col, vec3(0.299, 0.587, 0.114));
+      col = mix(vec3(l), col, 1.13);
+      col += (l - 0.5) * vec3(0.035, 0.012, -0.035);
+      gl_FragColor = vec4(clamp(col, 0.0, 1.0), c.a);
+    }`,
+});
+composer.addPass(gradePass);
 const smaa = new SMAAPass(window.innerWidth, window.innerHeight);
 composer.addPass(smaa);
 composer.addPass(new OutputPass());
@@ -156,9 +176,11 @@ scene.add(stars);
 // 先加载 AI 素材(assets/ai/ 下的无缝贴图会覆盖程序化贴图)
 const aiLoaded = await preloadAIAssets();
 if (aiLoaded.length) console.info('AI 贴图已加载:', aiLoaded.join(', '));
-// AI 生成的标题画面背景(assets/ai/title.jpg,可选)
+// 本地标题键艺术优先(assets/ai/title.jpg,可选)
+let localTitleArt = false;
 fetch('./assets/ai/title.jpg').then((r) => {
   if (r.ok) r.blob().then((b) => {
+    localTitleArt = true;
     const t = document.getElementById('title');
     t.style.backgroundImage =
       `linear-gradient(rgba(10,6,20,0.55), rgba(10,6,20,0.75)), url(${URL.createObjectURL(b)})`;
@@ -169,6 +191,43 @@ fetch('./assets/ai/title.jpg').then((r) => {
 
 const world = buildWorld(scene);
 const { colliders } = world;
+
+// ---- 运行时 AI 贴图生成(玩家浏览器联网时,后台生成照片级贴图并热替换)----
+const aiStatusEl = document.getElementById('ai-status');
+function setTitleArt(bitmap) {
+  if (localTitleArt) return;
+  const c = document.createElement('canvas');
+  c.width = bitmap.width; c.height = bitmap.height;
+  c.getContext('2d').drawImage(bitmap, 0, 0);
+  const t = document.getElementById('title');
+  t.style.backgroundImage =
+    `linear-gradient(rgba(10,6,20,0.5), rgba(10,6,20,0.72)), url(${c.toDataURL('image/jpeg', 0.9)})`;
+  t.style.backgroundSize = 'cover';
+  t.style.backgroundPosition = 'center';
+}
+let aiSwapped = 0;
+generateRemoteAITextures({
+  onStatus(state, done, total) {
+    if (!aiStatusEl) return;
+    if (state === 'generating') aiStatusEl.textContent = `🎨 AI 高清材质生成中… ${done}/${total}(首次需约 1 分钟,已自动缓存)`;
+    else if (state === 'done') aiStatusEl.textContent = `🎨 AI 高清材质已启用(${done}/${total})`;
+    else aiStatusEl.textContent = '🎨 离线模式:使用内置程序化材质(联网后自动启用 AI 材质)';
+  },
+  onTexture(name, canvases) {
+    const set = new Set(canvases);
+    scene.traverse((o) => {
+      const m = o.material;
+      if (!m) return;
+      for (const mat of Array.isArray(m) ? m : [m]) {
+        if (mat.map && set.has(mat.map.image)) mat.map.needsUpdate = true;
+        if (mat.normalMap && set.has(mat.normalMap.image)) mat.normalMap.needsUpdate = true;
+      }
+    });
+    aiSwapped++;
+    if (started) toast(`🎨 AI 材质已应用:${name}`, 1.5);
+  },
+  onTitle: setTitleArt,
+}).catch(() => {});
 
 // ================= HUD 引用 =================
 const $ = (id) => document.getElementById(id);

@@ -6,6 +6,98 @@ import * as THREE from 'three';
 const AI_NAMES = ['grass', 'dirt', 'stone', 'roof', 'plaster', 'wood', 'cobble'];
 const aiImages = {};
 
+// 运行时 AI 生成:在玩家浏览器里调用 Pollinations(免费、无需密钥)生成照片级无缝贴图。
+// 固定 seed 保证每次生成结果一致,并用 Cache API 本地缓存,只有首次需要联网等待。
+const AI_PROMPTS = {
+  grass:   'seamless tileable photorealistic lush green grass lawn texture, top-down view, game asset, PBR albedo, no shadows',
+  dirt:    'seamless tileable photorealistic dirt road texture with wheel ruts, dry mud, top-down view, game asset, PBR albedo',
+  stone:   'seamless tileable photorealistic medieval castle stone brick wall texture, weathered gray blocks, game asset, PBR albedo',
+  roof:    'seamless tileable photorealistic medieval terracotta roof tiles texture, overlapping clay shingles, game asset, PBR albedo',
+  plaster: 'seamless tileable photorealistic old white plaster wall texture, medieval house facade, subtle stains, game asset, PBR albedo',
+  wood:    'seamless tileable photorealistic weathered oak wood planks texture, medieval, game asset, PBR albedo',
+  cobble:  'seamless tileable photorealistic medieval cobblestone street texture, worn round stones, top-down view, game asset, PBR albedo',
+  title:   'epic cinematic medieval kingdom at golden sunset, majestic castle on a hill above a walled town, lone knight in green tunic on horseback on a cobblestone road, GTA style loading screen key art, dramatic volumetric light, ultra detailed',
+};
+
+function aiURL(name) {
+  const size = name === 'title' ? 'width=1280&height=720' : 'width=512&height=512';
+  return `https://image.pollinations.ai/prompt/${encodeURIComponent(AI_PROMPTS[name])}?${size}&seed=7&nologo=true&model=flux`;
+}
+
+async function fetchAIImage(name, timeoutMs = 100000) {
+  const url = aiURL(name);
+  let cache = null;
+  try { cache = await caches.open('gth-ai-v1'); } catch { /* 非安全上下文无缓存 */ }
+  if (cache) {
+    const hit = await cache.match(url);
+    if (hit) return createImageBitmap(await hit.blob());
+  }
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { signal: ctrl.signal, mode: 'cors' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const blob = await res.blob();
+    if (!blob.type.startsWith('image/')) throw new Error('not an image');
+    if (cache) { try { await cache.put(url, new Response(blob)); } catch { /* 忽略 */ } }
+    return createImageBitmap(blob);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// 贴图画布注册表(供热替换:AI 图像直接画进原画布,所有材质克隆共享同一画布)
+const registry = {};
+
+// 把 AI 图像写入指定贴图的颜色/法线画布;返回被更新的画布,调用方负责触发 needsUpdate
+export function applyAIImage(name, bitmap) {
+  const reg = registry[name];
+  if (!reg) return null;
+  const size = reg.color.width;
+  const g = reg.color.getContext('2d');
+  g.drawImage(bitmap, 0, 0, size, size);
+  const data = g.getImageData(0, 0, size, size).data;
+  heightBuf = new Float32Array(size * size);
+  for (let i = 0; i < size * size; i++) {
+    heightBuf[i] = (data[i * 4] * 0.299 + data[i * 4 + 1] * 0.587 + data[i * 4 + 2] * 0.114) / 255;
+  }
+  const normalCanvas = normalFrom(size, 2);
+  reg.normal.getContext('2d').drawImage(normalCanvas, 0, 0);
+  heightBuf = null;
+  return [reg.color, reg.normal];
+}
+
+// 后台逐个生成缺失的 AI 贴图;onTexture(name, canvases) 在每张就绪时回调
+export async function generateRemoteAITextures({ onStatus, onTexture, onTitle } = {}) {
+  if (new URLSearchParams(location.search).has('noai')) {
+    onStatus?.('offline');
+    return 0;
+  }
+  const todo = AI_NAMES.filter((n) => !aiImages[n]);
+  todo.push('title');
+  let done = 0, failed = 0;
+  onStatus?.('generating', 0, todo.length);
+  // 串行小队列,避免触发服务限流
+  for (const name of todo) {
+    try {
+      const bitmap = await fetchAIImage(name);
+      if (name === 'title') {
+        onTitle?.(bitmap);
+      } else {
+        const canvases = applyAIImage(name, bitmap);
+        if (canvases) onTexture?.(name, canvases);
+      }
+      done++;
+      onStatus?.('generating', done, todo.length);
+    } catch {
+      failed++;
+      if (failed >= 2 && done === 0) { onStatus?.('offline'); return 0; }
+    }
+  }
+  onStatus?.(done > 0 ? 'done' : 'offline', done, todo.length);
+  return done;
+}
+
 export async function preloadAIAssets() {
   await Promise.all(AI_NAMES.map(async (n) => {
     for (const ext of ['jpg', 'png', 'webp']) {
@@ -238,6 +330,11 @@ export function makeTextures() {
   for (const n of Object.keys(aiImages)) {
     const [r, ns] = aiParams[n];
     T[n] = texFromImage(aiImages[n], r, ns);
+  }
+
+  // 登记画布,供运行时 AI 生成热替换
+  for (const n of AI_NAMES) {
+    if (T[n]) registry[n] = { color: T[n].map.image, normal: T[n].normalMap.image };
   }
 
   return T;
