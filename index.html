@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>侠盗猎马人:中世纪王国 — Grand Theft Horse</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: #000;
+    font-family: 'Trebuchet MS', 'PingFang SC', 'Microsoft YaHei', sans-serif; user-select: none; }
+  #game { position: absolute; inset: 0; }
+  #game canvas { display: block; }
+
+  #hud { position: absolute; inset: 0; pointer-events: none; }
+  .hud-text { text-shadow: 0 2px 4px rgba(0,0,0,0.8), 0 0 2px #000; color: #fff; }
+
+  #hearts { position: absolute; top: 16px; left: 18px; font-size: 26px; letter-spacing: 2px;
+    filter: drop-shadow(0 2px 3px rgba(0,0,0,0.7)); }
+  #coins { position: absolute; top: 54px; left: 20px; font-size: 24px; font-weight: bold; color: #ffd83d; }
+  #wanted { position: absolute; top: 16px; right: 18px; font-size: 28px; letter-spacing: 3px;
+    animation: pulse 0.9s infinite alternate; }
+  @keyframes pulse { from { filter: drop-shadow(0 0 2px #f00); } to { filter: drop-shadow(0 0 10px #f00); } }
+  #mission { position: absolute; top: 60px; right: 18px; max-width: 380px; font-size: 15px;
+    background: rgba(20,14,8,0.72); border: 2px solid #b08d3e; border-radius: 8px;
+    padding: 10px 14px; color: #f5e9cf; line-height: 1.5; }
+  #timer { position: absolute; top: 130px; right: 18px; font-size: 26px; font-weight: bold; }
+  #minimap { position: absolute; left: 18px; bottom: 18px; border-radius: 10px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.5); }
+  #prompt { position: absolute; bottom: 90px; left: 50%; transform: translateX(-50%);
+    font-size: 19px; font-weight: bold; background: rgba(20,14,8,0.75);
+    border: 2px solid #b08d3e; border-radius: 8px; padding: 8px 18px; color: #ffe9a0; display: none; }
+  #toast { position: absolute; top: 18%; left: 50%; transform: translateX(-50%);
+    max-width: 70%; text-align: center; font-size: 21px; font-weight: bold; color: #fff;
+    background: rgba(20,14,8,0.78); border: 2px solid #b08d3e; border-radius: 10px;
+    padding: 12px 26px; opacity: 0; transition: opacity 0.4s; }
+  #controls-hint { position: absolute; bottom: 14px; right: 16px; font-size: 12px;
+    color: rgba(255,255,255,0.55); text-align: right; line-height: 1.6; }
+  #flash { position: absolute; inset: 0; background: radial-gradient(ellipse, rgba(200,0,0,0.25), rgba(160,0,0,0.6));
+    opacity: 0; transition: opacity 0.35s; }
+  #vignette { position: absolute; inset: 0;
+    background: radial-gradient(ellipse at center, transparent 62%, rgba(0,0,0,0.38)); }
+
+  #title { position: absolute; inset: 0; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; cursor: pointer; z-index: 10;
+    background: linear-gradient(180deg, #1a1226 0%, #3a2438 45%, #7a4a3a 80%, #2a1a12 100%); }
+  #title h1 { font-size: clamp(40px, 7vw, 84px); color: #ffd83d; letter-spacing: 6px;
+    text-shadow: 0 4px 0 #7a5a10, 0 8px 24px rgba(0,0,0,0.8); }
+  #title h2 { font-size: clamp(16px, 2.2vw, 26px); color: #e8d5a8; margin-top: 10px; letter-spacing: 10px; }
+  #title .box { margin-top: 42px; background: rgba(0,0,0,0.45); border: 2px solid #b08d3e;
+    border-radius: 12px; padding: 22px 36px; color: #f5e9cf; font-size: 16px; line-height: 2; }
+  #title .start { margin-top: 34px; font-size: 26px; color: #fff; font-weight: bold;
+    animation: blink 1.1s infinite alternate; }
+  @keyframes blink { from { opacity: 1; } to { opacity: 0.35; } }
+  #title .key { display: inline-block; background: #3a2e1a; border: 1px solid #b08d3e;
+    border-radius: 5px; padding: 0 8px; margin: 0 3px; font-family: monospace; color: #ffd83d; }
+
+  #gameover { position: absolute; inset: 0; display: none; flex-direction: column;
+    align-items: center; justify-content: center; z-index: 9; background: rgba(60,0,0,0.55); }
+  #gameover h1 { font-size: 64px; color: #ff4444; text-shadow: 0 4px 12px #000; letter-spacing: 8px; }
+  #gameover p { margin-top: 16px; font-size: 20px; color: #fff; }
+</style>
+<script type="importmap">
+{ "imports": { "three": "./lib/three.module.js" } }
+</script>
+</head>
+<body>
+  <div id="game"></div>
+  <div id="hud">
+    <div id="vignette"></div>
+    <div id="flash"></div>
+    <div id="hearts" class="hud-text"></div>
+    <div id="coins" class="hud-text"></div>
+    <div id="wanted" class="hud-text"></div>
+    <div id="mission"></div>
+    <div id="timer" class="hud-text"></div>
+    <canvas id="minimap" width="200" height="200"></canvas>
+    <div id="prompt"></div>
+    <div id="toast"></div>
+    <div id="controls-hint" class="hud-text">
+      WASD 移动 · Shift 疾跑 · 空格 跳跃/二段跳<br>
+      E 互动/骑马 · F/左键 挥剑 · M 音乐 · 跳到敌人头上=踩晕
+    </div>
+  </div>
+
+  <div id="title">
+    <h1>侠盗猎马人</h1>
+    <h2>—— 中世纪王国 ——</h2>
+    <div class="box">
+      <b style="color:#ffd83d">🏰 欢迎来到自由的中世纪开放世界</b><br>
+      <span class="key">W A S D</span> 移动 &nbsp; <span class="key">Shift</span> 疾跑 &nbsp;
+      <span class="key">空格</span> 跳跃(可二段跳)<br>
+      <span class="key">E</span> 骑马 / 偷马 / 对话 / 开宝箱 &nbsp;
+      <span class="key">F</span> 或 <span class="key">左键</span> 挥剑<br>
+      🐴 偷有主的马会招来 ⭐ 通缉,躲开卫兵可洗白<br>
+      🍄 跳到敌人头上可以把他踩晕 · 顶碎 ? 砖块有惊喜<br>
+      📜 在喷泉广场找金衣老者接任务,收集金币与力量之星
+    </div>
+    <div class="start">▶ 点击开始冒险 ◀</div>
+  </div>
+
+  <div id="gameover">
+    <h1>通缉终结</h1>
+    <p id="gameover-text"></p>
+  </div>
+
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
