@@ -1,8 +1,9 @@
 // 角色与马匹的低多边形卡通模型构建器 + 通用碰撞/数学工具
 import * as THREE from 'three';
 
-export function lambert(c) {
-  return new THREE.MeshLambertMaterial({ color: c });
+// 名字沿用 lambert,实际已升级为 PBR 标准材质
+export function lambert(c, opts = {}) {
+  return new THREE.MeshStandardMaterial({ color: c, roughness: 0.82, metalness: 0.04, ...opts });
 }
 
 // ---- 人形角色(面朝 +Z)----
@@ -13,63 +14,101 @@ export function makeHumanoid(opts = {}) {
   } = opts;
   const g = new THREE.Group();
   const parts = {};
+  const skinMat = lambert(skin, { roughness: 0.6 });
+  const shirtMat = lambert(shirt, { roughness: 0.88 });
 
-  const legGeo = new THREE.BoxGeometry(0.2, 0.5, 0.2);
+  const legGeo = new THREE.CylinderGeometry(0.085, 0.1, 0.46, 8);
+  const bootGeo = new THREE.BoxGeometry(0.2, 0.12, 0.28);
   for (const side of [-1, 1]) {
     const pivot = new THREE.Group();
-    pivot.position.set(0.13 * side, 0.5, 0);
+    pivot.position.set(0.12 * side, 0.5, 0);
     const leg = new THREE.Mesh(legGeo, lambert(pants));
-    leg.position.y = -0.25;
+    leg.position.y = -0.23;
     leg.castShadow = true;
     pivot.add(leg);
+    const boot = new THREE.Mesh(bootGeo, lambert(0x2e2318, { roughness: 0.55 }));
+    boot.position.set(0, -0.45, 0.03);
+    boot.castShadow = true;
+    pivot.add(boot);
     g.add(pivot);
     parts[side === -1 ? 'legL' : 'legR'] = pivot;
   }
 
-  const body = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.55, 0.28), lambert(shirt));
+  // 束腰上衣(下摆略宽)+ 腰带
+  const body = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.26, 0.58, 10), shirtMat);
   body.position.y = 0.78;
   body.castShadow = true;
   g.add(body);
   parts.body = body;
+  const belt = new THREE.Mesh(new THREE.CylinderGeometry(0.245, 0.25, 0.09, 10),
+    lambert(0x4a3220, { roughness: 0.5 }));
+  belt.position.y = 0.62;
+  g.add(belt);
+  // 肩部
+  for (const side of [-1, 1]) {
+    const sh = new THREE.Mesh(new THREE.SphereGeometry(0.11, 8, 6), shirtMat);
+    sh.position.set(0.26 * side, 1.02, 0);
+    g.add(sh);
+  }
 
-  const armGeo = new THREE.BoxGeometry(0.16, 0.5, 0.16);
+  const armGeo = new THREE.CylinderGeometry(0.06, 0.07, 0.46, 8);
+  const handGeo = new THREE.SphereGeometry(0.07, 8, 6);
   for (const side of [-1, 1]) {
     const pivot = new THREE.Group();
-    pivot.position.set(0.34 * side, 1.0, 0);
-    const arm = new THREE.Mesh(armGeo, lambert(shirt));
-    arm.position.y = -0.22;
+    pivot.position.set(0.32 * side, 1.0, 0);
+    const arm = new THREE.Mesh(armGeo, shirtMat);
+    arm.position.y = -0.2;
     arm.castShadow = true;
     pivot.add(arm);
+    const hand = new THREE.Mesh(handGeo, skinMat);
+    hand.position.y = -0.45;
+    pivot.add(hand);
     g.add(pivot);
     parts[side === -1 ? 'armL' : 'armR'] = pivot;
   }
 
-  const head = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.34, 0.32), lambert(skin));
-  head.position.y = 1.28;
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.2, 14, 12), skinMat);
+  head.scale.set(1, 1.08, 1);
+  head.position.y = 1.32;
   head.castShadow = true;
   g.add(head);
   parts.head = head;
+  // 眼睛
+  for (const side of [-1, 1]) {
+    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.026, 6, 5),
+      lambert(0x1a1410, { roughness: 0.25 }));
+    eye.position.set(0.075 * side, 0.03, 0.17);
+    head.add(eye);
+  }
+  // 鼻子
+  const nose = new THREE.Mesh(new THREE.SphereGeometry(0.03, 6, 5), skinMat);
+  nose.position.set(0, -0.03, 0.19);
+  head.add(nose);
 
   if (helmet) {
-    const h = new THREE.Mesh(new THREE.CylinderGeometry(0.21, 0.23, 0.22, 8), lambert(0x9aa4ad));
-    h.position.y = 0.16;
+    const metal = lambert(0x9aa4ad, { roughness: 0.32, metalness: 0.85 });
+    const h = new THREE.Mesh(new THREE.SphereGeometry(0.22, 10, 8, 0, Math.PI * 2, 0, Math.PI * 0.62), metal);
+    h.position.y = 0.02;
     head.add(h);
-    const spike = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.16, 6), lambert(0x9aa4ad));
-    spike.position.y = 0.32;
+    const brim = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.26, 0.04, 10), metal);
+    brim.position.y = 0.05;
+    head.add(brim);
+    const spike = new THREE.Mesh(new THREE.ConeGeometry(0.04, 0.16, 6), metal);
+    spike.position.y = 0.28;
     head.add(spike);
   } else if (cap) {
     // 绿色尖顶帽(致敬某位林克)
-    const c = new THREE.Mesh(new THREE.ConeGeometry(0.24, 0.5, 6), lambert(0x1f7a3d));
-    c.position.set(0, 0.3, -0.06);
-    c.rotation.x = -0.35;
+    const c = new THREE.Mesh(new THREE.ConeGeometry(0.23, 0.48, 8), lambert(0x1f7a3d, { roughness: 0.9 }));
+    c.position.set(0, 0.26, -0.05);
+    c.rotation.x = -0.3;
     head.add(c);
   } else if (hood) {
-    const h = new THREE.Mesh(new THREE.ConeGeometry(0.26, 0.4, 6), lambert(0x3b3b46));
-    h.position.y = 0.18;
+    const h = new THREE.Mesh(new THREE.ConeGeometry(0.27, 0.42, 8), lambert(0x3b3b46, { roughness: 0.95 }));
+    h.position.y = 0.14;
     head.add(h);
   } else {
-    const h = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.12, 0.34), lambert(hair));
-    h.position.y = 0.2;
+    const h = new THREE.Mesh(new THREE.SphereGeometry(0.215, 10, 7, 0, Math.PI * 2, 0, Math.PI * 0.55), lambert(hair, { roughness: 0.95 }));
+    h.position.y = 0.015;
     head.add(h);
   }
 
@@ -94,12 +133,14 @@ export function makeHorse(color = 0x8b5a2b, saddled = true) {
   const parts = { legs: [] };
   const dark = new THREE.Color(color).multiplyScalar(0.7).getHex();
 
-  const body = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.65, 1.7), lambert(color));
-  body.position.y = 1.05;
+  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.36, 1.05, 6, 12), lambert(color, { roughness: 0.7 }));
+  body.rotation.x = Math.PI / 2;
+  body.scale.set(1, 1, 0.92);
+  body.position.y = 1.08;
   body.castShadow = true;
   g.add(body);
 
-  const legGeo = new THREE.BoxGeometry(0.17, 0.8, 0.17);
+  const legGeo = new THREE.CylinderGeometry(0.075, 0.09, 0.8, 7);
   for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
     const pivot = new THREE.Group();
     pivot.position.set(0.24 * sx, 0.85, 0.62 * sz);

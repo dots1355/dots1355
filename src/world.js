@@ -1,6 +1,7 @@
 // 中世纪开放世界构建:城墙王国、城堡主堡、村庄、集市、风车、农田、森林、湖泊、盗贼营地
 import * as THREE from 'three';
 import { lambert } from './entities.js';
+import { makeTextures } from './textures.js';
 
 export function buildWorld(scene) {
   const colliders = { circles: [], boxes: [] };
@@ -11,6 +12,24 @@ export function buildWorld(scene) {
   const qBlocks = [];    // “?”砖块
   const coinSpots = [];  // 金币初始点位
   const clouds = [];
+  const waterMats = [];  // 水面材质(法线动画)
+
+  const TX = makeTextures();
+  // 带独立 repeat 的 PBR 贴图材质
+  function texMat(pair, rx, ry, extra = {}) {
+    const map = pair.map.clone();
+    map.needsUpdate = true;
+    map.repeat.set(rx, ry);
+    const normalMap = pair.normalMap.clone();
+    normalMap.needsUpdate = true;
+    normalMap.repeat.set(rx, ry);
+    return new THREE.MeshStandardMaterial({ map, normalMap, roughness: 0.9, metalness: 0.02, ...extra });
+  }
+  const woodMat = texMat(TX.wood, 1, 1, { roughness: 0.85 });
+  const plasterMat = texMat(TX.plaster, 2, 1, { roughness: 0.95 });
+  const roofMats = [0xa33b2c, 0x8a5a33, 0x7d3b2d, 0x9c4a3b].map((c) =>
+    texMat(TX.roof, 3, 1.6, { color: c, roughness: 0.85 }));
+  const dirtFieldMat = texMat(TX.dirt, 3, 2);
 
   const feat = (type, x, z, w, h, rot = 0) => features.push({ type, x, z, w, h, rot });
   const circle = (x, z, r) => colliders.circles.push({ x, z, r });
@@ -18,15 +37,17 @@ export function buildWorld(scene) {
     colliders.boxes.push({ minX: cx - w / 2, maxX: cx + w / 2, minZ: cz - d / 2, maxZ: cz + d / 2 });
 
   // ---- 地面与道路 ----
-  const ground = new THREE.Mesh(new THREE.PlaneGeometry(700, 700), lambert(0x74b354));
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(700, 700),
+    new THREE.MeshStandardMaterial({ map: TX.grass.map, normalMap: TX.grass.normalMap, roughness: 0.95, metalness: 0 }));
   ground.rotation.x = -Math.PI / 2;
   ground.receiveShadow = true;
   scene.add(ground);
 
-  function road(x1, z1, x2, z2, w = 4) {
+  function road(x1, z1, x2, z2, w = 4, cobbled = false) {
     const dx = x2 - x1, dz = z2 - z1;
     const len = Math.hypot(dx, dz);
-    const m = new THREE.Mesh(new THREE.PlaneGeometry(w, len), lambert(0xcdb891));
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(w, len),
+      cobbled ? texMat(TX.cobble, w / 3.2, len / 3.2, { roughness: 0.85 }) : texMat(TX.dirt, w / 4, len / 9));
     m.rotation.x = -Math.PI / 2;
     m.rotation.z = -Math.atan2(dx, dz);
     m.position.set((x1 + x2) / 2, 0.02, (z1 + z2) / 2);
@@ -34,23 +55,32 @@ export function buildWorld(scene) {
     scene.add(m);
     feat('road', (x1 + x2) / 2, (z1 + z2) / 2, w, len, Math.atan2(dx, dz));
   }
-  road(0, 58, 0, 8);      // 南门→广场
-  road(0, 2, 0, -30);     // 广场→城堡
-  road(8, 0, 68, 0);      // 广场→东门
-  road(72, 0, 138, 18);   // 东门→风车
-  road(0, 58, 0, 78);     // 南门外
-  road(0, 78, 20, 92);    // →农田
-  road(-8, 0, -66, 0);    // 广场→西侧
-  road(-70, 0, -125, -52, 3); // →盗贼营地方向(野径)
+  road(0, 58, 0, 8, 4.5, true);    // 南门→广场(城内鹅卵石)
+  road(0, 2, 0, -30, 4.5, true);   // 广场→城堡
+  road(8, 0, 68, 0, 4.5, true);    // 广场→东门
+  road(-8, 0, -66, 0, 4, true);    // 广场→西侧
+  road(72, 0, 138, 18);            // 东门→风车(城外土路)
+  road(0, 58, 0, 78);              // 南门外
+  road(0, 78, 20, 92);             // →农田
+  road(-70, 0, -125, -52, 3);      // →盗贼营地方向(野径)
+
+  // 广场鹅卵石铺装
+  const plazaPave = new THREE.Mesh(new THREE.CircleGeometry(13, 28),
+    texMat(TX.cobble, 8, 8, { roughness: 0.85 }));
+  plazaPave.rotation.x = -Math.PI / 2;
+  plazaPave.position.set(0, 0.015, 5);
+  plazaPave.receiveShadow = true;
+  scene.add(plazaPave);
 
   // ---- 城墙(矩形 x:-70..70, z:-55..55,南门/东门开口)----
-  const wallMat = lambert(0x9d9486);
+  const wallMat = texMat(TX.stone, 1.2, 1.2, { roughness: 0.92 });
   function wallRun(x1, z1, x2, z2) {
     const dx = x2 - x1, dz = z2 - z1;
     const len = Math.hypot(dx, dz);
     const horizontal = Math.abs(dx) > Math.abs(dz);
     const m = new THREE.Mesh(
-      new THREE.BoxGeometry(horizontal ? len : 1.8, 5.5, horizontal ? 1.8 : len), wallMat);
+      new THREE.BoxGeometry(horizontal ? len : 1.8, 5.5, horizontal ? 1.8 : len),
+      texMat(TX.stone, len / 9, 1));
     m.position.set((x1 + x2) / 2, 2.75, (z1 + z2) / 2);
     m.castShadow = m.receiveShadow = true;
     scene.add(m);
@@ -74,12 +104,14 @@ export function buildWorld(scene) {
   wallRun(70, -55, 70, -4.5);            // 东(北段)
   wallRun(70, 4.5, 70, 55);              // 东(南段)
 
+  const towerMat = texMat(TX.stone, 4, 2, { roughness: 0.92 });
   function tower(x, z, r = 4, h = 9) {
-    const t = new THREE.Mesh(new THREE.CylinderGeometry(r, r * 1.1, h, 8), wallMat);
+    const t = new THREE.Mesh(new THREE.CylinderGeometry(r, r * 1.1, h, 12), towerMat);
     t.position.set(x, h / 2, z);
     t.castShadow = true;
     scene.add(t);
-    const roof = new THREE.Mesh(new THREE.ConeGeometry(r * 1.25, r * 1.1, 8), lambert(0x30425f));
+    const roof = new THREE.Mesh(new THREE.ConeGeometry(r * 1.25, r * 1.1, 12),
+      lambert(0x30425f, { roughness: 0.55, metalness: 0.25 }));
     roof.position.set(x, h + r * 0.55, z);
     roof.castShadow = true;
     scene.add(roof);
@@ -92,7 +124,7 @@ export function buildWorld(scene) {
   tower(70, -6, 2.2, 7.5); tower(70, 6, 2.2, 7.5);   // 东门楼
 
   // ---- 城堡主堡 ----
-  const keep = new THREE.Mesh(new THREE.BoxGeometry(22, 13, 14), lambert(0xb0a89a));
+  const keep = new THREE.Mesh(new THREE.BoxGeometry(22, 13, 14), texMat(TX.stone, 2.6, 2.4));
   keep.position.set(0, 6.5, -40);
   keep.castShadow = keep.receiveShadow = true;
   scene.add(keep);
@@ -100,7 +132,7 @@ export function buildWorld(scene) {
   feat('keep', 0, -40, 22, 14);
   for (const [tx, tz] of [[-11, -33], [11, -33], [-11, -47], [11, -47]]) tower(tx, tz, 3, 16);
   // 大门
-  const door = new THREE.Mesh(new THREE.BoxGeometry(4, 6, 0.5), lambert(0x4a3220));
+  const door = new THREE.Mesh(new THREE.BoxGeometry(4, 6, 0.5), woodMat);
   door.position.set(0, 3, -32.8);
   scene.add(door);
   // 旗帜
@@ -125,7 +157,12 @@ export function buildWorld(scene) {
   fBase.position.set(0, 0.3, 5);
   fBase.castShadow = true;
   scene.add(fBase);
-  const water = new THREE.Mesh(new THREE.CylinderGeometry(2.5, 2.5, 0.15, 12), lambert(0x4aa6d8));
+  const fountainWater = new THREE.MeshStandardMaterial({
+    color: 0x3f9fd8, roughness: 0.08, metalness: 0,
+    normalMap: TX.waterNormal, normalScale: new THREE.Vector2(0.4, 0.4),
+  });
+  waterMats.push(fountainWater);
+  const water = new THREE.Mesh(new THREE.CylinderGeometry(2.5, 2.5, 0.15, 16), fountainWater);
   water.position.set(0, 0.62, 5);
   scene.add(water);
   const col = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.45, 1.6, 8), lambert(0xb7b2a6));
@@ -138,29 +175,36 @@ export function buildWorld(scene) {
   feat('plaza', 0, 5, 7, 7);
 
   // ---- 民居 ----
-  const roofColors = [0xa33b2c, 0x8a5a33, 0x7d3b2d, 0x9c4a3b];
   let houseIdx = 0;
   function house(x, z, rotDeg = 0, w = 6, d = 5, h = 3.2) {
     const rot = (rotDeg * Math.PI) / 180;
     const g = new THREE.Group();
-    const walls = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), lambert(0xf0e6d2));
+    const walls = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), plasterMat);
     walls.position.y = h / 2;
     walls.castShadow = walls.receiveShadow = true;
     g.add(walls);
     const roof = new THREE.Mesh(
       new THREE.ConeGeometry(Math.SQRT1_2 * Math.max(w, d) * 1.15, h * 0.75, 4),
-      lambert(roofColors[houseIdx++ % roofColors.length]));
+      roofMats[houseIdx++ % roofMats.length]);
     roof.scale.set(w >= d ? 1 : d / w, 1, w >= d ? d / w : 1);
     roof.position.y = h + h * 0.37;
     roof.rotation.y = Math.PI / 4;
     roof.castShadow = true;
     g.add(roof);
-    const dr = new THREE.Mesh(new THREE.BoxGeometry(1.1, 1.9, 0.15), lambert(0x5a3d24));
+    const dr = new THREE.Mesh(new THREE.BoxGeometry(1.1, 1.9, 0.15), woodMat);
     dr.position.set(0, 0.95, d / 2 + 0.02);
     g.add(dr);
+    // 窗户(暖光内景,夜间发光)
+    for (const wx of [-w / 4, w / 4]) {
+      const win = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.7, 0.06),
+        new THREE.MeshStandardMaterial({ color: 0x3a2d1a, emissive: 0xffb84d, emissiveIntensity: 0 }));
+      win.position.set(wx, h * 0.62, d / 2 + 0.04);
+      g.add(win);
+      torches.push({ light: null, flame: win, base: 0, window: true });
+    }
     // 木梁装饰
     for (const bx of [-w / 2 + 0.4, w / 2 - 0.4]) {
-      const beam = new THREE.Mesh(new THREE.BoxGeometry(0.25, h, 0.25), lambert(0x6b4a2f));
+      const beam = new THREE.Mesh(new THREE.BoxGeometry(0.25, h, 0.25), woodMat);
       beam.position.set(bx, h / 2, d / 2 + 0.05);
       g.add(beam);
     }
@@ -183,7 +227,7 @@ export function buildWorld(scene) {
   // ---- 集市摊位 ----
   function stall(x, z, canopyColor) {
     const g = new THREE.Group();
-    const counter = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1, 1.1), lambert(0x8a6a45));
+    const counter = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1, 1.1), woodMat);
     counter.position.y = 0.5;
     counter.castShadow = true;
     g.add(counter);
@@ -228,33 +272,52 @@ export function buildWorld(scene) {
   box(52, 10, 9, 0.6);
   feat('house', 52, 12, 10, 5);
 
-  // ---- 树 ----
+  // ---- 树(顶点扰动的有机树冠)----
+  function jitterGeo(geo, amt) {
+    const p = geo.attributes.position;
+    for (let i = 0; i < p.count; i++) {
+      p.setXYZ(i,
+        p.getX(i) + (Math.random() - 0.5) * amt,
+        p.getY(i) + (Math.random() - 0.5) * amt,
+        p.getZ(i) + (Math.random() - 0.5) * amt);
+    }
+    geo.computeVertexNormals();
+    return geo;
+  }
   function tree(x, z, pine = false) {
     const g = new THREE.Group();
-    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.35, pine ? 1.6 : 1.3, 6), lambert(0x6b4a2f));
+    const scale = 0.85 + Math.random() * 0.5;
+    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.38, pine ? 1.7 : 1.4, 7), woodMat);
     trunk.position.y = 0.7;
     trunk.castShadow = true;
     g.add(trunk);
     if (pine) {
+      const shade = 0.85 + Math.random() * 0.3;
       for (let i = 0; i < 3; i++) {
-        const c = new THREE.Mesh(new THREE.ConeGeometry(1.6 - i * 0.4, 1.6, 7), lambert(0x2d6b3f));
+        const c = new THREE.Mesh(jitterGeo(new THREE.ConeGeometry(1.7 - i * 0.42, 1.7, 9), 0.16),
+          lambert(new THREE.Color(0x2d6b3f).multiplyScalar(shade), { roughness: 0.95 }));
         c.position.y = 1.8 + i * 1.05;
         c.castShadow = true;
         g.add(c);
       }
     } else {
-      const s = new THREE.Mesh(new THREE.SphereGeometry(1.5, 7, 5), lambert(0x3f8a4f));
-      s.position.y = 2.3;
+      const shade = 0.85 + Math.random() * 0.35;
+      const s = new THREE.Mesh(jitterGeo(new THREE.IcosahedronGeometry(1.6, 1), 0.34),
+        lambert(new THREE.Color(0x3f8a4f).multiplyScalar(shade), { roughness: 0.95 }));
+      s.position.y = 2.4;
       s.castShadow = true;
       g.add(s);
-      const s2 = new THREE.Mesh(new THREE.SphereGeometry(1.0, 6, 5), lambert(0x357a44));
-      s2.position.set(0.8, 1.9, 0.4);
+      const s2 = new THREE.Mesh(jitterGeo(new THREE.IcosahedronGeometry(1.05, 1), 0.26),
+        lambert(new THREE.Color(0x357a44).multiplyScalar(shade), { roughness: 0.95 }));
+      s2.position.set(0.85, 1.9, 0.4);
+      s2.castShadow = true;
       g.add(s2);
     }
+    g.scale.setScalar(scale);
     g.position.set(x, 0, z);
     g.rotation.y = Math.random() * Math.PI * 2;
     scene.add(g);
-    circle(x, z, 0.6);
+    circle(x, z, 0.6 * scale);
     feat('tree', x, z, 1.5, 1.5);
   }
   // 西部森林
@@ -281,7 +344,12 @@ export function buildWorld(scene) {
   sand.rotation.x = -Math.PI / 2;
   sand.position.set(-100, 0.02, 100);
   scene.add(sand);
-  const lake = new THREE.Mesh(new THREE.CircleGeometry(30, 24), lambert(0x3f8fc4));
+  const lakeMat = new THREE.MeshStandardMaterial({
+    color: 0x2f7fb8, roughness: 0.06, metalness: 0,
+    normalMap: TX.waterNormal, normalScale: new THREE.Vector2(0.5, 0.5),
+  });
+  waterMats.push(lakeMat);
+  const lake = new THREE.Mesh(new THREE.CircleGeometry(30, 32), lakeMat);
   lake.rotation.x = -Math.PI / 2;
   lake.position.set(-100, 0.04, 100);
   scene.add(lake);
@@ -290,7 +358,7 @@ export function buildWorld(scene) {
 
   // ---- 农田 ----
   function field(x, z, w, d) {
-    const f = new THREE.Mesh(new THREE.PlaneGeometry(w, d), lambert(0x9a7444));
+    const f = new THREE.Mesh(new THREE.PlaneGeometry(w, d), dirtFieldMat);
     f.rotation.x = -Math.PI / 2;
     f.position.set(x, 0.02, z);
     f.receiveShadow = true;
@@ -443,19 +511,148 @@ export function buildWorld(scene) {
   }
   coinSpots.push([-90, 70], [-85, 75], [-80, 80], [140, 30], [143, 25], [52, 90], [-30, -70], [-20, -75]);
 
-  // ---- 云 ----
-  for (let i = 0; i < 9; i++) {
-    const c = new THREE.Group();
-    const n = 2 + Math.floor(Math.random() * 2);
-    for (let j = 0; j < n; j++) {
-      const s = new THREE.Mesh(new THREE.SphereGeometry(4 + Math.random() * 3, 7, 5),
-        new THREE.MeshLambertMaterial({ color: 0xffffff }));
-      s.position.set(j * 5 - n * 2, Math.random() * 1.5, Math.random() * 3);
-      c.add(s);
+  // ---- 场景道具:木桶 / 板条箱 / 干草卷 / 栅栏 / 手推车 ----
+  function barrel(x, z) {
+    const g = new THREE.Group();
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.36, 1.0, 10), woodMat);
+    body.position.y = 0.5;
+    body.castShadow = true;
+    g.add(body);
+    for (const y of [0.25, 0.75]) {
+      const band = new THREE.Mesh(new THREE.CylinderGeometry(0.435, 0.435, 0.07, 10),
+        lambert(0x3a3a40, { roughness: 0.5, metalness: 0.6 }));
+      band.position.y = y;
+      g.add(band);
     }
-    c.position.set(-300 + Math.random() * 600, 62 + Math.random() * 22, -280 + Math.random() * 560);
+    g.position.set(x, 0, z);
+    scene.add(g);
+    circle(x, z, 0.5);
+  }
+  [[13, 15.5], [14.2, 14.5], [50, 14.5], [48.5, 15], [4, -30.5], [-13, 11],
+   [-128, -55], [-126.5, -56.5], [142.5, 16.5]].forEach(([x, z]) => barrel(x, z));
+
+  function crate(x, z, s = 1) {
+    const c = new THREE.Mesh(new THREE.BoxGeometry(0.9 * s, 0.9 * s, 0.9 * s), woodMat);
+    c.position.set(x, 0.45 * s, z);
+    c.rotation.y = Math.random() * 1.5;
+    c.castShadow = true;
     scene.add(c);
-    clouds.push(c);
+    circle(x, z, 0.6 * s);
+  }
+  crate(-14.5, 12.5); crate(-13.5, 11.2, 0.7); crate(55, 13.5); crate(16.5, 6);
+  crate(139, 24, 1.1); crate(-132, -63);
+
+  function hay(x, z) {
+    const h = new THREE.Mesh(new THREE.CylinderGeometry(0.85, 0.85, 1.3, 12),
+      lambert(0xd0a848, { roughness: 1 }));
+    h.rotation.z = Math.PI / 2;
+    h.rotation.y = Math.random() * 3;
+    h.position.set(x, 0.85, z);
+    h.castShadow = true;
+    scene.add(h);
+    circle(x, z, 1.0);
+  }
+  hay(30, 84); hay(-14, 88); hay(48, 99); hay(20, 95);
+
+  function fence(x1, z1, x2, z2) {
+    const dx = x2 - x1, dz = z2 - z1;
+    const len = Math.hypot(dx, dz);
+    const n = Math.floor(len / 2.2);
+    for (let i = 0; i <= n; i++) {
+      const t = i / n;
+      const p = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.09, 1.1, 5), woodMat);
+      p.position.set(x1 + dx * t, 0.55, z1 + dz * t);
+      p.castShadow = true;
+      scene.add(p);
+    }
+    for (const y of [0.45, 0.85]) {
+      const rail = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.1, len), woodMat);
+      rail.position.set((x1 + x2) / 2, y, (z1 + z2) / 2);
+      rail.rotation.y = Math.atan2(dx, dz);
+      rail.castShadow = true;
+      scene.add(rail);
+    }
+  }
+  fence(11, 81, 37, 81); fence(37, 81, 37, 95);      // 农田围栏
+  fence(-29, 86, -29, 98); fence(-29, 86, -7, 86);
+  fence(46, 6, 46, 14); fence(46, 14, 58, 14);       // 马厩围栏
+
+  function cart(x, z, rotDeg) {
+    const g = new THREE.Group();
+    const bed = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.18, 2.4), woodMat);
+    bed.position.y = 0.75;
+    bed.castShadow = true;
+    g.add(bed);
+    for (const s of [-1, 1]) {
+      const side = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.45, 2.4), woodMat);
+      side.position.set(0.75 * s, 1.05, 0);
+      g.add(side);
+      const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.55, 0.12, 12), woodMat);
+      wheel.rotation.z = Math.PI / 2;
+      wheel.position.set(0.85 * s, 0.55, 0.3);
+      wheel.castShadow = true;
+      g.add(wheel);
+    }
+    for (const s of [-1, 1]) {
+      const shaft = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.09, 1.6), woodMat);
+      shaft.position.set(0.4 * s, 0.7, -1.8);
+      shaft.rotation.x = -0.25;
+      g.add(shaft);
+    }
+    g.position.set(x, 0, z);
+    g.rotation.y = (rotDeg * Math.PI) / 180;
+    scene.add(g);
+    circle(x, z, 1.3);
+  }
+  cart(18, 16, 40); cart(56, 5, 100); cart(24, 82, -30);
+
+  // ---- 实例化草丛(纯视觉,不参与碰撞)----
+  {
+    // 三丛尖叶交叉,读作草而不是方块
+    const bladeGeo = new THREE.BufferGeometry();
+    const verts = new Float32Array([
+      -0.26, 0, 0, 0.26, 0, 0, 0, 0.8, 0,
+      -0.13, 0, -0.22, 0.13, 0, 0.22, 0, 0.7, 0,
+      -0.13, 0, 0.22, 0.13, 0, -0.22, 0, 0.75, 0,
+    ]);
+    bladeGeo.setAttribute('position', new THREE.BufferAttribute(verts, 3));
+    bladeGeo.setIndex([0, 1, 2, 3, 4, 5, 6, 7, 8]);
+    bladeGeo.computeVertexNormals();
+    const bladeMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1, side: THREE.DoubleSide });
+    const COUNT = 4000;
+    const grass = new THREE.InstancedMesh(bladeGeo, bladeMat, COUNT);
+    grass.receiveShadow = true;
+    const blockedRects = [
+      [0, 33, 8, 55], [38, 0, 62, 8], [105, 9, 70, 9], [0, 67, 8, 20], [10, 85, 26, 18],
+      [24, 88, 26, 16], [-18, 92, 22, 14], [52, 96, 20, 12], [0, -40, 26, 18], [-38, 0, 62, 8],
+    ];
+    const isBlocked = (x, z) => {
+      if (Math.hypot(x, z - 5) < 13) return true;                    // 广场
+      if (Math.hypot(x + 100, z - 100) < 35) return true;            // 湖
+      for (const [cx, cz, w, d] of blockedRects) {
+        if (Math.abs(x - cx) < w / 2 + 1 && Math.abs(z - cz) < d / 2 + 1) return true;
+      }
+      return false;
+    };
+    const dummy = new THREE.Object3D();
+    const c = new THREE.Color();
+    let placed = 0, guard = 0;
+    while (placed < COUNT && guard++ < COUNT * 6) {
+      const x = (Math.random() - 0.5) * 480;
+      const z = (Math.random() - 0.5) * 480;
+      if (isBlocked(x, z)) continue;
+      dummy.position.set(x, 0, z);
+      dummy.rotation.y = Math.random() * Math.PI;
+      const s = 0.7 + Math.random() * 0.9;
+      dummy.scale.set(s, s * (0.8 + Math.random() * 0.6), s);
+      dummy.updateMatrix();
+      grass.setMatrixAt(placed, dummy.matrix);
+      c.setHSL(0.25 + Math.random() * 0.06, 0.48, 0.4 + Math.random() * 0.16);
+      grass.setColorAt(placed, c);
+      placed++;
+    }
+    grass.count = placed;
+    scene.add(grass);
   }
 
   // 世界边界
@@ -463,7 +660,7 @@ export function buildWorld(scene) {
   box(-330, 0, 40, 700); box(330, 0, 40, 700);
 
   return {
-    colliders, features, windmills, torches, chests, qBlocks, coinSpots, clouds,
+    colliders, features, windmills, torches, chests, qBlocks, coinSpots, clouds, waterMats,
     windmillPos, banditCamp,
     questGiverPos: new THREE.Vector3(4, 0, 10),
     playerSpawn: new THREE.Vector3(0, 0, 20),

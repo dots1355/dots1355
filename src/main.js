@@ -3,6 +3,13 @@ import * as THREE from 'three';
 import { buildWorld } from './world.js';
 import { makeHumanoid, makeHorse, resolveCollisions, angleLerp, dist2, lambert } from './entities.js';
 import { initAudio, sfx, startMusic, toggleMusic } from './audio.js';
+import { EffectComposer } from '../lib/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from '../lib/jsm/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from '../lib/jsm/postprocessing/UnrealBloomPass.js';
+import { SMAAPass } from '../lib/jsm/postprocessing/SMAAPass.js';
+import { GTAOPass } from '../lib/jsm/postprocessing/GTAOPass.js';
+import { OutputPass } from '../lib/jsm/postprocessing/OutputPass.js';
+import { RoomEnvironment } from '../lib/jsm/environments/RoomEnvironment.js';
 
 // ================= 基础渲染 =================
 const container = document.getElementById('game');
@@ -11,40 +18,125 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
 container.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(0x87ceeb);
 scene.fog = new THREE.Fog(0x87ceeb, 130, 430);
 
-const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 900);
+const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 1600);
+
+// PBR 环境反射
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(renderer), 0.04).texture;
+
+// 后处理:泛光 + SMAA 抗锯齿 + 输出色调
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+// 环境光遮蔽:让物体接触处产生柔和阴影,大幅提升体积感
+const gtao = new GTAOPass(scene, camera, window.innerWidth, window.innerHeight);
+gtao.updateGtaoMaterial({ radius: 0.35, distanceExponent: 1.5, thickness: 1.2, scale: 0.85, samples: 12 });
+composer.addPass(gtao);
+const bloom = new UnrealBloomPass(
+  new THREE.Vector2(window.innerWidth, window.innerHeight), 0.32, 0.6, 0.85);
+composer.addPass(bloom);
+const smaa = new SMAAPass(window.innerWidth, window.innerHeight);
+composer.addPass(smaa);
+composer.addPass(new OutputPass());
 
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+  composer.setSize(window.innerWidth, window.innerHeight);
 });
 
 // 光照
 const hemi = new THREE.HemisphereLight(0xbfd9ff, 0x6a7d55, 0.7);
 scene.add(hemi);
-const sun = new THREE.DirectionalLight(0xfff3d6, 2.2);
+const sun = new THREE.DirectionalLight(0xfff3d6, 2.6);
 sun.castShadow = true;
-sun.shadow.mapSize.set(2048, 2048);
-sun.shadow.camera.left = -120; sun.shadow.camera.right = 120;
-sun.shadow.camera.top = 120; sun.shadow.camera.bottom = -120;
-sun.shadow.camera.far = 500;
+sun.shadow.mapSize.set(4096, 4096);
+sun.shadow.camera.left = -130; sun.shadow.camera.right = 130;
+sun.shadow.camera.top = 130; sun.shadow.camera.bottom = -130;
+sun.shadow.camera.far = 600;
+sun.shadow.bias = -0.0004;
+sun.shadow.normalBias = 0.02;
 scene.add(sun);
 scene.add(sun.target);
 const moon = new THREE.DirectionalLight(0x8899cc, 0.0);
 scene.add(moon);
 
-// 太阳/月亮/星星
-const sunBall = new THREE.Mesh(new THREE.SphereGeometry(9, 10, 8),
-  new THREE.MeshBasicMaterial({ color: 0xffe9a0, fog: false }));
-scene.add(sunBall);
-const moonBall = new THREE.Mesh(new THREE.SphereGeometry(6, 10, 8),
-  new THREE.MeshBasicMaterial({ color: 0xdfe6ff, fog: false }));
+// 大气天空穹顶(程序化渐变 + 太阳光晕)
+const skyUniforms = {
+  topColor: { value: new THREE.Color(0x2f6fd0) },
+  horizonColor: { value: new THREE.Color(0xbcd8ee) },
+  sunDir: { value: new THREE.Vector3(0, 1, 0) },
+  sunColor: { value: new THREE.Color(0xfff2cc) },
+  sunGlow: { value: 1.0 },
+  time: { value: 0 },
+  dayMix: { value: 1.0 },
+};
+const sky = new THREE.Mesh(
+  new THREE.SphereGeometry(1200, 24, 16),
+  new THREE.ShaderMaterial({
+    uniforms: skyUniforms,
+    side: THREE.BackSide,
+    depthWrite: false,
+    fog: false,
+    vertexShader: `
+      varying vec3 vDir;
+      void main() {
+        vDir = normalize(position);
+        vec4 p = modelViewMatrix * vec4(position, 1.0);
+        gl_Position = projectionMatrix * p;
+      }`,
+    fragmentShader: `
+      uniform vec3 topColor, horizonColor, sunDir, sunColor;
+      uniform float sunGlow, time, dayMix;
+      varying vec3 vDir;
+      float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+      float vnoise(vec2 p) {
+        vec2 i = floor(p), f = fract(p);
+        f = f * f * (3.0 - 2.0 * f);
+        float a = hash(i), b = hash(i + vec2(1, 0)), c = hash(i + vec2(0, 1)), d = hash(i + vec2(1, 1));
+        return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+      }
+      float fbm(vec2 p) {
+        float v = 0.0, amp = 0.5;
+        for (int i = 0; i < 5; i++) { v += vnoise(p) * amp; p *= 2.1; amp *= 0.5; }
+        return v;
+      }
+      void main() {
+        vec3 d = normalize(vDir);
+        float h = clamp(d.y, 0.0, 1.0);
+        vec3 col = mix(horizonColor, topColor, pow(h, 0.55));
+        float s = max(dot(d, sunDir), 0.0);
+        // 云层:方向投影到平面上做分形噪声
+        if (d.y > 0.015) {
+          vec2 uv = d.xz / (d.y + 0.22) * 0.9 + vec2(time * 0.006, time * 0.0025);
+          float cov = fbm(uv);
+          float cloud = smoothstep(0.6, 0.8, cov);
+          float wispy = smoothstep(0.52, 0.62, cov) * 0.22;
+          float fade = smoothstep(0.04, 0.22, d.y);
+          vec3 cloudBright = mix(vec3(0.045, 0.05, 0.08), vec3(1.06, 1.03, 0.99), dayMix);
+          vec3 cloudDark  = mix(vec3(0.03, 0.035, 0.06), vec3(0.72, 0.74, 0.8), dayMix);
+          // 朝阳一侧的云染上太阳色
+          float sunTint = pow(s, 3.0) * 0.5;
+          vec3 ccol = mix(cloudDark, cloudBright, smoothstep(0.5, 0.95, cov)) + sunColor * sunTint * 0.35;
+          col = mix(col, ccol, (cloud * 0.9 + wispy) * fade);
+        }
+        col += sunColor * (pow(s, 900.0) * 3.0 + pow(s, 64.0) * 0.5 + pow(s, 6.0) * 0.12) * sunGlow;
+        gl_FragColor = vec4(col, 1.0);
+      }`,
+  }));
+sky.renderOrder = -1;
+scene.add(sky);
+
+// 月亮/星星
+const moonBall = new THREE.Mesh(new THREE.SphereGeometry(7, 12, 10),
+  new THREE.MeshBasicMaterial({ color: 0xeef2ff, fog: false }));
 scene.add(moonBall);
 const starGeo = new THREE.BufferGeometry();
 {
@@ -184,8 +276,10 @@ scene.add(beacon);
 const pickups = [];
 const coinGeo = new THREE.CylinderGeometry(0.32, 0.32, 0.07, 12);
 coinGeo.rotateX(Math.PI / 2);
-const coinMat = new THREE.MeshLambertMaterial({ color: 0xffd83d, emissive: 0x664400 });
-const heartMat = new THREE.MeshLambertMaterial({ color: 0xe83a4e, emissive: 0x661111 });
+const coinMat = new THREE.MeshStandardMaterial({
+  color: 0xffd83d, emissive: 0x8a5c00, emissiveIntensity: 0.55, metalness: 0.9, roughness: 0.22 });
+const heartMat = new THREE.MeshStandardMaterial({
+  color: 0xe83a4e, emissive: 0x7a0f1c, emissiveIntensity: 0.6, metalness: 0.15, roughness: 0.35 });
 
 function heartGeo() {
   const s = new THREE.Shape();
@@ -211,7 +305,8 @@ function addPickup(type, x, z, ttl = Infinity) {
   let mesh;
   if (type === 'coin') mesh = new THREE.Mesh(coinGeo, coinMat);
   else if (type === 'heart') mesh = new THREE.Mesh(heartG, heartMat);
-  else mesh = new THREE.Mesh(starGeoBig(), new THREE.MeshLambertMaterial({ color: 0xffd83d, emissive: 0x997700 }));
+  else mesh = new THREE.Mesh(starGeoBig(), new THREE.MeshStandardMaterial({
+    color: 0xffd83d, emissive: 0xaa7700, emissiveIntensity: 0.9, metalness: 0.7, roughness: 0.25 }));
   mesh.position.set(x, type === 'star' ? 1.4 : 0.65, z);
   if (type === 'star') mesh.scale.setScalar(1.4);
   mesh.castShadow = true;
@@ -825,37 +920,80 @@ function updateWanted(dt) {
 
 // ================= 昼夜 =================
 let dayTime = 0.28; // 从清晨开始
+const C_DAY_TOP = new THREE.Color(0x3d84ec), C_DAY_HOR = new THREE.Color(0xd4e8f8);
+const C_DUSK_TOP = new THREE.Color(0x35306a), C_DUSK_HOR = new THREE.Color(0xff8a4a);
+const C_NIGHT_TOP = new THREE.Color(0x040814), C_NIGHT_HOR = new THREE.Color(0x0e1830);
+const C_SUN_DAY = new THREE.Color(0xfff2cc), C_SUN_DUSK = new THREE.Color(0xff6a2a);
+let envIntensity = 1;
+
 function updateDayNight(dt) {
   dayTime = (dayTime + dt / 240) % 1;
   const ang = dayTime * Math.PI * 2 - Math.PI / 2;
   const elev = Math.sin(ang);
   const day = Math.max(0, Math.min(1, elev * 2 + 0.25));
+  const night = 1 - day;
   const sx = Math.cos(ang) * 250, sy = elev * 220, sz = 80;
   sun.position.set(player.pos.x + sx * 0.4, Math.max(20, sy), player.pos.z + sz * 0.4);
   sun.target.position.set(player.pos.x, 0, player.pos.z);
-  sun.intensity = 2.2 * day;
+  sun.intensity = 3.2 * day;
+  sun.color.copy(C_SUN_DUSK).lerp(C_SUN_DAY, Math.min(1, Math.max(0, elev * 2.2)));
   moon.position.set(-sx, Math.max(30, -sy), -sz);
-  moon.intensity = 0.35 * (1 - day);
-  hemi.intensity = 0.18 + 0.55 * day;
-  sunBall.position.set(camera.position.x + sx, sy, camera.position.z + sz);
-  sunBall.visible = sy > -15;
-  moonBall.position.set(camera.position.x - sx, Math.max(-30, -sy), camera.position.z - sz);
-  moonBall.visible = -sy > -15;
-  const daySky = new THREE.Color(0x87ceeb), duskSky = new THREE.Color(0xe8814f), nightSky = new THREE.Color(0x0a0f2c);
-  let sky;
-  if (elev > 0.25) sky = daySky;
-  else if (elev > -0.1) sky = duskSky.clone().lerp(daySky, (elev + 0.1) / 0.35);
-  else sky = nightSky.clone().lerp(duskSky, Math.max(0, (elev + 0.35) / 0.25));
-  scene.background.copy(sky);
-  scene.fog.color.copy(sky);
+  moon.intensity = 0.3 * night;
+  hemi.intensity = 0.12 + 0.38 * day;
+  envIntensity = 0.05 + 0.3 * day;
+
+  // 天空穹顶
+  const sunDirV = new THREE.Vector3(sx, sy, sz).normalize();
+  skyUniforms.sunDir.value.copy(sunDirV);
+  skyUniforms.sunColor.value.copy(sun.color);
+  skyUniforms.sunGlow.value = 0.4 + day;
+  let top, hor;
+  if (elev > 0.25) { top = C_DAY_TOP; hor = C_DAY_HOR; }
+  else if (elev > -0.08) {
+    const t = (elev + 0.08) / 0.33;
+    top = C_DUSK_TOP.clone().lerp(C_DAY_TOP, t);
+    hor = C_DUSK_HOR.clone().lerp(C_DAY_HOR, t);
+  } else {
+    const t = Math.max(0, (elev + 0.3) / 0.22);
+    top = C_NIGHT_TOP.clone().lerp(C_DUSK_TOP, t);
+    hor = C_NIGHT_HOR.clone().lerp(C_DUSK_HOR, t);
+  }
+  skyUniforms.topColor.value.copy(top);
+  skyUniforms.horizonColor.value.copy(hor);
+  skyUniforms.time.value = performance.now() * 0.001;
+  skyUniforms.dayMix.value = day;
+  scene.fog.color.copy(hor);
+  sky.position.copy(camera.position);
+
+  moonBall.position.set(camera.position.x - sx * 1.6, Math.max(-40, -sy * 1.6), camera.position.z - sz * 1.6);
+  moonBall.visible = -sy > -20;
   starMat.opacity = Math.max(0, -elev * 2.2);
-  // 火把
-  const night = 1 - day;
+
+  // 曝光与泛光随昼夜变化
+  renderer.toneMappingExposure = 0.85 + day * 0.25;
+  bloom.strength = 0.28 + night * 0.4;
+
+  // 火把与窗户
   for (const t of world.torches) {
     const flick = 0.8 + Math.sin(performance.now() * 0.013 + (t.light ? t.light.position.x : 0)) * 0.2;
     if (t.light) t.light.intensity = t.base * night * flick;
-    t.flame.material.emissiveIntensity = 0.4 + night * flick;
+    if (t.window) t.flame.material.emissiveIntensity = night * 1.8;
+    else t.flame.material.emissiveIntensity = 0.5 + night * flick * 2.2;
   }
+}
+
+// 环境反射强度随昼夜(每隔一段时间遍历一次材质)
+const envMats = new Set();
+let envScan = 0;
+function updateEnvIntensity() {
+  if (envScan-- <= 0) {
+    envScan = 180;
+    envMats.clear();
+    scene.traverse((o) => {
+      if (o.material && o.material.isMeshStandardMaterial) envMats.add(o.material);
+    });
+  }
+  for (const m of envMats) m.envMapIntensity = envIntensity;
 }
 
 // ================= 相机 =================
@@ -1023,7 +1161,7 @@ function loop(now) {
   requestAnimationFrame(loop);
   const dt = Math.min(0.05, (now - last) / 1000);
   last = now;
-  if (!started) { renderer.render(scene, camera); return; }
+  if (!started) { composer.render(); return; }
 
   if (toastTimer > 0) {
     toastTimer -= dt;
@@ -1057,9 +1195,16 @@ function loop(now) {
   beacon.rotation.y += dt;
   beacon.material.opacity = 0.22 + Math.sin(now * 0.004) * 0.1;
 
+  // 水面波纹动画
+  for (const m of world.waterMats) {
+    m.normalMap.offset.x += dt * 0.018;
+    m.normalMap.offset.y += dt * 0.011;
+  }
+
+  updateEnvIntensity();
   computePrompt();
   updateHUD();
   drawMinimap();
-  renderer.render(scene, camera);
+  composer.render();
 }
 requestAnimationFrame(loop);
