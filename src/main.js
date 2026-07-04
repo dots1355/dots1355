@@ -61,10 +61,11 @@ const gradePass = new ShaderPass({
       gl_FragColor = vec4(clamp(col, 0.0, 1.0), c.a);
     }`,
 });
+// OutputPass(ACES 色调映射 + sRGB)先行,调色与 SMAA 作用于显示域 LDR,避免裁剪 HDR 高光
+composer.addPass(new OutputPass());
 composer.addPass(gradePass);
 const smaa = new SMAAPass(window.innerWidth, window.innerHeight);
 composer.addPass(smaa);
-composer.addPass(new OutputPass());
 
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
@@ -281,11 +282,11 @@ addHorse(100, -25, 0x6e5240, false);
 // ================= 卫兵 / 村民 / 盗贼 =================
 const guards = [], villagers = [], bandits = [];
 
-function addGuard(x, z, waypoints, knight = false) {
+function addGuard(x, z, waypoints, knight = false, extra = false) {
   const g = { ...makeHumanoid({ shirt: knight ? 0x5a1c1c : 0x8f2f35, pants: 0x3a3a44, helmet: true, sword: true }),
     pos: new THREE.Vector3(x, 0, z), yaw: 0, hp: 3, speed: knight ? 8.3 : 5.2,
     state: 'patrol', waypoints, wp: 0, attackCd: 0, stunT: 0, downT: 0, walkT: 0,
-    extra: knight, home: new THREE.Vector3(x, 0, z), wantedHit: false };
+    extra, home: new THREE.Vector3(x, 0, z), wantedHit: false };
   g.group.position.copy(g.pos);
   scene.add(g.group);
   guards.push(g);
@@ -400,11 +401,12 @@ for (const [x, z] of world.coinSpots) addPickup('coin', x, z);
 const keys = {};
 let camYaw = 0, camPitch = 0.35, locked = false;
 window.addEventListener('keydown', (e) => {
+  if (e.code === 'Space') e.preventDefault();
+  if (e.repeat) return; // 忽略系统按键自动重复,防止长按空格吞掉二段跳/长按 E 反复上下马
   keys[e.code] = true;
   if (e.code === 'KeyE') tryInteract();
   if (e.code === 'KeyF') tryAttack();
   if (e.code === 'KeyM') toast(toggleMusic() ? '♪ 音乐开' : '♪ 音乐关', 1.5);
-  if (e.code === 'Space') e.preventDefault();
 });
 window.addEventListener('keyup', (e) => (keys[e.code] = false));
 renderer.domElement.addEventListener('mousedown', (e) => {
@@ -587,7 +589,7 @@ function crime(n, msg) {
     const want = Math.min(wanted * 2, 8);
     for (let i = extras; i < want; i++) {
       addGuard(gate.x + (Math.random() * 6 - 3), gate.z + (Math.random() * 6 - 3),
-        [[gate.x, gate.z]], wanted >= 3);
+        [[gate.x, gate.z]], wanted >= 3, true);
     }
   }
 }
@@ -709,7 +711,8 @@ function tryAttack() {
     g.hp--; sfx.hit();
     if (!g.wantedHit) { g.wantedHit = true; crime(1, '你袭击了卫兵!'); }
     if (g.hp <= 0) {
-      g.downT = 14; g.group.rotation.x = -Math.PI / 2; g.wantedHit = false;
+      g.downT = 14; g.stunT = 0; g.group.rotation.x = -Math.PI / 2; g.group.rotation.z = 0;
+      g.wantedHit = false;
       dropCoins(g.pos, 3);
     } else g.state = 'chase';
   });
@@ -946,6 +949,8 @@ function updateVillagers(dt) {
 function updateHorses(dt) {
   for (const h of horses) {
     if (h === player.mounted) continue;
+    // 空中下马后自然回落地面
+    if (h.pos.y > 0) h.pos.y = Math.max(0, h.pos.y - 22 * dt);
     h.timer -= dt;
     let moving = false;
     if (h.timer <= 0) {
@@ -1003,6 +1008,9 @@ function animHorseLegs(h, intensity) {
 }
 
 // ================= 玩家更新 =================
+const _moveFwd = new THREE.Vector2();
+const _moveRight = new THREE.Vector2();
+const _moveVec = new THREE.Vector2();
 function updatePlayer(dt) {
   if (player.dead) return;
   player.invulnT = Math.max(0, player.invulnT - dt);
@@ -1020,14 +1028,14 @@ function updatePlayer(dt) {
     }
   }
 
-  const f = new THREE.Vector2(-Math.sin(camYaw), -Math.cos(camYaw));
-  const r = new THREE.Vector2(-f.y, f.x);
+  const f = _moveFwd.set(-Math.sin(camYaw), -Math.cos(camYaw));
+  const r = _moveRight.set(-f.y, f.x);
   let ix = 0, iz = 0;
   if (keys['KeyW'] || keys['ArrowUp']) iz += 1;
   if (keys['KeyS'] || keys['ArrowDown']) iz -= 1;
   if (keys['KeyD'] || keys['ArrowRight']) ix += 1;
   if (keys['KeyA'] || keys['ArrowLeft']) ix -= 1;
-  const mv = new THREE.Vector2(f.x * iz + r.x * ix, f.y * iz + r.y * ix);
+  const mv = _moveVec.set(f.x * iz + r.x * ix, f.y * iz + r.y * ix);
   const moving = mv.lengthSq() > 0;
   if (moving) mv.normalize();
 
@@ -1126,11 +1134,12 @@ function updatePlayer(dt) {
   if (player.pos.y <= 0) {
     player.pos.y = 0;
     player.vy = 0;
+    // 先重置着地状态,再判定踩踏——checkStomp 的弹跳(onGround=false)才能保留,支持连环踩踏
+    player.onGround = true;
+    player.jumps = 0;
     if (wasAirborne && fallSpeed < -3) checkStomp();
     if (wasAirborne && fallSpeed < -10) camShake = 0.22;
     if (wasAirborne && fallSpeed < -6) spawnDust(player.pos.x, 0.06, player.pos.z, 6, 0.9, 1.5);
-    player.onGround = true;
-    player.jumps = 0;
   }
 
   // “?”砖块(从下方顶)
@@ -1223,7 +1232,7 @@ function updateQuest(dt) {
   exGroup.rotation.y += dt * 2;
 
   beacon.visible = false;
-  if (!quest.active) return;
+  if (!quest.active || player.dead) return;
   const m = missions[quest.idx];
   if (m.type === 'deliver') {
     quest.timer -= dt;
@@ -1265,6 +1274,15 @@ function updateWanted(dt) {
 
 // ================= 昼夜 =================
 let dayTime = 0.28; // 从清晨开始
+// 热循环复用的临时对象(避免每帧分配)
+const _sunDir = new THREE.Vector3();
+const _sunPosV = new THREE.Vector3();
+const _snapT = new THREE.Vector3();
+const _snapM = new THREE.Matrix4();
+const _snapInv = new THREE.Matrix4();
+const _UP = new THREE.Vector3(0, 1, 0);
+const _topC = new THREE.Color();
+const _horC = new THREE.Color();
 const C_DAY_TOP = new THREE.Color(0x3d84ec), C_DAY_HOR = new THREE.Color(0xd4e8f8);
 const C_DUSK_TOP = new THREE.Color(0x35306a), C_DUSK_HOR = new THREE.Color(0xff8a4a);
 const C_NIGHT_TOP = new THREE.Color(0x040814), C_NIGHT_HOR = new THREE.Color(0x0e1830);
@@ -1278,8 +1296,19 @@ function updateDayNight(dt) {
   const day = Math.max(0, Math.min(1, elev * 2 + 0.25));
   const night = 1 - day;
   const sx = Math.cos(ang) * 250, sy = elev * 220, sz = 80;
-  sun.position.set(player.pos.x + sx * 0.4, Math.max(20, sy), player.pos.z + sz * 0.4);
-  sun.target.position.set(player.pos.x, 0, player.pos.z);
+  // 阴影相机纹素对齐:把目标点量化到光空间纹素网格,消除移动时阴影边缘抖动
+  _sunPosV.set(player.pos.x + sx * 0.4, Math.max(20, sy), player.pos.z + sz * 0.4);
+  _snapT.set(player.pos.x, 0, player.pos.z);
+  _snapM.lookAt(_sunPosV, _snapT, _UP);
+  _snapInv.copy(_snapM).invert();
+  const texel = (sun.shadow.camera.right - sun.shadow.camera.left) / sun.shadow.mapSize.x;
+  _snapT.applyMatrix4(_snapInv);
+  _snapT.x = Math.round(_snapT.x / texel) * texel;
+  _snapT.y = Math.round(_snapT.y / texel) * texel;
+  _snapT.applyMatrix4(_snapM);
+  const snapDx = _snapT.x - player.pos.x, snapDz = _snapT.z - player.pos.z;
+  sun.position.set(_sunPosV.x + snapDx, _sunPosV.y, _sunPosV.z + snapDz);
+  sun.target.position.copy(_snapT);
   const rainDim = 1 - 0.72 * weather.rain;
   sun.intensity = 3.2 * day * rainDim;
   sun.color.copy(C_SUN_DUSK).lerp(C_SUN_DAY, Math.min(1, Math.max(0, elev * 2.2)));
@@ -1289,8 +1318,8 @@ function updateDayNight(dt) {
   envIntensity = (0.05 + 0.3 * day) * rainDim;
 
   // 天空穹顶
-  const sunDirV = new THREE.Vector3(sx, sy, sz).normalize();
-  skyUniforms.sunDir.value.copy(sunDirV);
+  _sunDir.set(sx, sy, sz).normalize();
+  skyUniforms.sunDir.value.copy(_sunDir);
   skyUniforms.sunColor.value.copy(sun.color);
   skyUniforms.sunGlow.value = (0.4 + day) * (1 - 0.75 * weather.cover);
   skyUniforms.cover.value = weather.cover;
@@ -1298,12 +1327,12 @@ function updateDayNight(dt) {
   if (elev > 0.25) { top = C_DAY_TOP; hor = C_DAY_HOR; }
   else if (elev > -0.08) {
     const t = (elev + 0.08) / 0.33;
-    top = C_DUSK_TOP.clone().lerp(C_DAY_TOP, t);
-    hor = C_DUSK_HOR.clone().lerp(C_DAY_HOR, t);
+    top = _topC.lerpColors(C_DUSK_TOP, C_DAY_TOP, t);
+    hor = _horC.lerpColors(C_DUSK_HOR, C_DAY_HOR, t);
   } else {
     const t = Math.max(0, (elev + 0.3) / 0.22);
-    top = C_NIGHT_TOP.clone().lerp(C_DUSK_TOP, t);
-    hor = C_NIGHT_HOR.clone().lerp(C_DUSK_HOR, t);
+    top = _topC.lerpColors(C_NIGHT_TOP, C_DUSK_TOP, t);
+    hor = _horC.lerpColors(C_NIGHT_HOR, C_DUSK_HOR, t);
   }
   const rainSkyDim = 1 - 0.35 * weather.rain;
   skyUniforms.topColor.value.copy(top).multiplyScalar(rainSkyDim);
@@ -1353,16 +1382,19 @@ function updateEnvIntensity() {
 // ================= 相机 =================
 let moveState = 0; // 0 静止 1 走 2 跑 3 疾驰
 let camShake = 0;
+const _camOff = new THREE.Vector3();
+const _camTarget = new THREE.Vector3();
+const _camDesired = new THREE.Vector3();
 function updateCamera(dt) {
   const dist = player.mounted ? 9 : 6.2;
   const ty = player.pos.y + (player.mounted ? 2.6 : 1.7);
-  const off = new THREE.Vector3(
+  _camOff.set(
     Math.sin(camYaw) * Math.cos(camPitch),
     Math.sin(camPitch),
     Math.cos(camYaw) * Math.cos(camPitch),
   ).multiplyScalar(dist);
-  const target = new THREE.Vector3(player.pos.x, ty, player.pos.z);
-  const desired = target.clone().add(off);
+  const target = _camTarget.set(player.pos.x, ty, player.pos.z);
+  const desired = _camDesired.copy(target).add(_camOff);
   desired.y = Math.max(0.6, desired.y);
   camera.position.lerp(desired, 1 - Math.pow(0.0001, dt));
   // 受击/落地震屏
@@ -1433,6 +1465,11 @@ function computePrompt() {
 }
 
 // ================= 小地图 =================
+const MM_COLS = {
+  wall: '#9d9486', tower: '#8d8476', keep: '#7d7466', house: '#a3703f',
+  tree: '#295c33', water: '#3f8fc4', field: '#9a7444', plaza: '#cdb891',
+  stall: '#c05a3a', windmill: '#e8dcc0', tent: '#5d4a33',
+};
 function drawMinimap() {
   const S = 200, range = 240, k = S / range;
   mm.clearRect(0, 0, S, S);
@@ -1456,12 +1493,7 @@ function drawMinimap() {
       mm.restore();
       continue;
     }
-    const cols = {
-      wall: '#9d9486', tower: '#8d8476', keep: '#7d7466', house: '#a3703f',
-      tree: '#295c33', water: '#3f8fc4', field: '#9a7444', plaza: '#cdb891',
-      stall: '#c05a3a', windmill: '#e8dcc0', tent: '#5d4a33',
-    };
-    mm.fillStyle = cols[f.type] || '#888';
+    mm.fillStyle = MM_COLS[f.type] || '#888';
     mm.fillRect(mx - (f.w * k) / 2, mz - (f.h * k) / 2, Math.max(2, f.w * k), Math.max(2, f.h * k));
   }
   // 马
@@ -1527,6 +1559,7 @@ window.__gtm = {
 };
 
 let last = performance.now();
+let frameNo = 0;
 function loop(now) {
   requestAnimationFrame(loop);
   const dt = Math.min(0.05, (now - last) / 1000);
@@ -1577,7 +1610,7 @@ function loop(now) {
   updateEnvIntensity();
   computePrompt();
   updateHUD();
-  drawMinimap();
+  if (frameNo++ % 2 === 0) drawMinimap(); // 小地图 30Hz 足够
   composer.render();
 }
 requestAnimationFrame(loop);

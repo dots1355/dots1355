@@ -350,9 +350,11 @@ export function buildWorld(scene) {
   sand.rotation.x = -Math.PI / 2;
   sand.position.set(-100, 0.02, 100);
   scene.add(sand);
+  const lakeNormal = TX.waterNormal.clone();
+  lakeNormal.needsUpdate = true;
   const lakeMat = new THREE.MeshStandardMaterial({
     color: 0x2f7fb8, roughness: 0.06, metalness: 0,
-    normalMap: TX.waterNormal, normalScale: new THREE.Vector2(0.5, 0.5),
+    normalMap: lakeNormal, normalScale: new THREE.Vector2(0.5, 0.5),
   });
   waterMats.push(lakeMat);
   const lake = new THREE.Mesh(new THREE.CircleGeometry(30, 32), lakeMat);
@@ -366,7 +368,7 @@ export function buildWorld(scene) {
   function field(x, z, w, d) {
     const f = new THREE.Mesh(new THREE.PlaneGeometry(w, d), dirtFieldMat);
     f.rotation.x = -Math.PI / 2;
-    f.position.set(x, 0.02, z);
+    f.position.set(x, 0.045, z); // 高于道路平面,避免 z-fighting
     f.receiveShadow = true;
     scene.add(f);
     const rows = Math.floor(d / 2);

@@ -81,6 +81,8 @@ export async function generateRemoteAITextures({ onStatus, onTexture, onTitle } 
   for (const name of todo) {
     try {
       const bitmap = await fetchAIImage(name);
+      // 处理前让出一帧,把每张贴图的 CPU 处理分散到不同帧,避免集中卡顿
+      await new Promise((r) => requestAnimationFrame(() => setTimeout(r)));
       if (name === 'title') {
         onTitle?.(bitmap);
       } else {
@@ -191,7 +193,7 @@ function normalFrom(size, strength = 2) {
     for (let x = 0; x < size; x++) {
       const dx = (at(x + 1, y) - at(x - 1, y)) * strength;
       const dy = (at(x, y + 1) - at(x, y - 1)) * strength;
-      const inv = 1 / Math.hypot(dx, dy, 1);
+      const inv = 1 / Math.sqrt(dx * dx + dy * dy + 1);
       const i = (y * size + x) * 4;
       d[i] = (-dx * inv * 0.5 + 0.5) * 255;
       d[i + 1] = (-dy * inv * 0.5 + 0.5) * 255;
