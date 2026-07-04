@@ -1,5 +1,49 @@
 // 程序化 PBR 贴图生成:颜色贴图 + 由高度场推导的法线贴图,零外部资源
+// 支持 AI 素材覆盖:把 AI 生成的无缝贴图放进 assets/ai/<名字>.jpg|png,
+// 游戏启动时自动加载并替换对应的程序化贴图(法线贴图由图像亮度自动推导)。
 import * as THREE from 'three';
+
+const AI_NAMES = ['grass', 'dirt', 'stone', 'roof', 'plaster', 'wood', 'cobble'];
+const aiImages = {};
+
+export async function preloadAIAssets() {
+  await Promise.all(AI_NAMES.map(async (n) => {
+    for (const ext of ['jpg', 'png', 'webp']) {
+      try {
+        const res = await fetch(`./assets/ai/${n}.${ext}`);
+        if (!res.ok) continue;
+        const blob = await res.blob();
+        aiImages[n] = await createImageBitmap(blob);
+        return;
+      } catch { /* 不存在则回退程序化贴图 */ }
+    }
+  }));
+  return Object.keys(aiImages);
+}
+
+// 用 AI 图像构建贴图对:颜色图 + 亮度推导的法线图
+function texFromImage(img, repeat, normalStrength = 2) {
+  const size = 512;
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const g = c.getContext('2d');
+  g.drawImage(img, 0, 0, size, size);
+  const data = g.getImageData(0, 0, size, size).data;
+  heightBuf = new Float32Array(size * size);
+  for (let i = 0; i < size * size; i++) {
+    heightBuf[i] = (data[i * 4] * 0.299 + data[i * 4 + 1] * 0.587 + data[i * 4 + 2] * 0.114) / 255;
+  }
+  const map = new THREE.CanvasTexture(c);
+  const normalMap = new THREE.CanvasTexture(normalFrom(size, normalStrength));
+  for (const t of [map, normalMap]) {
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.repeat.set(repeat, repeat);
+    t.anisotropy = 8;
+  }
+  map.colorSpace = THREE.SRGBColorSpace;
+  heightBuf = null;
+  return { map, normalMap };
+}
 
 // 简易值噪声(带插值,多八度)
 function makeNoise(seed = 1) {
@@ -185,6 +229,16 @@ export function makeTextures() {
     const w = n1(u * 10, v * 10, 4) * 0.6 + n2(u * 22, v * 22, 3) * 0.4;
     return [128, 128, 255, w];
   }, 3).normalMap;
+
+  // AI 素材覆盖(若 assets/ai/ 下存在对应图片)
+  const aiParams = {
+    grass: [90, 1.2], dirt: [6, 1.6], stone: [1, 2.4], roof: [1, 2.2],
+    plaster: [1, 0.9], wood: [1, 1.4], cobble: [1, 2.0],
+  };
+  for (const n of Object.keys(aiImages)) {
+    const [r, ns] = aiParams[n];
+    T[n] = texFromImage(aiImages[n], r, ns);
+  }
 
   return T;
 }

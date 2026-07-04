@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { buildWorld } from './world.js';
 import { makeHumanoid, makeHorse, resolveCollisions, angleLerp, dist2, lambert } from './entities.js';
 import { initAudio, sfx, startMusic, toggleMusic } from './audio.js';
+import { preloadAIAssets } from './textures.js';
 import { EffectComposer } from '../lib/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from '../lib/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from '../lib/jsm/postprocessing/UnrealBloomPass.js';
@@ -152,6 +153,20 @@ const stars = new THREE.Points(starGeo, starMat);
 scene.add(stars);
 
 // ================= 世界 =================
+// 先加载 AI 素材(assets/ai/ 下的无缝贴图会覆盖程序化贴图)
+const aiLoaded = await preloadAIAssets();
+if (aiLoaded.length) console.info('AI 贴图已加载:', aiLoaded.join(', '));
+// AI 生成的标题画面背景(assets/ai/title.jpg,可选)
+fetch('./assets/ai/title.jpg').then((r) => {
+  if (r.ok) r.blob().then((b) => {
+    const t = document.getElementById('title');
+    t.style.backgroundImage =
+      `linear-gradient(rgba(10,6,20,0.55), rgba(10,6,20,0.75)), url(${URL.createObjectURL(b)})`;
+    t.style.backgroundSize = 'cover';
+    t.style.backgroundPosition = 'center';
+  });
+}).catch(() => {});
+
 const world = buildWorld(scene);
 const { colliders } = world;
 
@@ -524,6 +539,7 @@ function damagePlayer(n) {
   if (player.invulnT > 0 || player.dead) return;
   player.hp -= n;
   player.invulnT = 0.7;
+  camShake = 0.45;
   sfx.hurt();
   flashEl.style.opacity = 0.45;
   setTimeout(() => (flashEl.style.opacity = 0), 120);
@@ -562,12 +578,54 @@ function moveEntity(e, tx, tz, speed, dt) {
   return false;
 }
 
-function animateLimbs(p, walkT, moving) {
-  const a = moving ? Math.sin(walkT) * 0.65 : 0;
-  p.legL.rotation.x = a;
-  p.legR.rotation.x = -a;
-  if (p.armL) p.armL.rotation.x = -a * 0.8;
-  if (p.armR && !p._attackAnim) p.armR.rotation.x = a * 0.8;
+// 人形动画:四肢摆动 + 身体起伏 + 奔跑前倾 + 呼吸怠速 + 头部环视
+function animateLimbs(p, walkT, moving, group = null, speedNorm = 0.6) {
+  const now = performance.now();
+  const swing = moving ? Math.sin(walkT) * (0.45 + 0.35 * speedNorm) : 0;
+  p.legL.rotation.x = swing;
+  p.legR.rotation.x = -swing;
+  if (p.armL) p.armL.rotation.x = -swing * 0.85;
+  if (p.armR && !p._attackAnim) p.armR.rotation.x = swing * 0.85;
+  let bob = 0;
+  if (moving) {
+    bob = Math.abs(Math.cos(walkT)) * 0.05 * (0.4 + speedNorm);
+  } else {
+    bob = Math.sin(now * 0.0018) * 0.012; // 呼吸
+  }
+  if (p.body) {
+    p.body.position.y = 0.78 + bob * 0.5;
+    if (!p._attackAnim) {
+      p.body.rotation.x = moving ? 0.05 + 0.12 * Math.max(0, speedNorm - 0.8) : 0;
+      p.body.rotation.y *= 0.85;
+    }
+  }
+  if (p.head) {
+    p.head.position.y = 1.32 + bob * 0.6;
+    if (!moving) p.head.rotation.y = Math.sin(now * 0.0005 + p.head.id * 1.7) * 0.4;
+    else p.head.rotation.y *= 0.9;
+  }
+  if (group) group.position.y += bob;
+}
+
+// 通用三段式挥剑:抬臂蓄力 → 劈砍 → 收势(t: 0→1)
+function meleeSwing(p, t) {
+  let arm, twist;
+  if (t < 0.32) {
+    const k = t / 0.32;
+    arm = -2.3 * (1 - (1 - k) * (1 - k));
+    twist = -0.35 * k;
+  } else if (t < 0.62) {
+    const k = (t - 0.32) / 0.3;
+    arm = -2.3 + 3.1 * k * k;
+    twist = -0.35 + 0.8 * k;
+  } else {
+    const k = (t - 0.62) / 0.38;
+    arm = 0.8 * (1 - k);
+    twist = 0.45 * (1 - k);
+  }
+  p.armR.rotation.x = arm;
+  p.armR.rotation.z = -0.25 * Math.sin(t * Math.PI);
+  if (p.body) p.body.rotation.y = twist;
 }
 
 function updateGuards(dt) {
@@ -595,6 +653,7 @@ function updateGuards(dt) {
         moving = true;
       } else if (g.attackCd <= 0) {
         g.attackCd = 0.9;
+        g.swingT = 0.35;
         damagePlayer(1);
       }
       g.yaw = angleLerp(g.yaw, Math.atan2(player.pos.x - g.pos.x, player.pos.z - g.pos.z), dt * 10);
@@ -606,7 +665,12 @@ function updateGuards(dt) {
     }
     g.group.position.copy(g.pos);
     g.group.rotation.y = g.yaw;
-    animateLimbs(g.parts, g.walkT, moving);
+    g.parts._attackAnim = (g.swingT || 0) > 0;
+    animateLimbs(g.parts, g.walkT, moving, g.group, g.state === 'chase' ? 1.1 : 0.55);
+    if (g.swingT > 0) {
+      g.swingT -= dt;
+      meleeSwing(g.parts, Math.min(1, 1 - g.swingT / 0.35));
+    }
   }
 }
 
@@ -619,7 +683,7 @@ function updateBandits(dt) {
     let moving = false;
     if (pd < 28 && !player.dead) {
       if (pd > 1.6) { moveEntity(b, player.pos.x, player.pos.z, b.speed, dt); moving = true; }
-      else if (b.attackCd <= 0) { b.attackCd = 1.0; damagePlayer(2); }
+      else if (b.attackCd <= 0) { b.attackCd = 1.0; b.swingT = 0.35; damagePlayer(2); }
     } else {
       const a = performance.now() * 0.0003 + b.home.x;
       moveEntity(b, b.home.x + Math.cos(a) * 5, b.home.z + Math.sin(a) * 5, b.speed * 0.3, dt);
@@ -627,7 +691,12 @@ function updateBandits(dt) {
     }
     b.group.position.copy(b.pos);
     b.group.rotation.y = b.yaw;
-    animateLimbs(b.parts, b.walkT, moving);
+    b.parts._attackAnim = (b.swingT || 0) > 0;
+    animateLimbs(b.parts, b.walkT, moving, b.group, 1.0);
+    if (b.swingT > 0) {
+      b.swingT -= dt;
+      meleeSwing(b.parts, Math.min(1, 1 - b.swingT / 0.35));
+    }
   }
 }
 
@@ -658,7 +727,7 @@ function updateVillagers(dt) {
     }
     v.group.position.copy(v.pos);
     v.group.rotation.y = v.yaw;
-    animateLimbs(v.parts, v.walkT, moving);
+    animateLimbs(v.parts, v.walkT, moving, v.group, v.fleeT > 0 ? 0.95 : 0.35);
   }
 }
 
@@ -693,12 +762,32 @@ function moveEntityHorse(h, tx, tz, speed, dt) {
   resolveCollisions(h.pos, 0.8, colliders);
   return false;
 }
+// 马匹步态:静止 / 小跑(对角步)/ 疾驰(前后肢分相 + 身体俯仰起伏)
 function animHorseLegs(h, intensity) {
-  const a = Math.sin(h.walkT) * 0.55 * intensity;
-  h.parts.legs[0].rotation.x = a;
-  h.parts.legs[1].rotation.x = -a;
-  h.parts.legs[2].rotation.x = -a;
-  h.parts.legs[3].rotation.x = a;
+  const w = h.walkT;
+  const L = h.parts.legs;
+  if (intensity < 0.05) {
+    for (const leg of L) leg.rotation.x *= 0.8;
+    h.visBob = (h.visBob || 0) * 0.8;
+    h.visPitch = (h.visPitch || 0) * 0.8;
+  } else if (intensity < 1.25) {
+    // 小跑:对角腿成对
+    const a = Math.sin(w) * 0.5;
+    L[0].rotation.x = a; L[1].rotation.x = -a;
+    L[2].rotation.x = -a; L[3].rotation.x = a;
+    h.visBob = Math.abs(Math.sin(w)) * 0.04;
+    h.visPitch = 0;
+  } else {
+    // 疾驰:后肢蹬地、前肢前伸,身体俯仰 + 腾空起伏
+    const rear = Math.sin(w) * 0.9;
+    const front = Math.sin(w + 2.2) * 0.9;
+    L[0].rotation.x = rear; L[1].rotation.x = rear * 0.92;
+    L[2].rotation.x = front; L[3].rotation.x = front * 0.92;
+    h.visBob = Math.max(0, Math.sin(w + 0.6)) * 0.17;
+    h.visPitch = Math.sin(w + 1.2) * 0.07;
+  }
+  h.group.position.y = h.pos.y + (h.visBob || 0);
+  h.group.rotation.x = h.visPitch || 0;
 }
 
 // ================= 玩家更新 =================
@@ -706,13 +795,17 @@ function updatePlayer(dt) {
   if (player.dead) return;
   player.invulnT = Math.max(0, player.invulnT - dt);
 
-  // 攻击动画
+  // 攻击动画(三段式:蓄力→劈砍→收势)
   if (player.attackT > 0) {
     player.attackT -= dt;
     const t = 1 - player.attackT / 0.35;
     player.parts._attackAnim = true;
-    player.parts.armR.rotation.x = -Math.sin(t * Math.PI) * 2.2;
-    if (player.attackT <= 0) player.parts._attackAnim = false;
+    meleeSwing(player.parts, Math.min(1, t));
+    if (player.attackT <= 0) {
+      player.parts._attackAnim = false;
+      player.parts.armR.rotation.z = 0;
+      player.parts.body.rotation.y = 0;
+    }
   }
 
   const f = new THREE.Vector2(-Math.sin(camYaw), -Math.cos(camYaw));
@@ -749,25 +842,37 @@ function updatePlayer(dt) {
     h.pos.y = player.pos.y;
     h.group.position.copy(h.pos);
     h.group.rotation.y = h.yaw;
-    animHorseLegs(h, moving ? 1.4 : 0);
+    const galloping = moving && (keys['ShiftLeft'] || keys['ShiftRight']);
+    animHorseLegs(h, moving ? (galloping ? 1.6 : 1.0) : 0);
+    moveState = moving ? (galloping ? 3 : 2) : 0;
     player.pos.x = h.pos.x;
     player.pos.z = h.pos.z;
     player.yaw = h.yaw;
-    player.group.position.set(h.pos.x, h.pos.y + 1.35, h.pos.z);
+    // 骑手随马起伏,疾驰时前倾
+    player.group.position.set(h.pos.x, h.pos.y + 1.35 + (h.visBob || 0), h.pos.z);
     player.group.rotation.y = h.yaw;
-    // 骑姿
     player.parts.legL.rotation.x = -1.1;
     player.parts.legR.rotation.x = -1.1;
+    player.parts.body.rotation.x = galloping ? 0.3 : 0.1;
+    player.parts.armL.rotation.x = -0.55;
+    if (!player.parts._attackAnim) player.parts.armR.rotation.x = -0.55;
     return;
   }
 
   const speed = keys['ShiftLeft'] || keys['ShiftRight'] ? 7.6 : 4.6;
+  const prevYaw = player.yaw;
   if (moving) {
     player.pos.x += mv.x * speed * dt;
     player.pos.z += mv.y * speed * dt;
     player.yaw = angleLerp(player.yaw, Math.atan2(mv.x, mv.y), dt * 12);
     player.walkT += dt * speed * 2.2;
   }
+  moveState = moving ? (speed > 5 ? 2 : 1) : 0;
+  // 转向侧倾
+  let dyaw = (player.yaw - prevYaw) % (Math.PI * 2);
+  if (dyaw > Math.PI) dyaw -= Math.PI * 2;
+  if (dyaw < -Math.PI) dyaw += Math.PI * 2;
+  player.lean = (player.lean || 0) * 0.86 + Math.max(-0.16, Math.min(0.16, -dyaw * 1.6)) * 0.14;
 
   // 跳跃(二段跳)
   if (keys['Space']) {
@@ -786,6 +891,7 @@ function updatePlayer(dt) {
     player.pos.y = 0;
     player.vy = 0;
     if (wasAirborne && fallSpeed < -3) checkStomp();
+    if (wasAirborne && fallSpeed < -10) camShake = 0.22;
     player.onGround = true;
     player.jumps = 0;
   }
@@ -814,9 +920,10 @@ function updatePlayer(dt) {
   resolveCollisions(player.pos, 0.45, colliders);
   player.group.position.copy(player.pos);
   player.group.rotation.y = player.yaw;
+  player.group.rotation.z = player.lean || 0;
   // 受伤闪烁
   player.group.visible = player.invulnT > 0 ? Math.floor(performance.now() / 80) % 2 === 0 : true;
-  animateLimbs(player.parts, player.walkT, moving);
+  animateLimbs(player.parts, player.walkT, moving, player.group, speed / 7.6);
 }
 
 function checkStomp() {
@@ -997,6 +1104,8 @@ function updateEnvIntensity() {
 }
 
 // ================= 相机 =================
+let moveState = 0; // 0 静止 1 走 2 跑 3 疾驰
+let camShake = 0;
 function updateCamera(dt) {
   const dist = player.mounted ? 9 : 6.2;
   const ty = player.pos.y + (player.mounted ? 2.6 : 1.7);
@@ -1009,7 +1118,19 @@ function updateCamera(dt) {
   const desired = target.clone().add(off);
   desired.y = Math.max(0.6, desired.y);
   camera.position.lerp(desired, 1 - Math.pow(0.0001, dt));
+  // 受击/落地震屏
+  if (camShake > 0) {
+    camShake = Math.max(0, camShake - dt);
+    camera.position.x += (Math.random() - 0.5) * camShake * 0.5;
+    camera.position.y += (Math.random() - 0.5) * camShake * 0.35;
+  }
   camera.lookAt(target);
+  // 疾跑/疾驰时动态拉伸视野(速度感)
+  const fovTarget = 62 + [0, 0, 3.5, 9][moveState];
+  if (Math.abs(camera.fov - fovTarget) > 0.05) {
+    camera.fov += (fovTarget - camera.fov) * Math.min(1, dt * 5);
+    camera.updateProjectionMatrix();
+  }
 }
 
 // ================= HUD =================
