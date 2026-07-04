@@ -23,7 +23,10 @@ export function buildWorld(scene) {
     const normalMap = pair.normalMap.clone();
     normalMap.needsUpdate = true;
     normalMap.repeat.set(rx, ry);
-    return new THREE.MeshStandardMaterial({ map, normalMap, roughness: 0.9, metalness: 0.02, ...extra });
+    const m = new THREE.MeshStandardMaterial({ map, normalMap, roughness: 0.9, metalness: 0.02, ...extra });
+    m.userData.wettable = true;           // 下雨时变湿润反光
+    m.userData.baseRough = m.roughness;
+    return m;
   }
   const woodMat = texMat(TX.wood, 1, 1, { roughness: 0.85 });
   const plasterMat = texMat(TX.plaster, 2, 1, { roughness: 0.95 });
@@ -37,8 +40,11 @@ export function buildWorld(scene) {
     colliders.boxes.push({ minX: cx - w / 2, maxX: cx + w / 2, minZ: cz - d / 2, maxZ: cz + d / 2 });
 
   // ---- 地面与道路 ----
-  const ground = new THREE.Mesh(new THREE.PlaneGeometry(700, 700),
-    new THREE.MeshStandardMaterial({ map: TX.grass.map, normalMap: TX.grass.normalMap, roughness: 0.95, metalness: 0 }));
+  const groundMat = new THREE.MeshStandardMaterial({
+    map: TX.grass.map, normalMap: TX.grass.normalMap, roughness: 0.95, metalness: 0 });
+  groundMat.userData.wettable = true;
+  groundMat.userData.baseRough = 0.95;
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(700, 700), groundMat);
   ground.rotation.x = -Math.PI / 2;
   ground.receiveShadow = true;
   scene.add(ground);

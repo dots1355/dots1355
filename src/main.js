@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import { buildWorld } from './world.js';
 import { makeHumanoid, makeHorse, resolveCollisions, angleLerp, dist2, lambert } from './entities.js';
-import { initAudio, sfx, startMusic, toggleMusic } from './audio.js';
+import { initAudio, sfx, startMusic, toggleMusic, weatherAudio } from './audio.js';
 import { preloadAIAssets, generateRemoteAITextures } from './textures.js';
 import { ShaderPass } from '../lib/jsm/postprocessing/ShaderPass.js';
 import { EffectComposer } from '../lib/jsm/postprocessing/EffectComposer.js';
@@ -98,6 +98,7 @@ const skyUniforms = {
   sunGlow: { value: 1.0 },
   time: { value: 0 },
   dayMix: { value: 1.0 },
+  cover: { value: 0.0 },
 };
 const sky = new THREE.Mesh(
   new THREE.SphereGeometry(1200, 24, 16),
@@ -115,7 +116,7 @@ const sky = new THREE.Mesh(
       }`,
     fragmentShader: `
       uniform vec3 topColor, horizonColor, sunDir, sunColor;
-      uniform float sunGlow, time, dayMix;
+      uniform float sunGlow, time, dayMix, cover;
       varying vec3 vDir;
       float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
       float vnoise(vec2 p) {
@@ -138,14 +139,18 @@ const sky = new THREE.Mesh(
         if (d.y > 0.015) {
           vec2 uv = d.xz / (d.y + 0.22) * 0.9 + vec2(time * 0.006, time * 0.0025);
           float cov = fbm(uv);
-          float cloud = smoothstep(0.6, 0.8, cov);
-          float wispy = smoothstep(0.52, 0.62, cov) * 0.22;
+          // cover(天气云量)越大,云覆盖越广、越暗
+          float lo = mix(0.6, 0.22, cover);
+          float hi = mix(0.8, 0.5, cover);
+          float cloud = smoothstep(lo, hi, cov);
+          float wispy = smoothstep(lo - 0.08, lo + 0.02, cov) * 0.22;
           float fade = smoothstep(0.04, 0.22, d.y);
           vec3 cloudBright = mix(vec3(0.045, 0.05, 0.08), vec3(1.06, 1.03, 0.99), dayMix);
           vec3 cloudDark  = mix(vec3(0.03, 0.035, 0.06), vec3(0.72, 0.74, 0.8), dayMix);
           // 朝阳一侧的云染上太阳色
           float sunTint = pow(s, 3.0) * 0.5;
           vec3 ccol = mix(cloudDark, cloudBright, smoothstep(0.5, 0.95, cov)) + sunColor * sunTint * 0.35;
+          ccol *= 1.0 - 0.42 * cover;
           col = mix(col, ccol, (cloud * 0.9 + wispy) * fade);
         }
         col += sunColor * (pow(s, 900.0) * 3.0 + pow(s, 64.0) * 0.5 + pow(s, 6.0) * 0.12) * sunGlow;
@@ -194,14 +199,16 @@ const { colliders } = world;
 
 // ---- 运行时 AI 贴图生成(玩家浏览器联网时,后台生成照片级贴图并热替换)----
 const aiStatusEl = document.getElementById('ai-status');
+let titleArtURL = null;
 function setTitleArt(bitmap) {
   if (localTitleArt) return;
   const c = document.createElement('canvas');
   c.width = bitmap.width; c.height = bitmap.height;
   c.getContext('2d').drawImage(bitmap, 0, 0);
+  titleArtURL = c.toDataURL('image/jpeg', 0.9);
   const t = document.getElementById('title');
   t.style.backgroundImage =
-    `linear-gradient(rgba(10,6,20,0.5), rgba(10,6,20,0.72)), url(${c.toDataURL('image/jpeg', 0.9)})`;
+    `linear-gradient(rgba(10,6,20,0.5), rgba(10,6,20,0.72)), url(${titleArtURL})`;
   t.style.backgroundSize = 'cover';
   t.style.backgroundPosition = 'center';
 }
@@ -424,6 +431,146 @@ titleEl.addEventListener('click', () => {
   toast('去喷泉广场找金衣老者接取委托吧!(E 互动)', 5);
 });
 
+// ================= 天气系统 =================
+const WEATHER_DEF = {
+  clear:  { rain: 0,   cover: 0.05, dur: [55, 110], next: { cloudy: 1 } },
+  cloudy: { rain: 0,   cover: 0.55, dur: [30, 60],  next: { rain: 0.55, clear: 0.45 } },
+  rain:   { rain: 0.7, cover: 0.85, dur: [30, 60],  next: { storm: 0.35, cloudy: 0.65 } },
+  storm:  { rain: 1,   cover: 1,    dur: [22, 45],  next: { rain: 1 } },
+};
+const weather = { state: 'clear', timer: 60, rain: 0, targetRain: 0, cover: 0.05, targetCover: 0.05, boltT: 4 };
+
+function setWeather(s) {
+  const def = WEATHER_DEF[s];
+  weather.state = s;
+  weather.targetRain = def.rain;
+  weather.targetCover = def.cover;
+  weather.timer = def.dur[0] + Math.random() * (def.dur[1] - def.dur[0]);
+  if (started && (s === 'rain' || s === 'storm')) toast(s === 'storm' ? '⛈️ 雷暴来袭!' : '🌧️ 下雨了…', 2.5);
+}
+
+function lightning() {
+  const el = document.getElementById('lightning');
+  el.style.transition = 'none';
+  el.style.opacity = 0.75;
+  requestAnimationFrame(() => {
+    el.style.transition = 'opacity 0.35s';
+    el.style.opacity = 0;
+  });
+  camShake = Math.max(camShake, 0.3);
+  setTimeout(() => weatherAudio.thunder(), 400 + Math.random() * 1200);
+}
+
+function updateWeather(dt) {
+  weather.timer -= dt;
+  if (weather.timer <= 0) {
+    const nx = WEATHER_DEF[weather.state].next;
+    let r = Math.random(), pick = 'clear';
+    for (const [k, p] of Object.entries(nx)) { r -= p; if (r <= 0) { pick = k; break; } }
+    setWeather(pick);
+  }
+  const step = (cur, tgt, rate) => cur + Math.max(-rate * dt, Math.min(rate * dt, tgt - cur));
+  weather.rain = step(weather.rain, weather.targetRain, 0.12);
+  weather.cover = step(weather.cover, weather.targetCover, 0.1);
+  weatherAudio.setRain(started ? weather.rain : 0);
+  if (weather.state === 'storm' && weather.rain > 0.7) {
+    weather.boltT -= dt;
+    if (weather.boltT <= 0) {
+      weather.boltT = 3 + Math.random() * 8;
+      lightning();
+    }
+  }
+}
+
+// ---- 雨(线段粒子,环绕玩家的体积内循环)----
+const RAIN_N = 1100;
+const rainGeo = new THREE.BufferGeometry();
+const rainPos = new Float32Array(RAIN_N * 6);
+rainGeo.setAttribute('position', new THREE.BufferAttribute(rainPos, 3));
+const rainMat = new THREE.LineBasicMaterial({ color: 0x9fb8d0, transparent: true, opacity: 0 });
+const rainLines = new THREE.LineSegments(rainGeo, rainMat);
+rainLines.frustumCulled = false;
+rainLines.visible = false;
+scene.add(rainLines);
+const drops = new Float32Array(RAIN_N * 3);
+for (let i = 0; i < RAIN_N; i++) {
+  drops[i * 3] = (Math.random() - 0.5) * 56;
+  drops[i * 3 + 1] = Math.random() * 24;
+  drops[i * 3 + 2] = (Math.random() - 0.5) * 56;
+}
+
+function updateRain(dt) {
+  rainMat.opacity = weather.rain * 0.38;
+  rainLines.visible = weather.rain > 0.03;
+  if (!rainLines.visible) return;
+  const cx = player.pos.x, cz = player.pos.z;
+  const wind = 4.5;
+  for (let i = 0; i < RAIN_N; i++) {
+    let x = drops[i * 3], y = drops[i * 3 + 1], z = drops[i * 3 + 2];
+    y -= 30 * dt;
+    x += wind * dt;
+    if (y < 0) {
+      y = 20 + Math.random() * 6;
+      x = cx + (Math.random() - 0.5) * 56;
+      z = cz + (Math.random() - 0.5) * 56;
+    }
+    if (x < cx - 28) x += 56; else if (x > cx + 28) x -= 56;
+    if (z < cz - 28) z += 56; else if (z > cz + 28) z -= 56;
+    drops[i * 3] = x; drops[i * 3 + 1] = y; drops[i * 3 + 2] = z;
+    rainPos[i * 6] = x; rainPos[i * 6 + 1] = y; rainPos[i * 6 + 2] = z;
+    rainPos[i * 6 + 3] = x + 0.08; rainPos[i * 6 + 4] = y + 0.55; rainPos[i * 6 + 5] = z;
+  }
+  rainGeo.attributes.position.needsUpdate = true;
+}
+
+// ---- 尘土粒子(马蹄扬尘/疾跑/落地)----
+const DUST_MAX = 400;
+const dustGeo = new THREE.BufferGeometry();
+const dustPos = new Float32Array(DUST_MAX * 3).fill(-9999);
+dustGeo.setAttribute('position', new THREE.BufferAttribute(dustPos, 3));
+const dustMat = new THREE.PointsMaterial({
+  color: 0xc9b08a, size: 0.38, transparent: true, opacity: 0.5, depthWrite: false });
+const dustPts = new THREE.Points(dustGeo, dustMat);
+dustPts.frustumCulled = false;
+scene.add(dustPts);
+const dust = [];
+const dustFree = [...Array(DUST_MAX).keys()];
+
+function spawnDust(x, y, z, n = 3, spread = 0.5, up = 1.4) {
+  if (weather.rain > 0.5) return; // 雨天地面湿润无尘
+  for (let k = 0; k < n; k++) {
+    const i = dustFree.pop();
+    if (i === undefined) return;
+    dustPos[i * 3] = x + (Math.random() - 0.5) * spread;
+    dustPos[i * 3 + 1] = y + Math.random() * 0.2;
+    dustPos[i * 3 + 2] = z + (Math.random() - 0.5) * spread;
+    dust.push({
+      i,
+      vx: (Math.random() - 0.5) * 1.3, vy: up * (0.5 + Math.random() * 0.7), vz: (Math.random() - 0.5) * 1.3,
+      life: 0, max: 0.45 + Math.random() * 0.4,
+    });
+  }
+}
+
+function updateDust(dt) {
+  if (!dust.length) return;
+  for (let k = dust.length - 1; k >= 0; k--) {
+    const p = dust[k];
+    p.life += dt;
+    if (p.life > p.max) {
+      dustPos[p.i * 3 + 1] = -9999;
+      dustFree.push(p.i);
+      dust.splice(k, 1);
+      continue;
+    }
+    p.vy -= 2.0 * dt;
+    dustPos[p.i * 3] += p.vx * dt;
+    dustPos[p.i * 3 + 1] = Math.max(0.04, dustPos[p.i * 3 + 1] + p.vy * dt);
+    dustPos[p.i * 3 + 2] += p.vz * dt;
+  }
+  dustGeo.attributes.position.needsUpdate = true;
+}
+
 // ================= 通缉系统 =================
 let wanted = 0, heat = 0, evadeT = 0;
 function crime(n, msg) {
@@ -610,6 +757,12 @@ function gameOver() {
   player.hp = 0;
   sfx.gameover();
   gameoverText.textContent = wanted > 0 ? '你被王国卫兵抓住了!' : '你倒下了……';
+  if (titleArtURL) {
+    gameoverEl.style.backgroundImage =
+      `linear-gradient(rgba(70,0,0,0.72), rgba(30,0,0,0.85)), url(${titleArtURL})`;
+    gameoverEl.style.backgroundSize = 'cover';
+    gameoverEl.style.backgroundPosition = 'center';
+  }
   gameoverEl.style.display = 'flex';
   setTimeout(() => {
     player.pos.copy(world.playerSpawn);
@@ -894,9 +1047,25 @@ function updatePlayer(dt) {
       sfx.jump();
       keys['Space'] = false;
     }
+    const horseAirborne = !player.onGround;
     player.vy -= 22 * dt;
     player.pos.y += player.vy * dt;
-    if (player.pos.y <= 0) { player.pos.y = 0; player.vy = 0; player.onGround = true; }
+    if (player.pos.y <= 0) {
+      player.pos.y = 0;
+      player.vy = 0;
+      player.onGround = true;
+      if (horseAirborne) spawnDust(h.pos.x, 0.1, h.pos.z, 7, 1.4, 1.8);
+    }
+    // 马蹄声与扬尘(节奏随速度)
+    if (moving && player.onGround) {
+      h.stepT = (h.stepT || 0) - dt;
+      if (h.stepT <= 0) {
+        h.stepT = (keys['ShiftLeft'] || keys['ShiftRight']) ? 0.17 : 0.32;
+        sfx.hoof();
+        spawnDust(h.pos.x - Math.sin(h.yaw) * 1.1, 0.08, h.pos.z - Math.cos(h.yaw) * 1.1,
+          (keys['ShiftLeft'] || keys['ShiftRight']) ? 3 : 1, 0.8, 1.3);
+      }
+    }
     resolveCollisions(h.pos, 0.85, colliders);
     h.pos.y = player.pos.y;
     h.group.position.copy(h.pos);
@@ -927,6 +1096,14 @@ function updatePlayer(dt) {
     player.walkT += dt * speed * 2.2;
   }
   moveState = moving ? (speed > 5 ? 2 : 1) : 0;
+  // 疾跑扬尘
+  if (moving && player.onGround && speed > 5) {
+    player.stepT = (player.stepT || 0) - dt;
+    if (player.stepT <= 0) {
+      player.stepT = 0.22;
+      spawnDust(player.pos.x, 0.05, player.pos.z, 1, 0.35, 1.0);
+    }
+  }
   // 转向侧倾
   let dyaw = (player.yaw - prevYaw) % (Math.PI * 2);
   if (dyaw > Math.PI) dyaw -= Math.PI * 2;
@@ -951,6 +1128,7 @@ function updatePlayer(dt) {
     player.vy = 0;
     if (wasAirborne && fallSpeed < -3) checkStomp();
     if (wasAirborne && fallSpeed < -10) camShake = 0.22;
+    if (wasAirborne && fallSpeed < -6) spawnDust(player.pos.x, 0.06, player.pos.z, 6, 0.9, 1.5);
     player.onGround = true;
     player.jumps = 0;
   }
@@ -995,6 +1173,7 @@ function checkStomp() {
         player.onGround = false;
         player.jumps = 1;
         sfx.stomp();
+        spawnDust(e.pos.x, 0.3, e.pos.z, 6, 0.8, 1.6);
         toast(isGuard ? '踩晕了卫兵!' : '踩晕了敌人!', 1.5);
         if (isGuard) crime(1);
         return true;
@@ -1101,18 +1280,20 @@ function updateDayNight(dt) {
   const sx = Math.cos(ang) * 250, sy = elev * 220, sz = 80;
   sun.position.set(player.pos.x + sx * 0.4, Math.max(20, sy), player.pos.z + sz * 0.4);
   sun.target.position.set(player.pos.x, 0, player.pos.z);
-  sun.intensity = 3.2 * day;
+  const rainDim = 1 - 0.72 * weather.rain;
+  sun.intensity = 3.2 * day * rainDim;
   sun.color.copy(C_SUN_DUSK).lerp(C_SUN_DAY, Math.min(1, Math.max(0, elev * 2.2)));
   moon.position.set(-sx, Math.max(30, -sy), -sz);
   moon.intensity = 0.3 * night;
-  hemi.intensity = 0.12 + 0.38 * day;
-  envIntensity = 0.05 + 0.3 * day;
+  hemi.intensity = (0.12 + 0.38 * day) * (1 - 0.3 * weather.rain);
+  envIntensity = (0.05 + 0.3 * day) * rainDim;
 
   // 天空穹顶
   const sunDirV = new THREE.Vector3(sx, sy, sz).normalize();
   skyUniforms.sunDir.value.copy(sunDirV);
   skyUniforms.sunColor.value.copy(sun.color);
-  skyUniforms.sunGlow.value = 0.4 + day;
+  skyUniforms.sunGlow.value = (0.4 + day) * (1 - 0.75 * weather.cover);
+  skyUniforms.cover.value = weather.cover;
   let top, hor;
   if (elev > 0.25) { top = C_DAY_TOP; hor = C_DAY_HOR; }
   else if (elev > -0.08) {
@@ -1124,11 +1305,14 @@ function updateDayNight(dt) {
     top = C_NIGHT_TOP.clone().lerp(C_DUSK_TOP, t);
     hor = C_NIGHT_HOR.clone().lerp(C_DUSK_HOR, t);
   }
-  skyUniforms.topColor.value.copy(top);
-  skyUniforms.horizonColor.value.copy(hor);
+  const rainSkyDim = 1 - 0.35 * weather.rain;
+  skyUniforms.topColor.value.copy(top).multiplyScalar(rainSkyDim);
+  skyUniforms.horizonColor.value.copy(hor).multiplyScalar(rainSkyDim);
   skyUniforms.time.value = performance.now() * 0.001;
   skyUniforms.dayMix.value = day;
-  scene.fog.color.copy(hor);
+  scene.fog.color.copy(hor).multiplyScalar(rainSkyDim);
+  scene.fog.near = 130 - 80 * weather.rain;
+  scene.fog.far = 430 - 230 * weather.rain;
   sky.position.copy(camera.position);
 
   moonBall.position.set(camera.position.x - sx * 1.6, Math.max(-40, -sy * 1.6), camera.position.z - sz * 1.6);
@@ -1159,7 +1343,11 @@ function updateEnvIntensity() {
       if (o.material && o.material.isMeshStandardMaterial) envMats.add(o.material);
     });
   }
-  for (const m of envMats) m.envMapIntensity = envIntensity;
+  for (const m of envMats) {
+    m.envMapIntensity = envIntensity;
+    // 雨天湿润:地面/建筑材质变光滑反光
+    if (m.userData.wettable) m.roughness = m.userData.baseRough * (1 - 0.55 * weather.rain);
+  }
 }
 
 // ================= 相机 =================
@@ -1210,9 +1398,11 @@ function updateHUD() {
     missionText = `📜 ${m.title}:${m.desc}${prog}`;
   }
   const timer = quest.active && missions[quest.idx].type === 'deliver' ? `⏱ ${Math.ceil(quest.timer)}s` : '';
-  const key = hearts + '|' + player.coins + '|' + stars + '|' + missionText + '|' + timer + '|' + promptText;
+  const wIcon = { clear: '☀️', cloudy: '⛅', rain: '🌧️', storm: '⛈️' }[weather.state];
+  const key = hearts + '|' + player.coins + '|' + stars + '|' + missionText + '|' + timer + '|' + promptText + '|' + wIcon;
   if (key === hudCache) return;
   hudCache = key;
+  document.getElementById('weather').textContent = wIcon;
   heartsEl.textContent = hearts;
   coinsEl.textContent = `🪙 ${player.coins}`;
   wantedEl.textContent = stars;
@@ -1331,7 +1521,7 @@ function drawMinimap() {
 // ================= 主循环 =================
 // 调试/自动化测试句柄
 window.__gtm = {
-  player, quest, horses, guards, bandits, villagers, crime,
+  player, quest, horses, guards, bandits, villagers, crime, weather, setWeather,
   getWanted: () => wanted,
   setTime: (t) => { dayTime = t; },
 };
@@ -1356,6 +1546,9 @@ function loop(now) {
   updatePickups(dt);
   updateQuest(dt);
   updateWanted(dt);
+  updateWeather(dt);
+  updateRain(dt);
+  updateDust(dt);
   updateDayNight(dt);
   updateCamera(dt);
 
