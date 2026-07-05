@@ -1,0 +1,30 @@
+{
+  "name": "grand-theft-horse",
+  "productName": "侠盗猎马人:中世纪王国",
+  "version": "1.0.0",
+  "description": "GTA 式开放世界 × 中世纪 × 任天堂玩法的浏览器/桌面 3D 游戏",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder",
+    "web": "python3 -m http.server 8000"
+  },
+  "devDependencies": {
+    "electron": "^28.2.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.eldoria.grandthefthorse",
+    "files": [
+      "index.html",
+      "src/**",
+      "lib/**",
+      "assets/**",
+      "electron/**",
+      "docs/**"
+    ],
+    "win": { "target": "portable" },
+    "mac": { "target": "dmg" },
+    "linux": { "target": "AppImage" }
+  }
+}

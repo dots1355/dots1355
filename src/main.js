@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import { buildWorld } from './world.js';
 import { makeHumanoid, makeHorse, makeWolf, resolveCollisions, angleLerp, dist2, lambert } from './entities.js';
-import { INTRO, REGIONS, VILLAGER_LINES, GUARD_LINES, NPCS, MISSIONS, CREST_HINT } from './story.js';
+import { INTRO, REGIONS, GUARD_LINES, NPCS, MISSIONS, VILLAGERS, DIALOGS, TIME_GREETINGS } from './story.js';
 import { initAudio, sfx, startMusic, toggleMusic, weatherAudio } from './audio.js';
 import { preloadAIAssets, generateRemoteAITextures } from './textures.js';
 import { ShaderPass } from '../lib/jsm/postprocessing/ShaderPass.js';
@@ -309,18 +309,18 @@ addGuard(-6, -28, [[-6, -28], [6, -28]]);
 addGuard(6, -30, [[6, -30], [-6, -30], [0, -20]]);
 addGuard(-40, 20, [[-40, 20], [-20, 20], [-20, -20], [-40, -20]]);
 
+// 每个村民都是有名有姓、有家有业的人(见 story.js)
 const villagerColors = [0x7a5c8f, 0x4a7a9f, 0xa06a3a, 0x5f7a3a, 0x9f4a6a, 0x6a6a7a];
-function addVillager(x, z) {
-  const v = { ...makeHumanoid({ shirt: villagerColors[villagers.length % villagerColors.length], pants: 0x50412e }),
-    pos: new THREE.Vector3(x, 0, z), yaw: Math.random() * 6.28, home: new THREE.Vector3(x, 0, z),
-    state: 'idle', timer: Math.random() * 3, walkT: 0, fleeT: 0, downT: 0 };
+VILLAGERS.forEach((id, i) => {
+  const v = { ...makeHumanoid({ shirt: villagerColors[i % villagerColors.length], pants: 0x50412e }),
+    id, pos: new THREE.Vector3(id.home[0], 0, id.home[1]), yaw: Math.random() * 6.28,
+    home: new THREE.Vector3(id.home[0], 0, id.home[1]),
+    state: 'idle', timer: Math.random() * 3, walkT: 0, fleeT: 0, downT: 0,
+    sleeping: false, lineIdx: Math.floor(Math.random() * id.lines.length) };
   v.group.position.copy(v.pos);
   scene.add(v.group);
   villagers.push(v);
-}
-[[-20, 20], [22, 20], [8, 8], [-8, 0], [30, 5], [-30, 10], [15, 35], [-15, 35], [40, -20], [-35, -25], [0, 30], [48, 30],
- [10, 70], [16, 74], [-104, 56], [-92, 58], [26, 88], [138, 24]]
-  .forEach(([x, z]) => addVillager(x, z));
+});
 
 function addBandit(x, z, opts = {}) {
   const b = { ...makeHumanoid({ shirt: opts.boss ? 0x5a1020 : 0x3b3b46, pants: 0x26262e, hood: true, sword: true }),
@@ -431,11 +431,84 @@ const npcStyles = {
 const namedNPCs = [];
 for (const [key, [nx, nz, nyaw]] of Object.entries(world.npcSpots)) {
   const n = { ...makeHumanoid(npcStyles[key]), key, def: NPCS[key],
-    pos: new THREE.Vector3(nx, 0, nz), yaw: nyaw, lineIdx: 0, rewarded: false };
+    pos: new THREE.Vector3(nx, 0, nz), yaw: nyaw, lineIdx: 0, rewarded: false, walkT: 0 };
   n.group.position.copy(n.pos);
   n.group.rotation.y = nyaw;
   scene.add(n.group);
   namedNPCs.push(n);
+}
+// 管家埃隆(委托人)也是有日程的活人
+const steward = { group: questGiver.group, parts: questGiver.parts, key: 'steward',
+  def: NPCS.steward, pos: world.questGiverPos.clone(), yaw: Math.PI, lineIdx: 0, walkT: 0 };
+namedNPCs.push(steward);
+
+// 具名 NPC 的一天:白天守铺 → 黄昏去旅店 → 夜里回家
+const NPC_SCHEDULE = {
+  steward:    { dawn: [4, 10], day: [4, 10], dusk: [4, 10], night: [0, -29.5] },
+  blacksmith: { dawn: [24.8, -8], day: [24.8, -8], dusk: [10, 73.5], night: [27, -9] },
+  trader:     { dawn: [48, 10], day: [48, 10], dusk: [11.5, 73.5], night: [43, 20] },
+  fisher:     { dawn: [-100, 72], day: [-100, 72], dusk: [-100, 58], night: [-108, 60] },
+};
+
+// ================= 对话面板(RDR2 式多页对话) =================
+const dialogEl = document.getElementById('dialog');
+const dialogNameEl = document.getElementById('dialog-name');
+const dialogTextEl = document.getElementById('dialog-text');
+const dialog = { open: false, pages: [], idx: 0, onDone: null };
+
+function renderDialogPage() {
+  const page = dialog.pages[dialog.idx];
+  const ci = page.indexOf(':');
+  if (ci > 0 && ci < 8) {
+    dialogNameEl.textContent = page.slice(0, ci);
+    dialogTextEl.textContent = page.slice(ci + 1);
+  } else {
+    dialogNameEl.textContent = '';
+    dialogTextEl.textContent = page;
+  }
+  document.getElementById('dialog-hint').textContent =
+    dialog.idx < dialog.pages.length - 1 ? `▼ 按 E 继续 (${dialog.idx + 1}/${dialog.pages.length})` : '▼ 按 E 结束对话';
+}
+
+function openDialog(pages, onDone = null) {
+  if (!pages.length) return;
+  dialog.open = true;
+  dialog.pages = pages;
+  dialog.idx = 0;
+  dialog.onDone = onDone;
+  dialogEl.style.display = 'block';
+  renderDialogPage();
+}
+
+function advanceDialog() {
+  dialog.idx++;
+  if (dialog.idx >= dialog.pages.length) {
+    dialog.open = false;
+    dialogEl.style.display = 'none';
+    const f = dialog.onDone;
+    dialog.onDone = null;
+    if (f) f();
+  } else {
+    renderDialogPage();
+  }
+}
+
+// 具名 NPC 对话:优先播当前阶段未读的故事章节,读完只剩闲聊
+function npcTalk(n, onDone = null) {
+  const d = DIALOGS[n.key];
+  if (!d) return;
+  const arcIdx = d.arcs.reduce((best, a, i) => (quest.idx >= a.min ? i : best), -1);
+  n.readArcs = n.readArcs || new Set();
+  if (arcIdx >= 0 && !n.readArcs.has(arcIdx)) {
+    n.readArcs.add(arcIdx);
+    const greet = TIME_GREETINGS[dayPhase()];
+    openDialog([
+      `${n.def.name}:${greet[Math.floor(Math.random() * greet.length)]}`,
+      ...d.arcs[arcIdx].pages,
+    ], onDone);
+  } else {
+    openDialog([d.small[n.lineIdx++ % d.small.length]], onDone);
+  }
 }
 
 // ================= 对话气泡 =================
@@ -459,15 +532,15 @@ function updateBubble(dt) {
   // 村民闲聊触发
 }
 function villagerChatter() {
-  if (bubble.timer > 0) return;
+  if (bubble.timer > 0 || dialog.open) return;
   const now = performance.now();
   for (const v of villagers) {
-    if (v.downT > 0 || v.fleeT > 0) continue;
+    if (v.downT > 0 || v.fleeT > 0 || v.sleeping) continue;
     if (dist2(player.pos.x, player.pos.z, v.pos.x, v.pos.z) > 12) continue;
     const last = bubble.cooldowns.get(v) || 0;
     if (now - last < 25000) continue;
     bubble.cooldowns.set(v, now);
-    showBubble(v, null, VILLAGER_LINES[Math.floor(Math.random() * VILLAGER_LINES.length)]);
+    showBubble(v, v.id.name, v.id.lines[v.lineIdx++ % v.id.lines.length]);
     return;
   }
   for (const g of guards) {
@@ -634,13 +707,17 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'Space') e.preventDefault();
   if (e.repeat) return; // 忽略系统按键自动重复,防止长按空格吞掉二段跳/长按 E 反复上下马
   keys[e.code] = true;
-  if (e.code === 'KeyE') tryInteract();
-  if (e.code === 'KeyF') tryAttack();
+  if (e.code === 'KeyE') {
+    if (dialog.open) advanceDialog();
+    else tryInteract();
+  }
+  if (e.code === 'KeyF' && !dialog.open) tryAttack();
   if (e.code === 'KeyM') toast(toggleMusic() ? '♪ 音乐开' : '♪ 音乐关', 1.5);
 });
 window.addEventListener('keyup', (e) => (keys[e.code] = false));
 renderer.domElement.addEventListener('mousedown', (e) => {
   if (!started) return;
+  if (dialog.open) { advanceDialog(); return; }
   if (!locked) renderer.domElement.requestPointerLock();
   else if (e.button === 0) tryAttack();
 });
@@ -843,26 +920,44 @@ function tryInteract() {
     resolveCollisions(player.pos, 0.45, colliders);
     return;
   }
-  // 委托人
-  if (dist2(player.pos.x, player.pos.z, world.questGiverPos.x, world.questGiverPos.z) < 8) {
-    talkQuestGiver();
-    return;
-  }
-  // 具名 NPC(商店/领主)
+  // 具名 NPC(委托/商店/领主/故事对话)
   for (const n of namedNPCs) {
     if (dist2(player.pos.x, player.pos.z, n.pos.x, n.pos.z) > 7) continue;
+    // 管家埃隆:委托优先
+    if (n.key === 'steward' && quest.idx < missions.length) {
+      talkQuestGiver();
+      return;
+    }
+    // 未读的故事章节优先
+    const d = DIALOGS[n.key];
+    if (d) {
+      const arcIdx = d.arcs.reduce((best, a, i) => (quest.idx >= a.min ? i : best), -1);
+      n.readArcs = n.readArcs || new Set();
+      if (arcIdx >= 0 && !n.readArcs.has(arcIdx)) {
+        // 领主终章附带赏金
+        const grantKing = n.key === 'king' && quest.idx >= missions.length && !n.rewarded;
+        npcTalk(n, grantKing ? () => {
+          n.rewarded = true;
+          player.coins += 100;
+          sfx.fanfare();
+          toast('💰 领主赏赐 100 金币!', 4);
+          saveGame();
+        } : null);
+        return;
+      }
+    }
+    // 商店行为
     if (n.key === 'blacksmith' && player.swordLv === 1) {
       if (player.coins >= 50) {
         player.coins -= 50;
         player.swordLv = 2;
         sfx.chest();
-        // 陨铁金刃
         const blade = player.parts.sword?.children[0];
         if (blade) blade.material = lambert(0xe8c34a, { metalness: 0.9, roughness: 0.2 });
-        showBubble(n, n.def.name, '好剑!淬了陨铁,伤害翻倍。用它守护王国吧!', 4);
+        openDialog(['格罗姆:(火星四溅)……成了。摸摸这剑刃,陨铁的凉,能吃进骨头里。去吧,别让它闲着。']);
         saveGame();
       } else {
-        showBubble(n, n.def.name, '升级佩剑要 50 金币,金币不够可不行。', 3);
+        openDialog(['格罗姆:淬陨铁要 50 金币。铁不等人,钱也一样。']);
       }
       return;
     }
@@ -874,38 +969,36 @@ function tryInteract() {
         rh.fast = true;
         rh.home.set(world.stablePos.x - 3, 0, world.stablePos.z - 3);
         sfx.fanfare();
-        showBubble(n, n.def.name, '皇家骏马「疾风」是你的了!它比普通马快两成!', 4);
+        openDialog(['瑟尔玛:「疾风」交给你了。记住,喂它苹果时手要摊平——好了去吧,它等你等得直刨蹄子。']);
         saveGame();
       } else {
-        showBubble(n, n.def.name, '皇家骏马 80 金币,童叟无欺。', 3);
+        openDialog(['瑟尔玛:80 金币,皇家骏马。分期?马又不能分期长大。']);
       }
       return;
     }
-    if (n.key === 'innkeep') {
+    if (n.key === 'innkeep' && player.hp < player.maxHp) {
       if (player.coins >= 10) {
         player.coins -= 10;
         player.hp = player.maxHp;
         dayTime = 0.28;
         sfx.heart();
-        showBubble(n, n.def.name, '睡得好吗?已是清晨,新的一天加油!', 3.5);
+        openDialog(['罗莎:(掀开门帘)天亮了,汤在灶上。伤都歇利索了吧?路上小心。']);
       } else {
-        showBubble(n, n.def.name, '住店 10 金币……看你风尘仆仆,先喝口水吧。', 3);
+        openDialog(['罗莎:住店 10 金币……先坐着喝口水吧,看你风尘仆仆的。']);
       }
       return;
     }
-    if (n.key === 'king') {
-      if (quest.idx >= missions.length && !n.rewarded) {
-        n.rewarded = true;
-        player.coins += 100;
-        sfx.fanfare();
-        showBubble(n, n.def.name, n.def.doneLine, 5);
-        saveGame();
-      } else {
-        showBubble(n, n.def.name, n.def.lines[n.lineIdx++ % n.def.lines.length], 4);
-      }
-      return;
-    }
-    showBubble(n, n.def.name, n.def.lines[n.lineIdx++ % n.def.lines.length], 3.5);
+    // 闲聊
+    npcTalk(n);
+    return;
+  }
+  // 村民对话
+  for (const v of villagers) {
+    if (v.downT > 0 || v.sleeping) continue;
+    if (dist2(player.pos.x, player.pos.z, v.pos.x, v.pos.z) > 5.5) continue;
+    const l1 = v.id.lines[v.lineIdx++ % v.id.lines.length];
+    const l2 = v.id.lines[v.lineIdx++ % v.id.lines.length];
+    openDialog([`${v.id.name}:${l1}`, `${v.id.name}:${l2}`]);
     return;
   }
   // 宝箱
@@ -964,7 +1057,7 @@ function talkQuestGiver() {
     quest.progress = 0;
     quest.timer = m.time || 0;
     sfx.accept();
-    showBubble({ pos: world.questGiverPos }, NPCS.steward.name, m.brief, 4.5);
+    openDialog([m.brief]);
     toast(`接受任务【${m.title}】:${m.desc}`, 4.5);
     if (m.type === 'deliver') {
       const parcel = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.35, 0.3), lambert(0xb4813f));
@@ -1269,13 +1362,38 @@ function updateBandits(dt) {
   }
 }
 
+// 一天的时辰(驱动 NPC 日程)
+function dayPhase() {
+  if (dayTime >= 0.25 && dayTime < 0.33) return 'dawn';
+  if (dayTime >= 0.33 && dayTime < 0.62) return 'day';
+  if (dayTime >= 0.62 && dayTime < 0.72) return 'dusk';
+  return 'night';
+}
+
+// 村民日程:清晨在家门口 → 白天上工 → 黄昏去旅店/广场 → 夜里回家睡觉
 function updateVillagers(dt) {
+  const phase = dayPhase();
   for (const v of villagers) {
     if (v.downT > 0) {
       v.downT -= dt;
       if (v.downT <= 0) v.group.rotation.x = 0;
       continue;
     }
+    // 夜里睡觉:走到家,消失在屋里
+    if (phase === 'night' && v.fleeT <= 0) {
+      if (v.sleeping) continue;
+      if (moveEntity(v, v.home.x, v.home.z, 2.2, dt)) {
+        v.sleeping = true;
+        v.group.visible = false;
+        continue;
+      }
+      v.group.position.copy(v.pos);
+      v.group.rotation.y = v.yaw;
+      animateLimbs(v.parts, v.walkT, true, v.group, 0.5);
+      continue;
+    }
+    if (v.sleeping) { v.sleeping = false; v.group.visible = true; }
+
     const pd = Math.hypot(player.pos.x - v.pos.x, player.pos.z - v.pos.z);
     let moving = false;
     if (wanted > 0 && pd < 12) v.fleeT = 2;
@@ -1286,13 +1404,23 @@ function updateVillagers(dt) {
       moveEntity(v, v.pos.x + (fx / d) * 5, v.pos.z + (fz / d) * 5, 4.2, dt);
       moving = true;
     } else {
-      v.timer -= dt;
-      if (v.timer <= 0) {
-        v.timer = 2 + Math.random() * 4;
-        const a = Math.random() * 6.28;
-        v.target = [v.home.x + Math.cos(a) * 7, v.home.z + Math.sin(a) * 7];
+      // 当前时辰该去的地方
+      const spot = phase === 'day' ? v.id.work : phase === 'dusk' ? v.id.leisure : v.id.home;
+      const sd = Math.hypot(v.pos.x - spot[0], v.pos.z - spot[1]);
+      if (sd > 6) {
+        // 赶路
+        moveEntity(v, spot[0], spot[1], 2.4, dt);
+        moving = true;
+      } else {
+        // 在目的地附近晃悠、干活
+        v.timer -= dt;
+        if (v.timer <= 0) {
+          v.timer = 2 + Math.random() * 4;
+          const a = Math.random() * 6.28;
+          v.target = [spot[0] + Math.cos(a) * 3.5, spot[1] + Math.sin(a) * 3.5];
+        }
+        if (v.target && !moveEntity(v, v.target[0], v.target[1], 1.5, dt)) moving = true;
       }
-      if (v.target && !moveEntity(v, v.target[0], v.target[1], 1.6, dt)) moving = true;
     }
     v.group.position.copy(v.pos);
     v.group.rotation.y = v.yaw;
@@ -1593,6 +1721,8 @@ function updatePickups(dt) {
 // ================= 任务更新 =================
 function updateQuest(dt) {
   exGroup.visible = quest.idx < missions.length && !quest.active;
+  exGroup.position.x = steward.pos.x;
+  exGroup.position.z = steward.pos.z;
   exGroup.position.y = 2.1 + Math.sin(performance.now() * 0.003) * 0.15;
   exGroup.rotation.y += dt * 2;
 
@@ -1611,8 +1741,8 @@ function updateQuest(dt) {
     }
   } else if (m.type === 'coins') {
     beacon.visible = quest.progress >= m.goal;
-    beacon.position.x = world.questGiverPos.x;
-    beacon.position.z = world.questGiverPos.z;
+    beacon.position.x = steward.pos.x;
+    beacon.position.z = steward.pos.z;
   } else if (m.type === 'bandits') {
     beacon.visible = quest.progress < m.goal;
     beacon.position.x = world.banditCamp.x;
@@ -1870,10 +2000,11 @@ function updateHUD() {
   const timerType = quest.active && (missions[quest.idx].type === 'deliver' || missions[quest.idx].type === 'race');
   const timer = timerType ? `⏱ ${Math.ceil(quest.timer)}s` : '';
   const wIcon = { clear: '☀️', cloudy: '⛅', rain: '🌧️', storm: '⛈️' }[weather.state];
-  const key = hearts + '|' + player.coins + '|' + stars + '|' + missionText + '|' + timer + '|' + promptText + '|' + wIcon;
+  const phaseIcon = { dawn: '🌅', day: '🌞', dusk: '🌇', night: '🌙' }[dayPhase()];
+  const key = hearts + '|' + player.coins + '|' + stars + '|' + missionText + '|' + timer + '|' + promptText + '|' + wIcon + phaseIcon;
   if (key === hudCache) return;
   hudCache = key;
-  document.getElementById('weather').textContent = wIcon;
+  document.getElementById('weather').textContent = `${phaseIcon} ${wIcon}`;
   heartsEl.textContent = hearts;
   coinsEl.textContent = `🪙 ${player.coins}`;
   wantedEl.textContent = stars;
@@ -1889,20 +2020,26 @@ function computePrompt() {
   promptText = '';
   if (!started || player.dead) return;
   if (player.mounted) { promptText = '按 E 下马'; return; }
-  if (dist2(player.pos.x, player.pos.z, world.questGiverPos.x, world.questGiverPos.z) < 8) {
-    promptText = '按 E 与管家埃隆交谈'; return;
-  }
+  if (dialog.open) { promptText = ''; return; }
   for (const n of namedNPCs) {
     if (dist2(player.pos.x, player.pos.z, n.pos.x, n.pos.z) > 7) continue;
-    if (n.key === 'blacksmith' && player.swordLv === 1) { promptText = '按 E 升级佩剑(50 金币)'; return; }
-    if (n.key === 'trader' && !player.royalHorse) { promptText = '按 E 购买皇家骏马(80 金币)'; return; }
-    if (n.key === 'innkeep') { promptText = '按 E 住店休息,回满生命(10 金币)'; return; }
+    if (n.key === 'steward' && quest.idx < missions.length) { promptText = '按 E 与管家埃隆交谈(委托)'; return; }
+    if (n.key === 'blacksmith' && player.swordLv === 1) { promptText = '按 E 找铁匠格罗姆(升级佩剑 50 金币)'; return; }
+    if (n.key === 'trader' && !player.royalHorse) { promptText = '按 E 找马贩瑟尔玛(皇家骏马 80 金币)'; return; }
+    if (n.key === 'innkeep' && player.hp < player.maxHp) { promptText = '按 E 住店休息,回满生命(10 金币)'; return; }
     if (n.key === 'king') {
       promptText = quest.idx >= missions.length && !n.rewarded ? '按 E 领取领主的重赏' : '按 E 谒见领主';
       return;
     }
     promptText = `按 E 与${n.def.name}交谈`;
     return;
+  }
+  for (const v of villagers) {
+    if (v.downT > 0 || v.sleeping) continue;
+    if (dist2(player.pos.x, player.pos.z, v.pos.x, v.pos.z) <= 5.5) {
+      promptText = `按 E 与${v.id.name}交谈`;
+      return;
+    }
   }
   for (const c of world.chests) {
     if (!c.opened && dist2(player.pos.x, player.pos.z, c.x, c.z) < 5) { promptText = '按 E 打开宝箱'; return; }
@@ -2004,11 +2141,12 @@ function drawMinimap() {
 // ================= 主循环 =================
 // 调试/自动化测试句柄
 window.__gtm = {
-  player, quest, questRT, horses, guards, bandits, villagers, wolves, namedNPCs,
-  crime, weather, setWeather, talkQuestGiver, completeMission, missions,
+  player, quest, questRT, horses, guards, bandits, villagers, wolves, namedNPCs, steward,
+  crime, weather, setWeather, talkQuestGiver, completeMission, missions, advanceDialog,
   getWanted: () => wanted,
   setTime: (t) => { dayTime = t; },
   getCrests: () => crestsFound.length,
+  dialogOpen: () => dialog.open,
 };
 
 let last = performance.now();
@@ -2037,12 +2175,24 @@ function loop(now) {
   updateRegion(dt);
   updateBubble(dt);
   villagerChatter();
-  // 具名 NPC:待机呼吸,玩家靠近时转身面对
-  for (const n of namedNPCs) {
-    animateLimbs(n.parts, 0, false);
-    if (dist2(player.pos.x, player.pos.z, n.pos.x, n.pos.z) < 30) {
-      n.group.rotation.y = angleLerp(n.group.rotation.y,
-        Math.atan2(player.pos.x - n.pos.x, player.pos.z - n.pos.z), dt * 4);
+  // 具名 NPC:按日程走位;到位后待机呼吸,玩家靠近时转身面对
+  {
+    const phase = dayPhase();
+    for (const n of namedNPCs) {
+      const sched = NPC_SCHEDULE[n.key];
+      const spot = sched ? sched[phase] : null;
+      if (spot && Math.hypot(n.pos.x - spot[0], n.pos.z - spot[1]) > 1.2) {
+        moveEntity(n, spot[0], spot[1], 2.2, dt);
+        n.group.position.copy(n.pos);
+        n.group.rotation.y = n.yaw;
+        animateLimbs(n.parts, n.walkT, true, n.group, 0.45);
+      } else {
+        animateLimbs(n.parts, 0, false);
+        if (dist2(player.pos.x, player.pos.z, n.pos.x, n.pos.z) < 30) {
+          n.group.rotation.y = angleLerp(n.group.rotation.y,
+            Math.atan2(player.pos.x - n.pos.x, player.pos.z - n.pos.z), dt * 4);
+        }
+      }
     }
   }
   updateRain(dt);

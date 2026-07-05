@@ -38,6 +38,13 @@
     border: 2px solid #b08d3e; border-radius: 10px; padding: 8px 12px; font-size: 14px;
     line-height: 1.5; pointer-events: none; box-shadow: 0 4px 12px rgba(0,0,0,0.4); }
   #bubble b { color: #7a5210; }
+  #dialog { position: absolute; display: none; left: 50%; bottom: 40px; transform: translateX(-50%);
+    width: min(760px, 86vw); background: rgba(16,11,6,0.92); border: 2px solid #b08d3e;
+    border-radius: 12px; padding: 16px 24px 12px; box-shadow: 0 8px 30px rgba(0,0,0,0.6); }
+  #dialog-name { font-size: 17px; font-weight: bold; color: #ffd83d; margin-bottom: 6px; }
+  #dialog-text { font-size: 16px; color: #f5e9cf; line-height: 1.8; min-height: 52px; }
+  #dialog-hint { font-size: 12px; color: #b08d3e; text-align: right; margin-top: 6px;
+    animation: blink 1.2s infinite alternate; }
   #timer { position: absolute; top: 130px; right: 18px; font-size: 26px; font-weight: bold; }
   #minimap { position: absolute; left: 18px; bottom: 18px; border-radius: 10px;
     box-shadow: 0 4px 16px rgba(0,0,0,0.5); }
@@ -90,6 +97,11 @@
     <div id="weather"></div>
     <div id="region"></div>
     <div id="bubble"></div>
+    <div id="dialog">
+      <div id="dialog-name"></div>
+      <div id="dialog-text"></div>
+      <div id="dialog-hint"></div>
+    </div>
     <div id="hearts" class="hud-text"></div>
     <div id="coins" class="hud-text"></div>
     <div id="wanted" class="hud-text"></div>
