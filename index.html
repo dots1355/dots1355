@@ -22,7 +22,22 @@
   @keyframes pulse { from { filter: drop-shadow(0 0 2px #f00); } to { filter: drop-shadow(0 0 10px #f00); } }
   #mission { position: absolute; top: 60px; right: 18px; max-width: 380px; font-size: 15px;
     background: rgba(20,14,8,0.72); border: 2px solid #b08d3e; border-radius: 8px;
-    padding: 10px 14px; color: #f5e9cf; line-height: 1.5; }
+    padding: 10px 14px; color: #f5e9cf; line-height: 1.5; white-space: pre-line; }
+  #region { position: absolute; bottom: 240px; left: 26px; font-size: 42px; font-weight: bold;
+    font-family: Georgia, 'STSong', serif; color: #fff; letter-spacing: 6px; opacity: 0;
+    text-shadow: 0 3px 8px rgba(0,0,0,0.9), 0 0 2px #000; pointer-events: none; }
+  #region.show { animation: regionFade 4s ease forwards; }
+  @keyframes regionFade {
+    0% { opacity: 0; transform: translateY(12px); }
+    12% { opacity: 1; transform: translateY(0); }
+    75% { opacity: 1; }
+    100% { opacity: 0; }
+  }
+  #bubble { position: absolute; display: none; transform: translate(-50%, -100%);
+    max-width: 300px; background: rgba(250,244,228,0.95); color: #3a2c18;
+    border: 2px solid #b08d3e; border-radius: 10px; padding: 8px 12px; font-size: 14px;
+    line-height: 1.5; pointer-events: none; box-shadow: 0 4px 12px rgba(0,0,0,0.4); }
+  #bubble b { color: #7a5210; }
   #timer { position: absolute; top: 130px; right: 18px; font-size: 26px; font-weight: bold; }
   #minimap { position: absolute; left: 18px; bottom: 18px; border-radius: 10px;
     box-shadow: 0 4px 16px rgba(0,0,0,0.5); }
@@ -73,6 +88,8 @@
     <div id="flash"></div>
     <div id="lightning"></div>
     <div id="weather"></div>
+    <div id="region"></div>
+    <div id="bubble"></div>
     <div id="hearts" class="hud-text"></div>
     <div id="coins" class="hud-text"></div>
     <div id="wanted" class="hud-text"></div>
@@ -90,8 +107,10 @@
   <div id="title">
     <h1>侠盗猎马人</h1>
     <h2>—— 中世纪王国 ——</h2>
-    <div class="box">
-      <b style="color:#ffd83d">🏰 欢迎来到自由的中世纪开放世界</b><br>
+    <div class="box" style="max-width:720px">
+      <div id="lore" style="font-size:14px;line-height:1.9;color:#d8c9a8;border-bottom:1px solid #b08d3e55;
+        padding-bottom:12px;margin-bottom:12px"></div>
+      <b style="color:#ffd83d">🏰 欢迎来到艾尔德里亚王国</b><br>
       <span class="key">W A S D</span> 移动 &nbsp; <span class="key">Shift</span> 疾跑 &nbsp;
       <span class="key">空格</span> 跳跃(可二段跳)<br>
       <span class="key">E</span> 骑马 / 偷马 / 对话 / 开宝箱 &nbsp;
@@ -101,6 +120,7 @@
       📜 在喷泉广场找金衣老者接任务,收集金币与力量之星
     </div>
     <div id="ai-status" style="margin-top:16px;font-size:14px;color:#c9b98a;text-shadow:0 1px 3px #000"></div>
+    <div id="save-info" style="margin-top:6px;font-size:13px;color:#a8c9a0;text-shadow:0 1px 3px #000"></div>
     <div class="start">▶ 点击开始冒险 ◀</div>
   </div>
 

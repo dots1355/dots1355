@@ -1,7 +1,8 @@
 // 《侠盗猎马人:中世纪王国》主逻辑
 import * as THREE from 'three';
 import { buildWorld } from './world.js';
-import { makeHumanoid, makeHorse, resolveCollisions, angleLerp, dist2, lambert } from './entities.js';
+import { makeHumanoid, makeHorse, makeWolf, resolveCollisions, angleLerp, dist2, lambert } from './entities.js';
+import { INTRO, REGIONS, VILLAGER_LINES, GUARD_LINES, NPCS, MISSIONS, CREST_HINT } from './story.js';
 import { initAudio, sfx, startMusic, toggleMusic, weatherAudio } from './audio.js';
 import { preloadAIAssets, generateRemoteAITextures } from './textures.js';
 import { ShaderPass } from '../lib/jsm/postprocessing/ShaderPass.js';
@@ -34,14 +35,18 @@ const pmrem = new THREE.PMREMGenerator(renderer);
 scene.environment = pmrem.fromScene(new RoomEnvironment(renderer), 0.04).texture;
 
 // 后处理:泛光 + SMAA 抗锯齿 + 输出色调
+// 低画质模式(?lowfx=1):跳过后处理,适合低配设备
+const LOWFX = new URLSearchParams(location.search).has('lowfx');
 const composer = new EffectComposer(renderer);
 composer.addPass(new RenderPass(scene, camera));
 // 环境光遮蔽:让物体接触处产生柔和阴影,大幅提升体积感
 const gtao = new GTAOPass(scene, camera, window.innerWidth, window.innerHeight);
 gtao.updateGtaoMaterial({ radius: 0.35, distanceExponent: 1.5, thickness: 1.2, scale: 0.85, samples: 12 });
+gtao.enabled = !LOWFX;
 composer.addPass(gtao);
 const bloom = new UnrealBloomPass(
   new THREE.Vector2(window.innerWidth, window.innerHeight), 0.32, 0.6, 0.85);
+bloom.enabled = !LOWFX;
 composer.addPass(bloom);
 // GTA 风格电影调色:对比度 + 饱和 + 暖高光/冷阴影分离色调
 const gradePass = new ShaderPass({
@@ -63,8 +68,10 @@ const gradePass = new ShaderPass({
 });
 // OutputPass(ACES 色调映射 + sRGB)先行,调色与 SMAA 作用于显示域 LDR,避免裁剪 HDR 高光
 composer.addPass(new OutputPass());
+gradePass.enabled = !LOWFX;
 composer.addPass(gradePass);
 const smaa = new SMAAPass(window.innerWidth, window.innerHeight);
+smaa.enabled = !LOWFX;
 composer.addPass(smaa);
 
 window.addEventListener('resize', () => {
@@ -79,7 +86,7 @@ const hemi = new THREE.HemisphereLight(0xbfd9ff, 0x6a7d55, 0.7);
 scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xfff3d6, 2.6);
 sun.castShadow = true;
-sun.shadow.mapSize.set(4096, 4096);
+sun.shadow.mapSize.set(LOWFX ? 1024 : 4096, LOWFX ? 1024 : 4096);
 sun.shadow.camera.left = -130; sun.shadow.camera.right = 130;
 sun.shadow.camera.top = 130; sun.shadow.camera.bottom = -130;
 sun.shadow.camera.far = 600;
@@ -259,7 +266,7 @@ const player = {
   vy: 0, yaw: 0, onGround: true, jumps: 0,
   hp: 10, maxHp: 10, coins: 0,
   walkT: 0, attackT: 0, invulnT: 0, mounted: null, dead: false,
-  parcel: null,
+  parcel: null, swordLv: 1, royalHorse: false,
 };
 player.group.position.copy(player.pos);
 scene.add(player.group);
@@ -272,6 +279,7 @@ function addHorse(x, z, color, owned) {
   h.group.position.copy(h.pos);
   scene.add(h.group);
   horses.push(h);
+  return h;
 }
 addHorse(50, 6, 0x8b5a2b, true);
 addHorse(54, 5, 0x4a3a30, true);
@@ -310,25 +318,90 @@ function addVillager(x, z) {
   scene.add(v.group);
   villagers.push(v);
 }
-[[-20, 20], [22, 20], [8, 8], [-8, 0], [30, 5], [-30, 10], [15, 35], [-15, 35], [40, -20], [-35, -25], [0, 30], [48, 30]]
+[[-20, 20], [22, 20], [8, 8], [-8, 0], [30, 5], [-30, 10], [15, 35], [-15, 35], [40, -20], [-35, -25], [0, 30], [48, 30],
+ [10, 70], [16, 74], [-104, 56], [-92, 58], [26, 88], [138, 24]]
   .forEach(([x, z]) => addVillager(x, z));
 
-function addBandit(x, z) {
-  const b = { ...makeHumanoid({ shirt: 0x3b3b46, pants: 0x26262e, hood: true, sword: true }),
-    pos: new THREE.Vector3(x, 0, z), yaw: 0, hp: 3, speed: 5.8,
-    state: 'patrol', home: new THREE.Vector3(x, 0, z), attackCd: 0, stunT: 0, walkT: 0, dead: false };
+function addBandit(x, z, opts = {}) {
+  const b = { ...makeHumanoid({ shirt: opts.boss ? 0x5a1020 : 0x3b3b46, pants: 0x26262e, hood: true, sword: true }),
+    pos: new THREE.Vector3(x, 0, z), yaw: 0, hp: opts.hp ?? 3, speed: opts.speed ?? 5.8,
+    state: 'patrol', home: new THREE.Vector3(x, 0, z), attackCd: 0, stunT: 0, walkT: 0, dead: false,
+    boss: !!opts.boss, escort: !!opts.escort, dmg: opts.dmg ?? 2 };
+  if (opts.scale) b.group.scale.setScalar(opts.scale);
   b.group.position.copy(b.pos);
   scene.add(b.group);
   bandits.push(b);
+  return b;
+}
+
+// ================= 狼群 =================
+const wolves = [];
+let wolfKills = 0;
+function addWolf(x, z) {
+  const w = { ...makeWolf(), pos: new THREE.Vector3(x, 0, z), yaw: Math.random() * 6.28,
+    home: new THREE.Vector3(x, 0, z), hp: 2, speed: 7.2, attackCd: 0, stunT: 0, walkT: 0,
+    dead: false, respawnT: 0 };
+  w.group.position.copy(w.pos);
+  scene.add(w.group);
+  wolves.push(w);
+  return w;
+}
+for (const [wx, wz] of world.wolfSpawns) addWolf(wx, wz);
+
+function updateWolves(dt) {
+  for (const w of wolves) {
+    if (w.dead) {
+      w.respawnT -= dt;
+      if (w.respawnT <= 0) {
+        w.dead = false;
+        w.hp = 2;
+        w.pos.copy(w.home);
+        w.group.rotation.x = 0;
+        w.group.visible = true;
+      }
+      continue;
+    }
+    if (w.stunT > 0) { w.stunT -= dt; continue; }
+    w.attackCd = Math.max(0, w.attackCd - dt);
+    const pd = Math.hypot(player.pos.x - w.pos.x, player.pos.z - w.pos.z);
+    let moving = false;
+    if (pd < 20 && !player.dead) {
+      if (pd > 1.3) { moveEntity(w, player.pos.x, player.pos.z, w.speed, dt); moving = true; }
+      else if (w.attackCd <= 0) { w.attackCd = 1.1; damagePlayer(1); }
+    } else {
+      const a = performance.now() * 0.0004 + w.home.x;
+      moveEntity(w, w.home.x + Math.cos(a) * 6, w.home.z + Math.sin(a) * 6, w.speed * 0.25, dt);
+      moving = true;
+    }
+    w.group.position.copy(w.pos);
+    w.group.rotation.y = w.yaw;
+    const swing = moving ? Math.sin(w.walkT) * 0.6 : 0;
+    w.parts.legs[0].rotation.x = swing;
+    w.parts.legs[1].rotation.x = -swing;
+    w.parts.legs[2].rotation.x = -swing;
+    w.parts.legs[3].rotation.x = swing;
+  }
+}
+
+function killWolf(w) {
+  w.dead = true;
+  w.respawnT = 45;
+  w.group.rotation.x = -Math.PI / 2;
+  setTimeout(() => { if (w.dead) w.group.visible = false; }, 2500);
+  dropCoins(w.pos, 2);
+  wolfKills++;
+  if (quest.active && missions[quest.idx].type === 'wolves') {
+    quest.progress++;
+    toast(`猎杀恶狼 ${quest.progress}/${missions[quest.idx].goal}`, 2);
+    if (quest.progress >= missions[quest.idx].goal) completeMission();
+  }
 }
 
 // ================= 任务系统 =================
-const missions = [
-  { title: '① 金币税', desc: '为领主收集 8 枚金币', type: 'coins', goal: 8, reward: 20 },
-  { title: '② 皇家快递', desc: '60 秒内把包裹送到东边的风车磨坊(骑马更快!)', type: 'deliver', time: 60, reward: 30 },
-  { title: '③ 剿灭盗贼', desc: '前往西部森林,击败盗贼营地的 3 名盗贼', type: 'bandits', goal: 3, reward: 60 },
-];
+const missions = MISSIONS;
 const quest = { idx: 0, active: false, progress: 0, timer: 0 };
+// 任务运行时对象
+const questRT = { rings: [], ringIdx: 0, merchant: null, specialHorse: null, boss: null, escortSpawned: 0 };
 
 // 委托人(金色衣服的老者)
 const questGiver = makeHumanoid({ shirt: 0xc9a227, pants: 0x6a5a2a, hair: 0xd8d8d8 });
@@ -346,6 +419,118 @@ exDot.position.y = -0.1;
 exGroup.add(exBar, exDot);
 exGroup.position.set(world.questGiverPos.x, 2.1, world.questGiverPos.z);
 scene.add(exGroup);
+
+// ================= 具名 NPC =================
+const npcStyles = {
+  king: { shirt: 0x7a1f8a, pants: 0x3a2a4a, hair: 0xd8d8d8 },
+  blacksmith: { shirt: 0x5a4632, pants: 0x33261a, hair: 0x2a1a10 },
+  trader: { shirt: 0x2a6a5a, pants: 0x4a3a26, hair: 0x6a4a2a },
+  innkeep: { shirt: 0xa04a5a, pants: 0x4a3320, hair: 0x8a3a1a },
+  fisher: { shirt: 0x3a5a7a, pants: 0x33301c, hair: 0xbababa },
+};
+const namedNPCs = [];
+for (const [key, [nx, nz, nyaw]] of Object.entries(world.npcSpots)) {
+  const n = { ...makeHumanoid(npcStyles[key]), key, def: NPCS[key],
+    pos: new THREE.Vector3(nx, 0, nz), yaw: nyaw, lineIdx: 0, rewarded: false };
+  n.group.position.copy(n.pos);
+  n.group.rotation.y = nyaw;
+  scene.add(n.group);
+  namedNPCs.push(n);
+}
+
+// ================= 对话气泡 =================
+const bubbleEl = document.getElementById('bubble');
+const bubble = { timer: 0, anchor: null, cooldowns: new Map() };
+function showBubble(anchor, name, text, dur = 3.2) {
+  bubbleEl.innerHTML = name ? `<b>${name}</b><br>${text}` : text;
+  bubble.anchor = anchor;
+  bubble.timer = dur;
+}
+const _bubbleV = new THREE.Vector3();
+function updateBubble(dt) {
+  if (bubble.timer <= 0) { bubbleEl.style.display = 'none'; return; }
+  bubble.timer -= dt;
+  _bubbleV.copy(bubble.anchor.pos).y += 2.1;
+  _bubbleV.project(camera);
+  if (_bubbleV.z > 1) { bubbleEl.style.display = 'none'; return; }
+  bubbleEl.style.display = 'block';
+  bubbleEl.style.left = `${(_bubbleV.x * 0.5 + 0.5) * window.innerWidth}px`;
+  bubbleEl.style.top = `${(-_bubbleV.y * 0.5 + 0.5) * window.innerHeight}px`;
+  // 村民闲聊触发
+}
+function villagerChatter() {
+  if (bubble.timer > 0) return;
+  const now = performance.now();
+  for (const v of villagers) {
+    if (v.downT > 0 || v.fleeT > 0) continue;
+    if (dist2(player.pos.x, player.pos.z, v.pos.x, v.pos.z) > 12) continue;
+    const last = bubble.cooldowns.get(v) || 0;
+    if (now - last < 25000) continue;
+    bubble.cooldowns.set(v, now);
+    showBubble(v, null, VILLAGER_LINES[Math.floor(Math.random() * VILLAGER_LINES.length)]);
+    return;
+  }
+  for (const g of guards) {
+    if (g.downT > 0 || wanted > 0) continue;
+    if (dist2(player.pos.x, player.pos.z, g.pos.x, g.pos.z) > 8) continue;
+    const last = bubble.cooldowns.get(g) || 0;
+    if (now - last < 30000) continue;
+    bubble.cooldowns.set(g, now);
+    showBubble(g, null, GUARD_LINES[Math.floor(Math.random() * GUARD_LINES.length)]);
+    return;
+  }
+}
+
+// ================= 区域浮现(GTA 式) =================
+const regionEl = document.getElementById('region');
+let curRegion = '';
+let regionCheckT = 0;
+function updateRegion(dt) {
+  regionCheckT -= dt;
+  if (regionCheckT > 0) return;
+  regionCheckT = 0.5;
+  let name = '艾尔德里亚原野';
+  for (const r of REGIONS) {
+    if (r.band !== undefined) { if (player.pos.z < r.band) { name = r.name; break; } continue; }
+    if (dist2(player.pos.x, player.pos.z, r.x, r.z) < r.r * r.r) { name = r.name; break; }
+  }
+  if (name !== curRegion) {
+    curRegion = name;
+    regionEl.textContent = name;
+    regionEl.classList.remove('show');
+    void regionEl.offsetWidth; // 重启 CSS 动画
+    regionEl.classList.add('show');
+  }
+}
+
+// ================= 存档 =================
+const SAVE_KEY = 'gth-save-v1';
+let crestsFound = [];
+function saveGame() {
+  try {
+    localStorage.setItem(SAVE_KEY, JSON.stringify({
+      coins: player.coins, questIdx: quest.idx, crests: crestsFound,
+      swordLv: player.swordLv, royalHorse: player.royalHorse,
+      kingRewarded: namedNPCs.find((n) => n.key === 'king')?.rewarded || false,
+    }));
+  } catch { /* 隐私模式等 */ }
+}
+function loadGame() {
+  try {
+    const s = JSON.parse(localStorage.getItem(SAVE_KEY));
+    if (!s) return false;
+    player.coins = s.coins || 0;
+    quest.idx = Math.min(s.questIdx || 0, missions.length);
+    crestsFound = Array.isArray(s.crests) ? s.crests : [];
+    player.swordLv = s.swordLv || 1;
+    player.royalHorse = !!s.royalHorse;
+    if (s.kingRewarded) {
+      const king = namedNPCs.find((n) => n.key === 'king');
+      if (king) king.rewarded = true;
+    }
+    return true;
+  } catch { return false; }
+}
 
 // 目标光柱
 const beacon = new THREE.Mesh(new THREE.CylinderGeometry(1.2, 1.2, 40, 10, 1, true),
@@ -383,19 +568,64 @@ function starGeoBig() {
   return new THREE.ExtrudeGeometry(s, { depth: 0.35, bevelEnabled: false });
 }
 
-function addPickup(type, x, z, ttl = Infinity) {
+// 皇家纹章(盾形收集品)
+function crestGeo() {
+  const s = new THREE.Shape();
+  s.moveTo(0, 0.6);
+  s.lineTo(0.5, 0.42);
+  s.lineTo(0.5, -0.05);
+  s.quadraticCurveTo(0.45, -0.45, 0, -0.65);
+  s.quadraticCurveTo(-0.45, -0.45, -0.5, -0.05);
+  s.lineTo(-0.5, 0.42);
+  s.closePath();
+  return new THREE.ExtrudeGeometry(s, { depth: 0.12, bevelEnabled: false }).scale(0.7, 0.7, 0.7);
+}
+const crestG = crestGeo();
+const crestMat = new THREE.MeshStandardMaterial({
+  color: 0x3f6fd0, emissive: 0x1a3a88, emissiveIntensity: 0.7, metalness: 0.8, roughness: 0.25 });
+
+function addPickup(type, x, z, ttl = Infinity, id = -1) {
   let mesh;
   if (type === 'coin') mesh = new THREE.Mesh(coinGeo, coinMat);
   else if (type === 'heart') mesh = new THREE.Mesh(heartG, heartMat);
+  else if (type === 'crest') mesh = new THREE.Mesh(crestG, crestMat);
   else mesh = new THREE.Mesh(starGeoBig(), new THREE.MeshStandardMaterial({
     color: 0xffd83d, emissive: 0xaa7700, emissiveIntensity: 0.9, metalness: 0.7, roughness: 0.25 }));
-  mesh.position.set(x, type === 'star' ? 1.4 : 0.65, z);
+  mesh.position.set(x, type === 'star' ? 1.4 : type === 'crest' ? 1.0 : 0.65, z);
   if (type === 'star') mesh.scale.setScalar(1.4);
   mesh.castShadow = true;
   scene.add(mesh);
-  pickups.push({ mesh, type, x, z, ttl, t: Math.random() * 6 });
+  pickups.push({ mesh, type, x, z, ttl, id, t: Math.random() * 6 });
 }
 for (const [x, z] of world.coinSpots) addPickup('coin', x, z);
+
+// 读档,然后生成未收集的纹章
+const hasSave = loadGame();
+world.crestSpots.forEach(([x, z], i) => {
+  if (!crestsFound.includes(i)) addPickup('crest', x, z, Infinity, i);
+});
+// 标题画面:世界观开场 + 存档信息
+document.getElementById('lore').textContent = INTRO;
+if (hasSave) {
+  document.getElementById('save-info').textContent =
+    `💾 检测到存档:委托 ${Math.min(quest.idx + 1, missions.length)}/${missions.length} · ` +
+    `${player.coins} 金币 · 纹章 ${crestsFound.length}/10(按 Delete 键清除存档重新开始)`;
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Delete' && !started) {
+      localStorage.removeItem(SAVE_KEY);
+      location.reload();
+    }
+  });
+}
+// 读档后应用升级效果
+if (player.swordLv >= 2) {
+  const blade = player.parts.sword?.children[0];
+  if (blade) blade.material = lambert(0xe8c34a, { metalness: 0.9, roughness: 0.2 });
+}
+if (player.royalHorse) {
+  const rh = addHorse(world.stablePos.x - 3, world.stablePos.z - 3, 0xe8d9b0, false);
+  rh.fast = true;
+}
 
 // ================= 输入 =================
 const keys = {};
@@ -430,7 +660,7 @@ titleEl.addEventListener('click', () => {
   titleEl.style.display = 'none';
   started = true;
   renderer.domElement.requestPointerLock();
-  toast('去喷泉广场找金衣老者接取委托吧!(E 互动)', 5);
+  toast('欢迎来到艾尔德里亚!去喷泉广场找管家埃隆接取委托吧(按 E 互动)', 5);
 });
 
 // ================= 天气系统 =================
@@ -618,6 +848,66 @@ function tryInteract() {
     talkQuestGiver();
     return;
   }
+  // 具名 NPC(商店/领主)
+  for (const n of namedNPCs) {
+    if (dist2(player.pos.x, player.pos.z, n.pos.x, n.pos.z) > 7) continue;
+    if (n.key === 'blacksmith' && player.swordLv === 1) {
+      if (player.coins >= 50) {
+        player.coins -= 50;
+        player.swordLv = 2;
+        sfx.chest();
+        // 陨铁金刃
+        const blade = player.parts.sword?.children[0];
+        if (blade) blade.material = lambert(0xe8c34a, { metalness: 0.9, roughness: 0.2 });
+        showBubble(n, n.def.name, '好剑!淬了陨铁,伤害翻倍。用它守护王国吧!', 4);
+        saveGame();
+      } else {
+        showBubble(n, n.def.name, '升级佩剑要 50 金币,金币不够可不行。', 3);
+      }
+      return;
+    }
+    if (n.key === 'trader' && !player.royalHorse) {
+      if (player.coins >= 80) {
+        player.coins -= 80;
+        player.royalHorse = true;
+        const rh = addHorse(world.stablePos.x - 3, world.stablePos.z - 3, 0xe8d9b0, false);
+        rh.fast = true;
+        rh.home.set(world.stablePos.x - 3, 0, world.stablePos.z - 3);
+        sfx.fanfare();
+        showBubble(n, n.def.name, '皇家骏马「疾风」是你的了!它比普通马快两成!', 4);
+        saveGame();
+      } else {
+        showBubble(n, n.def.name, '皇家骏马 80 金币,童叟无欺。', 3);
+      }
+      return;
+    }
+    if (n.key === 'innkeep') {
+      if (player.coins >= 10) {
+        player.coins -= 10;
+        player.hp = player.maxHp;
+        dayTime = 0.28;
+        sfx.heart();
+        showBubble(n, n.def.name, '睡得好吗?已是清晨,新的一天加油!', 3.5);
+      } else {
+        showBubble(n, n.def.name, '住店 10 金币……看你风尘仆仆,先喝口水吧。', 3);
+      }
+      return;
+    }
+    if (n.key === 'king') {
+      if (quest.idx >= missions.length && !n.rewarded) {
+        n.rewarded = true;
+        player.coins += 100;
+        sfx.fanfare();
+        showBubble(n, n.def.name, n.def.doneLine, 5);
+        saveGame();
+      } else {
+        showBubble(n, n.def.name, n.def.lines[n.lineIdx++ % n.def.lines.length], 4);
+      }
+      return;
+    }
+    showBubble(n, n.def.name, n.def.lines[n.lineIdx++ % n.def.lines.length], 3.5);
+    return;
+  }
   // 宝箱
   for (const c of world.chests) {
     if (!c.opened && dist2(player.pos.x, player.pos.z, c.x, c.z) < 5) {
@@ -650,9 +940,22 @@ function tryInteract() {
   }
 }
 
+function clearRaceRings() {
+  for (const r of questRT.rings) scene.remove(r);
+  questRT.rings = [];
+}
+
+function failMission(msg) {
+  quest.active = false;
+  if (player.parcel) { player.group.remove(player.parcel); player.parcel = null; }
+  clearRaceRings();
+  if (questRT.merchant) { scene.remove(questRT.merchant.group); questRT.merchant = null; }
+  toast(msg, 3.5);
+}
+
 function talkQuestGiver() {
   if (quest.idx >= missions.length) {
-    toast('老者:王国感谢你,勇者!尽情享受这片土地吧。', 3.5);
+    toast('埃隆:王国感谢你,勇者!去见领主大人吧,他有话对你说。', 3.5);
     return;
   }
   const m = missions[quest.idx];
@@ -661,6 +964,7 @@ function talkQuestGiver() {
     quest.progress = 0;
     quest.timer = m.time || 0;
     sfx.accept();
+    showBubble({ pos: world.questGiverPos }, NPCS.steward.name, m.brief, 4.5);
     toast(`接受任务【${m.title}】:${m.desc}`, 4.5);
     if (m.type === 'deliver') {
       const parcel = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.35, 0.3), lambert(0xb4813f));
@@ -671,6 +975,35 @@ function talkQuestGiver() {
       addBandit(world.banditCamp.x - 4, world.banditCamp.z + 2);
       addBandit(world.banditCamp.x + 4, world.banditCamp.z - 2);
       addBandit(world.banditCamp.x, world.banditCamp.z + 6);
+    } else if (m.type === 'race') {
+      questRT.ringIdx = 0;
+      clearRaceRings();
+      for (const [rx, rz] of world.raceRoute) {
+        const ring = new THREE.Mesh(new THREE.TorusGeometry(2.4, 0.22, 8, 20),
+          new THREE.MeshStandardMaterial({ color: 0xffd83d, emissive: 0x996600, emissiveIntensity: 0.6, metalness: 0.6, roughness: 0.3 }));
+        ring.position.set(rx, 2.4, rz);
+        scene.add(ring);
+        questRT.rings.push(ring);
+      }
+    } else if (m.type === 'losthorse') {
+      if (!questRT.specialHorse) {
+        questRT.specialHorse = addHorse(world.lostHorsePos.x, world.lostHorsePos.z, 0xf2efe6, false);
+        questRT.specialHorse.special = true;
+      }
+    } else if (m.type === 'escort') {
+      const mc = { ...makeHumanoid({ shirt: 0xb4813f, pants: 0x4a3a26, hair: 0x3a2a1a }),
+        pos: new THREE.Vector3(world.escortRoute[0][0], 0, world.escortRoute[0][1]),
+        yaw: 0, hp: 5, wp: 0, walkT: 0 };
+      mc.group.position.copy(mc.pos);
+      scene.add(mc.group);
+      questRT.merchant = mc;
+      questRT.escortSpawned = 0;
+    } else if (m.type === 'boss') {
+      questRT.boss = addBandit(world.fortPos.x, world.fortPos.z - 2,
+        { boss: true, hp: 12, speed: 6.8, scale: 1.35, dmg: 2 });
+      addBandit(world.fortPos.x - 5, world.fortPos.z + 3);
+      addBandit(world.fortPos.x + 5, world.fortPos.z + 3);
+      toast('⚔️ 血斧巴罗克在黑石要塞等着你……', 4);
     }
   } else if (m.type === 'coins' && quest.progress >= m.goal) {
     completeMission();
@@ -687,9 +1020,12 @@ function completeMission() {
   quest.active = false;
   quest.idx++;
   if (player.parcel) { player.group.remove(player.parcel); player.parcel = null; }
+  clearRaceRings();
+  if (questRT.merchant) { scene.remove(questRT.merchant.group); questRT.merchant = null; }
+  saveGame();
   if (quest.idx >= missions.length) {
     addPickup('star', 0, 13);
-    toast('全部委托完成!去广场领取你的 ★ 力量之星 ★', 5);
+    toast('全部委托完成!去广场领取 ★ 力量之星 ★,再去见领主领赏!', 6);
   }
 }
 
@@ -698,6 +1034,7 @@ function tryAttack() {
   if (!started || player.dead || player.attackT > 0 || player.mounted) return;
   player.attackT = 0.35;
   sfx.sword();
+  const dmg = player.swordLv; // 陨铁剑升级后伤害 2
   const fx = Math.sin(player.yaw), fz = Math.cos(player.yaw);
   const hitOne = (list, onHit) => {
     for (const e of list) {
@@ -708,7 +1045,7 @@ function tryAttack() {
     }
   };
   hitOne(guards, (g) => {
-    g.hp--; sfx.hit();
+    g.hp -= dmg; sfx.hit();
     if (!g.wantedHit) { g.wantedHit = true; crime(1, '你袭击了卫兵!'); }
     if (g.hp <= 0) {
       g.downT = 14; g.stunT = 0; g.group.rotation.x = -Math.PI / 2; g.group.rotation.z = 0;
@@ -717,17 +1054,22 @@ function tryAttack() {
     } else g.state = 'chase';
   });
   hitOne(bandits, (b) => {
-    b.hp--; sfx.hit();
+    b.hp -= dmg; sfx.hit();
     if (b.hp <= 0) {
       b.dead = true; b.group.rotation.x = -Math.PI / 2;
-      dropCoins(b.pos, 5);
+      dropCoins(b.pos, b.boss ? 20 : 5);
       addPickup('heart', b.pos.x, b.pos.z + 1, 30);
-      if (quest.active && missions[quest.idx].type === 'bandits') {
+      if (b.boss) toast('⚔️ 血斧巴罗克倒下了!黑石兄弟会土崩瓦解!', 5);
+      if (quest.active && missions[quest.idx].type === 'bandits' && !b.boss && !b.escort) {
         quest.progress++;
         toast(`击败盗贼 ${quest.progress}/3`, 2);
         if (quest.progress >= 3) completeMission();
       }
     }
+  });
+  hitOne(wolves, (w) => {
+    w.hp -= dmg; sfx.hit();
+    if (w.hp <= 0) killWolf(w);
   });
   hitOne(villagers, (v) => {
     if (v.downT > 0) return;
@@ -896,9 +1238,21 @@ function updateBandits(dt) {
     b.attackCd = Math.max(0, b.attackCd - dt);
     const pd = Math.hypot(player.pos.x - b.pos.x, player.pos.z - b.pos.z);
     let moving = false;
-    if (pd < 28 && !player.dead) {
+    // 护送任务的埋伏盗贼优先攻击商人(除非玩家贴脸)
+    const mc = questRT.merchant;
+    if (b.escort && mc && mc.hp > 0 && pd > 5) {
+      const md = Math.hypot(mc.pos.x - b.pos.x, mc.pos.z - b.pos.z);
+      if (md > 1.4) { moveEntity(b, mc.pos.x, mc.pos.z, b.speed, dt); moving = true; }
+      else if (b.attackCd <= 0) {
+        b.attackCd = 1.0;
+        b.swingT = 0.35;
+        mc.hp--;
+        sfx.hit();
+        toast(`商人受袭!❤ ${Math.max(0, mc.hp)}/5`, 1.5);
+      }
+    } else if (pd < 30 && !player.dead) {
       if (pd > 1.6) { moveEntity(b, player.pos.x, player.pos.z, b.speed, dt); moving = true; }
-      else if (b.attackCd <= 0) { b.attackCd = 1.0; b.swingT = 0.35; damagePlayer(2); }
+      else if (b.attackCd <= 0) { b.attackCd = 1.0; b.swingT = 0.35; damagePlayer(b.dmg); }
     } else {
       const a = performance.now() * 0.0003 + b.home.x;
       moveEntity(b, b.home.x + Math.cos(a) * 5, b.home.z + Math.sin(a) * 5, b.speed * 0.3, dt);
@@ -1041,7 +1395,7 @@ function updatePlayer(dt) {
 
   if (player.mounted) {
     const h = player.mounted;
-    const speed = keys['ShiftLeft'] || keys['ShiftRight'] ? 17 : 11;
+    const speed = (keys['ShiftLeft'] || keys['ShiftRight'] ? 17 : 11) * (h.fast ? 1.2 : 1);
     if (moving) {
       h.pos.x += mv.x * speed * dt;
       h.pos.z += mv.y * speed * dt;
@@ -1190,7 +1544,7 @@ function checkStomp() {
     }
     return false;
   };
-  if (!tryStomp(guards, true)) tryStomp(bandits, false);
+  return tryStomp(guards, true) || tryStomp(bandits, false) || tryStomp(wolves, false);
 }
 
 // ================= 拾取 =================
@@ -1205,7 +1559,7 @@ function updatePickups(dt) {
       p.mesh.visible = p.ttl > 5 || Math.floor(p.t * 8) % 2 === 0;
     }
     p.mesh.rotation.y += dt * 3.5;
-    p.mesh.position.y = (p.type === 'star' ? 1.4 : 0.65) + Math.sin(p.t * 3) * 0.12;
+    p.mesh.position.y = (p.type === 'star' ? 1.4 : p.type === 'crest' ? 1.0 : 0.65) + Math.sin(p.t * 3) * 0.12;
     if (!player.dead && dist2(player.pos.x, player.pos.z, p.x, p.z) < radius * radius &&
         player.pos.y < 1.5) {
       if (p.type === 'coin') {
@@ -1215,6 +1569,17 @@ function updatePickups(dt) {
       } else if (p.type === 'heart') {
         player.hp = Math.min(player.maxHp, player.hp + 2);
         sfx.heart();
+      } else if (p.type === 'crest') {
+        crestsFound.push(p.id);
+        sfx.chest();
+        if (crestsFound.length >= world.crestSpots.length) {
+          player.coins += 100;
+          sfx.fanfare();
+          toast(`🛡️ 集齐 ${world.crestSpots.length} 枚皇家纹章!奖励 100 金币!`, 5);
+        } else {
+          toast(`🛡️ 皇家纹章 ${crestsFound.length}/${world.crestSpots.length}`, 3);
+        }
+        saveGame();
       } else {
         sfx.fanfare();
         toast('★ 恭喜通关!你成了王国传奇——世界仍然开放,继续撒欢吧!★', 8);
@@ -1234,17 +1599,15 @@ function updateQuest(dt) {
   beacon.visible = false;
   if (!quest.active || player.dead) return;
   const m = missions[quest.idx];
+  const setBeacon = (x, z) => { beacon.visible = true; beacon.position.x = x; beacon.position.z = z; };
+
   if (m.type === 'deliver') {
     quest.timer -= dt;
-    beacon.visible = true;
-    beacon.position.x = world.windmillPos.x;
-    beacon.position.z = world.windmillPos.z;
+    setBeacon(world.windmillPos.x, world.windmillPos.z);
     if (dist2(player.pos.x, player.pos.z, world.windmillPos.x, world.windmillPos.z) < 49) {
       completeMission();
     } else if (quest.timer <= 0) {
-      quest.active = false;
-      if (player.parcel) { player.group.remove(player.parcel); player.parcel = null; }
-      toast('投递超时!回去找委托人重新接取…', 3.5);
+      failMission('投递超时!回去找埃隆重新接取…');
     }
   } else if (m.type === 'coins') {
     beacon.visible = quest.progress >= m.goal;
@@ -1254,6 +1617,78 @@ function updateQuest(dt) {
     beacon.visible = quest.progress < m.goal;
     beacon.position.x = world.banditCamp.x;
     beacon.position.z = world.banditCamp.z;
+  } else if (m.type === 'race') {
+    quest.timer -= dt;
+    if (quest.timer <= 0) { failMission('超时!回去找埃隆再试一次…'); return; }
+    const [rx, rz] = world.raceRoute[questRT.ringIdx];
+    setBeacon(rx, rz);
+    // 高亮当前环
+    questRT.rings.forEach((ring, i) => {
+      ring.rotation.y += dt * (i === questRT.ringIdx ? 3 : 0.6);
+      ring.material.emissiveIntensity = i < questRT.ringIdx ? 0.1 : i === questRT.ringIdx ? 1.2 : 0.4;
+    });
+    if (dist2(player.pos.x, player.pos.z, rx, rz) < 9) {
+      sfx.block();
+      questRT.ringIdx++;
+      if (questRT.ringIdx >= world.raceRoute.length) completeMission();
+      else toast(`金环 ${questRT.ringIdx}/${world.raceRoute.length}`, 1.2);
+    }
+  } else if (m.type === 'losthorse') {
+    const sh = questRT.specialHorse;
+    if (!sh) return;
+    if (player.mounted === sh) {
+      setBeacon(world.stablePos.x, world.stablePos.z);
+      if (dist2(player.pos.x, player.pos.z, world.stablePos.x, world.stablePos.z) < 100) {
+        sh.home.copy(world.stablePos);
+        sh.owned = false;
+        completeMission();
+        toast('雪影归你了!它就在马厩等你。', 4);
+      }
+    } else {
+      setBeacon(sh.pos.x, sh.pos.z);
+    }
+  } else if (m.type === 'escort') {
+    const mc = questRT.merchant;
+    if (!mc) return;
+    setBeacon(mc.pos.x, mc.pos.z);
+    if (mc.hp <= 0) { failMission('商人巴特倒下了……回去找埃隆重整旗鼓。'); return; }
+    // 沿路线行进
+    const [tx, tz] = world.escortRoute[mc.wp];
+    const dx = tx - mc.pos.x, dz = tz - mc.pos.z;
+    const d = Math.hypot(dx, dz);
+    if (d < 1.5) {
+      mc.wp++;
+      // 埋伏点:第 2、4 个路点
+      if ((mc.wp === 2 || mc.wp === 4) && questRT.escortSpawned < mc.wp) {
+        questRT.escortSpawned = mc.wp;
+        addBandit(mc.pos.x + 8, mc.pos.z - 6, { escort: true });
+        addBandit(mc.pos.x + 8, mc.pos.z + 6, { escort: true });
+        toast('⚠️ 有埋伏!保护商人!', 2.5);
+        sfx.wanted();
+      }
+      if (mc.wp >= world.escortRoute.length) {
+        scene.remove(mc.group);
+        questRT.merchant = null;
+        completeMission();
+        return;
+      }
+    } else {
+      mc.pos.x += (dx / d) * 2.4 * dt;
+      mc.pos.z += (dz / d) * 2.4 * dt;
+      mc.yaw = angleLerp(mc.yaw, Math.atan2(dx, dz), dt * 8);
+      mc.walkT += dt * 5;
+    }
+    mc.group.position.copy(mc.pos);
+    mc.group.rotation.y = mc.yaw;
+    animateLimbs(mc.parts, mc.walkT, d >= 1.5, mc.group, 0.5);
+  } else if (m.type === 'wolves') {
+    setBeacon(-140, -40);
+  } else if (m.type === 'boss') {
+    if (questRT.boss) setBeacon(questRT.boss.pos.x, questRT.boss.pos.z);
+    if (questRT.boss && questRT.boss.dead) {
+      questRT.boss = null;
+      completeMission();
+    }
   }
 }
 
@@ -1420,16 +1855,20 @@ function updateHUD() {
   const hearts = '❤️'.repeat(full) + (half ? '💔' : '') + '🖤'.repeat(5 - full - half);
   const stars = wanted > 0 ? '⭐'.repeat(wanted) + '✩'.repeat(5 - wanted) : '';
   let missionText;
-  if (quest.idx >= missions.length) missionText = '🏆 自由模式 — 王国是你的了!';
-  else if (!quest.active) missionText = '📜 去喷泉广场找金衣老者(按 E 交谈)';
+  if (quest.idx >= missions.length) missionText = '🏆 全部委托完成 — 去谒见领主,王国是你的了!';
+  else if (!quest.active) missionText = `📜 委托 ${quest.idx + 1}/${missions.length}:去喷泉广场找管家埃隆(按 E)`;
   else {
     const m = missions[quest.idx];
     let prog = '';
     if (m.type === 'coins') prog = ` (${Math.min(quest.progress, m.goal)}/${m.goal})` + (quest.progress >= m.goal ? ' — 回去交任务!' : '');
-    if (m.type === 'bandits') prog = ` (${quest.progress}/${m.goal})`;
+    if (m.type === 'bandits' || m.type === 'wolves') prog = ` (${quest.progress}/${m.goal})`;
+    if (m.type === 'race') prog = ` (金环 ${questRT.ringIdx}/${world.raceRoute.length})`;
+    if (m.type === 'escort' && questRT.merchant) prog = ` (商人 ❤×${Math.max(0, questRT.merchant.hp)})`;
     missionText = `📜 ${m.title}:${m.desc}${prog}`;
   }
-  const timer = quest.active && missions[quest.idx].type === 'deliver' ? `⏱ ${Math.ceil(quest.timer)}s` : '';
+  missionText += `\n🛡️ 皇家纹章 ${crestsFound.length}/${world.crestSpots.length}`;
+  const timerType = quest.active && (missions[quest.idx].type === 'deliver' || missions[quest.idx].type === 'race');
+  const timer = timerType ? `⏱ ${Math.ceil(quest.timer)}s` : '';
   const wIcon = { clear: '☀️', cloudy: '⛅', rain: '🌧️', storm: '⛈️' }[weather.state];
   const key = hearts + '|' + player.coins + '|' + stars + '|' + missionText + '|' + timer + '|' + promptText + '|' + wIcon;
   if (key === hudCache) return;
@@ -1451,7 +1890,19 @@ function computePrompt() {
   if (!started || player.dead) return;
   if (player.mounted) { promptText = '按 E 下马'; return; }
   if (dist2(player.pos.x, player.pos.z, world.questGiverPos.x, world.questGiverPos.z) < 8) {
-    promptText = '按 E 与委托人交谈'; return;
+    promptText = '按 E 与管家埃隆交谈'; return;
+  }
+  for (const n of namedNPCs) {
+    if (dist2(player.pos.x, player.pos.z, n.pos.x, n.pos.z) > 7) continue;
+    if (n.key === 'blacksmith' && player.swordLv === 1) { promptText = '按 E 升级佩剑(50 金币)'; return; }
+    if (n.key === 'trader' && !player.royalHorse) { promptText = '按 E 购买皇家骏马(80 金币)'; return; }
+    if (n.key === 'innkeep') { promptText = '按 E 住店休息,回满生命(10 金币)'; return; }
+    if (n.key === 'king') {
+      promptText = quest.idx >= missions.length && !n.rewarded ? '按 E 领取领主的重赏' : '按 E 谒见领主';
+      return;
+    }
+    promptText = `按 E 与${n.def.name}交谈`;
+    return;
   }
   for (const c of world.chests) {
     if (!c.opened && dist2(player.pos.x, player.pos.z, c.x, c.z) < 5) { promptText = '按 E 打开宝箱'; return; }
@@ -1553,9 +2004,11 @@ function drawMinimap() {
 // ================= 主循环 =================
 // 调试/自动化测试句柄
 window.__gtm = {
-  player, quest, horses, guards, bandits, villagers, crime, weather, setWeather,
+  player, quest, questRT, horses, guards, bandits, villagers, wolves, namedNPCs,
+  crime, weather, setWeather, talkQuestGiver, completeMission, missions,
   getWanted: () => wanted,
   setTime: (t) => { dayTime = t; },
+  getCrests: () => crestsFound.length,
 };
 
 let last = performance.now();
@@ -1574,12 +2027,24 @@ function loop(now) {
   updatePlayer(dt);
   updateGuards(dt);
   updateBandits(dt);
+  updateWolves(dt);
   updateVillagers(dt);
   updateHorses(dt);
   updatePickups(dt);
   updateQuest(dt);
   updateWanted(dt);
   updateWeather(dt);
+  updateRegion(dt);
+  updateBubble(dt);
+  villagerChatter();
+  // 具名 NPC:待机呼吸,玩家靠近时转身面对
+  for (const n of namedNPCs) {
+    animateLimbs(n.parts, 0, false);
+    if (dist2(player.pos.x, player.pos.z, n.pos.x, n.pos.z) < 30) {
+      n.group.rotation.y = angleLerp(n.group.rotation.y,
+        Math.atan2(player.pos.x - n.pos.x, player.pos.z - n.pos.z), dt * 4);
+    }
+  }
   updateRain(dt);
   updateDust(dt);
   updateDayNight(dt);

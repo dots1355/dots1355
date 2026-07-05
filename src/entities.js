@@ -188,6 +188,55 @@ export function makeHorse(color = 0x8b5a2b, saddled = true) {
   return { group: g, parts };
 }
 
+// ---- 狼(面朝 +Z)----
+export function makeWolf() {
+  const g = new THREE.Group();
+  const parts = { legs: [] };
+  const fur = lambert(0x5a5a62, { roughness: 0.95 });
+  const dark = lambert(0x3c3c44, { roughness: 0.95 });
+
+  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.24, 0.7, 5, 9), fur);
+  body.rotation.x = Math.PI / 2;
+  body.position.y = 0.62;
+  body.castShadow = true;
+  g.add(body);
+
+  const legGeo = new THREE.CylinderGeometry(0.05, 0.06, 0.45, 6);
+  for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+    const pivot = new THREE.Group();
+    pivot.position.set(0.15 * sx, 0.5, 0.32 * sz);
+    const leg = new THREE.Mesh(legGeo, dark);
+    leg.position.y = -0.22;
+    leg.castShadow = true;
+    pivot.add(leg);
+    g.add(pivot);
+    parts.legs.push(pivot);
+  }
+
+  const head = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.24, 0.3), fur);
+  head.position.set(0, 0.78, 0.55);
+  head.castShadow = true;
+  g.add(head);
+  const snout = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.12, 0.2), dark);
+  snout.position.set(0, 0.72, 0.75);
+  g.add(snout);
+  for (const s of [-1, 1]) {
+    const ear = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.13, 4), dark);
+    ear.position.set(0.09 * s, 0.95, 0.5);
+    g.add(ear);
+    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.025, 5, 4),
+      new THREE.MeshStandardMaterial({ color: 0xff3322, emissive: 0xaa1100, emissiveIntensity: 1.2 }));
+    eye.position.set(0.07 * s, 0.82, 0.7);
+    g.add(eye);
+  }
+  const tail = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.02, 0.45, 5), fur);
+  tail.position.set(0, 0.72, -0.55);
+  tail.rotation.x = 0.9;
+  g.add(tail);
+
+  return { group: g, parts };
+}
+
 // ---- 碰撞:圆形与轴对齐盒 ----
 export function resolveCollisions(p, r, colliders) {
   for (const c of colliders.circles) {

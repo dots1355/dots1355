@@ -44,7 +44,7 @@ export function buildWorld(scene) {
     map: TX.grass.map, normalMap: TX.grass.normalMap, roughness: 0.95, metalness: 0 });
   groundMat.userData.wettable = true;
   groundMat.userData.baseRough = 0.95;
-  const ground = new THREE.Mesh(new THREE.PlaneGeometry(700, 700), groundMat);
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(1000, 1000), groundMat);
   ground.rotation.x = -Math.PI / 2;
   ground.receiveShadow = true;
   scene.add(ground);
@@ -327,17 +327,23 @@ export function buildWorld(scene) {
     feat('tree', x, z, 1.5, 1.5);
   }
   // 西部森林
-  for (let i = 0; i < 55; i++) {
-    const x = -220 + Math.random() * 125;
-    const z = -120 + Math.random() * 160;
+  for (let i = 0; i < 75; i++) {
+    const x = -235 + Math.random() * 140;
+    const z = -140 + Math.random() * 180;
     if (Math.hypot(x + 100, z - 100) < 40) continue;             // 避开湖
     if (Math.hypot(x + 130, z + 60) < 14) continue;              // 避开营地
+    if (Math.hypot(x + 170, z + 90) < 22) continue;              // 避开要塞
+    if (Math.abs(x + 95) < 7 && z < 72) continue;                // 避开河道
     if (x > -78 && z > -60 && z < 60) continue;                  // 避开城墙口
     tree(x, z, Math.random() < 0.55);
   }
   // 北部森林
-  for (let i = 0; i < 28; i++) {
-    tree(-60 + Math.random() * 200, -170 + Math.random() * 75, Math.random() < 0.5);
+  for (let i = 0; i < 34; i++) {
+    const x = -60 + Math.random() * 220;
+    const z = -160 + Math.random() * 65;
+    if (Math.hypot(x - 80, z + 120) < 20) continue;              // 避开遗迹
+    if (Math.hypot(x + 40, z + 120) < 20) continue;              // 避开墓园
+    tree(x, z, Math.random() < 0.5);
   }
   // 零散树
   const scatter = [[20, 68], [-25, 72], [40, 62], [90, 35], [110, -10], [60, 80], [-40, 65], [15, 110], [-10, 95]];
@@ -614,6 +620,279 @@ export function buildWorld(scene) {
   }
   cart(18, 16, 40); cart(56, 5, 100); cart(24, 82, -30);
 
+  // ================= 王国扩张区 =================
+
+  // ---- 银月河(自湖泊向北)与木桥 ----
+  {
+    const riverMat = lakeMat; // 与湖共用材质(法线动画同步)
+    const river = new THREE.Mesh(new THREE.PlaneGeometry(7, 300), riverMat);
+    river.rotation.x = -Math.PI / 2;
+    river.position.set(-95, 0.035, -78); // z 从 72 到 -228
+    scene.add(river);
+    feat('water', -95, -78, 7, 300);
+    // 河岸碰撞(桥处留口 z -40..-28)
+    box(-95, 22, 7, 100);    // z 72..-28
+    box(-95, -134, 7, 188);  // z -40..-228
+    // 木桥(位于去营地的野径上)
+    const bridge = new THREE.Group();
+    const deck = new THREE.Mesh(new THREE.BoxGeometry(12, 0.18, 5), woodMat);
+    deck.position.y = 0.22;
+    deck.castShadow = deck.receiveShadow = true;
+    bridge.add(deck);
+    for (const s of [-1, 1]) {
+      const rail = new THREE.Mesh(new THREE.BoxGeometry(12, 0.1, 0.1), woodMat);
+      rail.position.set(0, 0.95, 2.3 * s);
+      bridge.add(rail);
+      for (const px of [-5, -2.5, 0, 2.5, 5]) {
+        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.08, 0.9, 5), woodMat);
+        post.position.set(px, 0.6, 2.3 * s);
+        bridge.add(post);
+      }
+    }
+    bridge.position.set(-95, 0, -34);
+    scene.add(bridge);
+    feat('road', -95, -34, 12, 5);
+  }
+
+  // ---- 北境群山(雪顶) ----
+  const rockMat = lambert(0x6e6a72, { roughness: 0.95 });
+  const snowMat = lambert(0xf2f4f8, { roughness: 0.85 });
+  for (const [mx, mz, mr, mh] of [
+    [-220, -220, 55, 85], [-140, -235, 48, 70], [-60, -215, 42, 60], [20, -230, 55, 90],
+    [100, -215, 45, 65], [180, -235, 55, 80], [255, -215, 45, 62], [-290, -200, 50, 70], [300, -230, 55, 75],
+  ]) {
+    const m = new THREE.Mesh(new THREE.ConeGeometry(mr, mh, 7), rockMat);
+    m.position.set(mx, mh / 2 - 2, mz);
+    m.rotation.y = Math.random();
+    m.castShadow = true;
+    scene.add(m);
+    const cap = new THREE.Mesh(new THREE.ConeGeometry(mr * 0.34, mh * 0.3, 7), snowMat);
+    cap.position.set(mx, mh - 2 - mh * 0.14, mz);
+    cap.rotation.y = m.rotation.y;
+    scene.add(cap);
+    circle(mx, mz, mr * 0.72);
+    feat('tower', mx, mz, mr, mr);
+  }
+
+  // ---- 苇岸渔村 ----
+  house(-110, 58, 90, 5, 4, 2.6);
+  house(-88, 54, 0, 5, 4, 2.6);
+  {
+    // 栈桥伸入湖中
+    const pier = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.15, 15), woodMat);
+    pier.position.set(-100, 0.3, 78);
+    pier.castShadow = true;
+    scene.add(pier);
+    for (const pz of [72, 77, 82]) {
+      for (const s of [-1, 1]) {
+        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.1, 1.2, 5), woodMat);
+        post.position.set(-100 + s, 0.1, pz);
+        scene.add(post);
+      }
+    }
+    // 小船
+    const boat = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.5, 3.2), woodMat);
+    boat.position.set(-94, 0.25, 86);
+    boat.rotation.y = 0.5;
+    scene.add(boat);
+    // 芦苇
+    for (let i = 0; i < 24; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const rr = 31 + Math.random() * 3.5;
+      const reed = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.05, 1.4 + Math.random(), 4),
+        lambert(0x7a9a4a, { roughness: 1 }));
+      reed.position.set(-100 + Math.cos(a) * rr, 0.7, 100 + Math.sin(a) * rr);
+      scene.add(reed);
+    }
+    feat('house', -100, 78, 3, 15);
+  }
+
+  // ---- 十字路旅店 ----
+  house(12, 72, 0, 8, 6, 3.6);
+  {
+    const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.1, 3.2, 6), woodMat);
+    pole.position.set(17, 1.6, 75.5);
+    scene.add(pole);
+    const arm = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.08, 0.08), woodMat);
+    arm.position.set(16.4, 2.9, 75.5);
+    scene.add(arm);
+    const signCanvas = document.createElement('canvas');
+    signCanvas.width = 128; signCanvas.height = 64;
+    const sg = signCanvas.getContext('2d');
+    sg.fillStyle = '#6b4a2f'; sg.fillRect(0, 0, 128, 64);
+    sg.fillStyle = '#f5e9cf'; sg.font = 'bold 30px serif';
+    sg.textAlign = 'center'; sg.fillText('旅店', 64, 42);
+    const signTex = new THREE.CanvasTexture(signCanvas);
+    const sign = new THREE.Mesh(new THREE.PlaneGeometry(1.1, 0.55),
+      new THREE.MeshStandardMaterial({ map: signTex, side: THREE.DoubleSide, roughness: 0.9 }));
+    sign.position.set(16, 2.35, 75.5);
+    scene.add(sign);
+    // 长凳
+    const bench = new THREE.Mesh(new THREE.BoxGeometry(2, 0.12, 0.5), woodMat);
+    bench.position.set(9, 0.45, 75.6);
+    scene.add(bench);
+  }
+
+  // ---- 哨塔遗迹 ----
+  {
+    const ruin = new THREE.Mesh(new THREE.CylinderGeometry(3.4, 3.9, 7, 10, 1, false), towerMat);
+    ruin.position.set(80, 3.5, -120);
+    ruin.rotation.z = 0.06;
+    ruin.castShadow = true;
+    scene.add(ruin);
+    // 断口碎石
+    for (let i = 0; i < 7; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const rock = new THREE.Mesh(new THREE.IcosahedronGeometry(0.5 + Math.random() * 0.7, 0), rockMat);
+      rock.position.set(80 + Math.cos(a) * (4.5 + Math.random() * 3), 0.4, -120 + Math.sin(a) * (4.5 + Math.random() * 3));
+      rock.castShadow = true;
+      scene.add(rock);
+    }
+    circle(80, -120, 4.2);
+    feat('tower', 80, -120, 7, 7);
+  }
+
+  // ---- 静眠墓园 ----
+  {
+    for (let i = 0; i < 9; i++) {
+      const gx = -48 + (i % 3) * 7 + Math.random() * 2;
+      const gz = -127 + Math.floor(i / 3) * 6 + Math.random() * 2;
+      const stone = new THREE.Mesh(new THREE.BoxGeometry(0.7, 1.1 + Math.random() * 0.4, 0.18), towerMat);
+      stone.position.set(gx, 0.55, gz);
+      stone.rotation.y = (Math.random() - 0.5) * 0.4;
+      stone.rotation.z = (Math.random() - 0.5) * 0.12;
+      stone.castShadow = true;
+      scene.add(stone);
+    }
+    // 枯树
+    const deadTrunk = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.32, 3.4, 6), lambert(0x4a4038, { roughness: 1 }));
+    deadTrunk.position.set(-34, 1.7, -112);
+    deadTrunk.castShadow = true;
+    scene.add(deadTrunk);
+    for (const [bx, by, bz, rot] of [[0.7, 2.9, 0, 0.8], [-0.6, 2.4, 0.2, -0.9], [0.2, 3.3, -0.4, 0.4]]) {
+      const branch = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.09, 1.4, 5), lambert(0x4a4038, { roughness: 1 }));
+      branch.position.set(-34 + bx, by, -112 + bz);
+      branch.rotation.z = rot;
+      scene.add(branch);
+    }
+    circle(-34, -112, 0.5);
+    feat('tent', -40, -120, 18, 14);
+  }
+
+  // ---- 先祖石环 ----
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2;
+    const sx = 170 + Math.cos(a) * 8, sz = -60 + Math.sin(a) * 8;
+    const menhir = new THREE.Mesh(new THREE.BoxGeometry(1.3, 3 + Math.random(), 0.9), rockMat);
+    menhir.position.set(sx, 1.5, sz);
+    menhir.rotation.y = a;
+    menhir.rotation.z = (Math.random() - 0.5) * 0.15;
+    menhir.castShadow = true;
+    scene.add(menhir);
+    circle(sx, sz, 0.9);
+  }
+  feat('tower', 170, -60, 18, 18);
+
+  // ---- 黑石要塞(盗贼老巢) ----
+  const fortPos = new THREE.Vector3(-170, 0, -90);
+  {
+    // 木栅栏圆环(南侧留门)
+    for (let i = 0; i < 26; i++) {
+      const a = (i / 26) * Math.PI * 2;
+      if (a > Math.PI * 0.38 && a < Math.PI * 0.62) continue; // 南门缺口
+      const px = -170 + Math.cos(a) * 14, pz = -90 + Math.sin(a) * 14;
+      const log = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.4, 4.4 + (i % 3) * 0.3, 6), woodMat);
+      log.position.set(px, 2.2, pz);
+      log.castShadow = true;
+      scene.add(log);
+      circle(px, pz, 0.6);
+    }
+    // 头目大帐
+    const bigTent = new THREE.Mesh(new THREE.ConeGeometry(4, 5, 7), lambert(0x3a3a42, { roughness: 1 }));
+    bigTent.position.set(-170, 2.5, -96);
+    bigTent.castShadow = true;
+    scene.add(bigTent);
+    circle(-170, -96, 3.6);
+    // 黑石旗
+    const fpole = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.1, 6, 5), woodMat);
+    fpole.position.set(-165, 3, -84);
+    scene.add(fpole);
+    const fflag = new THREE.Mesh(new THREE.PlaneGeometry(1.8, 1),
+      new THREE.MeshStandardMaterial({ color: 0x1a1a20, side: THREE.DoubleSide, roughness: 1 }));
+    fflag.position.set(-164, 5.4, -84);
+    scene.add(fflag);
+    const fire2 = new THREE.Mesh(new THREE.ConeGeometry(0.5, 1, 6),
+      new THREE.MeshLambertMaterial({ color: 0xff7722, emissive: 0xff5500 }));
+    fire2.position.set(-168, 0.5, -86);
+    scene.add(fire2);
+    const fireLight2 = new THREE.PointLight(0xff8844, 0, 24, 2);
+    fireLight2.position.set(-168, 1.6, -86);
+    scene.add(fireLight2);
+    torches.push({ light: fireLight2, flame: fire2, base: 13 });
+    feat('tent', -170, -90, 28, 28);
+  }
+
+  // ---- 路边木哨塔 ----
+  {
+    const wt = new THREE.Group();
+    for (const [lx, lz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+      const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.13, 4.6, 5), woodMat);
+      leg.position.set(lx, 2.3, lz);
+      leg.rotation.z = -lx * 0.08;
+      leg.rotation.x = lz * 0.08;
+      wt.add(leg);
+    }
+    const deck2 = new THREE.Mesh(new THREE.BoxGeometry(3, 0.16, 3), woodMat);
+    deck2.position.y = 4.6;
+    wt.add(deck2);
+    const roof2 = new THREE.Mesh(new THREE.ConeGeometry(2.4, 1.4, 4), lambert(0x8a5a33, { roughness: 0.9 }));
+    roof2.position.y = 6;
+    roof2.rotation.y = Math.PI / 4;
+    wt.add(roof2);
+    wt.position.set(100, 0, 10);
+    wt.traverse((o) => { o.castShadow = true; });
+    scene.add(wt);
+    box(100, 10, 2.6, 2.6);
+    feat('tower', 100, 10, 3, 3);
+  }
+
+  // ---- 铁匠铺(炉与铁砧,在民居旁) ----
+  {
+    const forge = new THREE.Mesh(new THREE.CylinderGeometry(0.9, 1.1, 1.1, 8), towerMat);
+    forge.position.set(24, 0.55, -6.5);
+    scene.add(forge);
+    const ember = new THREE.Mesh(new THREE.CylinderGeometry(0.6, 0.6, 0.2, 8),
+      new THREE.MeshLambertMaterial({ color: 0xff6622, emissive: 0xdd3300 }));
+    ember.position.set(24, 1.15, -6.5);
+    scene.add(ember);
+    torches.push({ light: null, flame: ember, base: 0 });
+    const anvilBase = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.36, 0.6, 6), woodMat);
+    anvilBase.position.set(25.6, 0.3, -7.5);
+    scene.add(anvilBase);
+    const anvil = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.25, 0.3),
+      lambert(0x3a3a42, { roughness: 0.35, metalness: 0.8 }));
+    anvil.position.set(25.6, 0.72, -7.5);
+    scene.add(anvil);
+    circle(24, -6.5, 1.2);
+  }
+
+  // ---- 新增道路 ----
+  road(140, 26, 168, -46, 3);   // 磨坊→石环
+  road(76, 4, 80, -110, 3);     // 东门外→哨塔遗迹
+  road(-95, -36, -150, -78, 3); // 桥→要塞方向
+  road(-70, 4, -95, 40, 3);     // 西路→渔村方向
+  road(-97, 42, -100, 52, 3);
+
+  // ---- 新区金币 ----
+  coinLine(78, 0, 80, -104, 7);
+  coinLine(142, 24, 166, -42, 7);
+  coinLine(-95, -40, -148, -76, 7);
+  coinSpots.push([-100, 60], [-104, 66], [170, -52], [80, -112], [-40, -114], [12, 66], [100, 14]);
+
+  // ---- 新区宝箱 ----
+  chest(-166, -94, 200);  // 要塞内
+  chest(-104, 60, 90);    // 渔村
+
   // ---- 实例化草丛(纯视觉,不参与碰撞)----
   {
     // 三丛尖叶交叉,读作草而不是方块
@@ -637,6 +916,9 @@ export function buildWorld(scene) {
     const isBlocked = (x, z) => {
       if (Math.hypot(x, z - 5) < 13) return true;                    // 广场
       if (Math.hypot(x + 100, z - 100) < 35) return true;            // 湖
+      if (Math.abs(x + 95) < 6 && z < 72 && z > -228) return true;   // 河
+      if (Math.hypot(x + 170, z + 90) < 16) return true;             // 要塞
+      if (z < -165) return true;                                     // 群山
       for (const [cx, cz, w, d] of blockedRects) {
         if (Math.abs(x - cx) < w / 2 + 1 && Math.abs(z - cz) < d / 2 + 1) return true;
       }
@@ -664,16 +946,35 @@ export function buildWorld(scene) {
   }
 
   // 世界边界
-  box(0, -330, 700, 40); box(0, 330, 700, 40);
-  box(-330, 0, 40, 700); box(330, 0, 40, 700);
+  box(0, -480, 1000, 40); box(0, 480, 1000, 40);
+  box(-480, 0, 40, 1000); box(480, 0, 40, 1000);
 
   return {
     colliders, features, windmills, torches, chests, qBlocks, coinSpots, clouds, waterMats,
-    windmillPos, banditCamp,
+    windmillPos, banditCamp, fortPos,
     questGiverPos: new THREE.Vector3(4, 0, 10),
     playerSpawn: new THREE.Vector3(0, 0, 20),
     gates: [new THREE.Vector3(0, 0, 55), new THREE.Vector3(70, 0, 0)],
     stablePos: new THREE.Vector3(52, 0, 8),
+    // 具名 NPC 站位
+    npcSpots: {
+      king: [0, -30.6, 0],
+      blacksmith: [24.8, -8, -0.6],
+      trader: [48, 10, 0.8],
+      innkeep: [13.5, 76.5, 3.1],
+      fisher: [-100, 70, 3.1],
+    },
+    // 皇家纹章(收集品)
+    crestSpots: [
+      [0, -52.5], [-40, -121], [170, -60], [80, -114], [-100, 84],
+      [146, 24], [-135, 100], [-190, -30], [-166, -86], [8, 78],
+    ],
+    // 竞速赛道(顺序穿环)
+    raceRoute: [[0, 66], [28, 78], [48, 96], [24, 106], [-12, 94], [0, 70]],
+    // 狼出没点
+    wolfSpawns: [[-140, -10], [-170, -40], [-120, -110], [-60, -148], [-190, 20], [-80, -80]],
+    lostHorsePos: new THREE.Vector3(-150, 0, 8),
+    escortRoute: [[10, 1], [40, 0], [66, 0], [74, 2], [100, 9], [134, 17]],
   };
 }
 
