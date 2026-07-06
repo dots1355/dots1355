@@ -1,7 +1,7 @@
 // 对话数据库生成器:手写素材库 × 26 位角色语气 × 时辰/天气/任务情境 组合展开
 // 运行: node tools/gen-dialogue.mjs  → 输出 src/dialogue-db.json(≥50 万字)
 // 每一行都由「情境开场 + 内容主体 + 人物口头禅」按角色声线拼装,组合去重。
-import { writeFileSync } from 'fs';
+import { writeFileSync, readFileSync } from 'fs';
 import { VILLAGERS } from '../src/story.js';
 
 // 可复现的伪随机
@@ -297,6 +297,22 @@ const MEMORIES = {
   guard: ['新兵第一夜站岗,谁都数过星星', '老队长退伍那天,全队敲了一路盾', '第一次抓贼,比贼跑得还慌'],
 };
 
+// ================= 外部内容包(24 个创作代理的产出,tools/content-packs.json) =================
+const PACKS = JSON.parse(readFileSync(new URL('./content-packs.json', import.meta.url), 'utf8'));
+RUMORS.push(...(PACKS.rumors?.lines || []));
+PROVERBS.push(...(PACKS.proverbs?.lines || []));
+for (const e of PACKS.seasonExtra?.entries || []) SEASON_TALK[e.key]?.push(...e.lines);
+for (const e of PACKS.festivalExtra?.entries || []) FESTIVAL_TALK[e.key]?.push(...e.lines);
+for (const pk of ['facts1', 'facts2', 'facts3', 'facts4']) {
+  for (const e of PACKS[pk]?.entries || []) if (FACTS[e.key]) FACTS[e.key].push(...e.lines);
+}
+for (const pk of ['mem1', 'mem2', 'memNamed']) {
+  for (const e of PACKS[pk]?.entries || []) if (MEMORIES[e.key]) MEMORIES[e.key].push(...e.lines);
+}
+if (PACKS.guards?.lines) JOB_EXTRA.guard.push(...PACKS.guards.lines);
+for (const e of PACKS.shopTalk?.entries || []) if (JOB_EXTRA[e.key]) JOB_EXTRA[e.key].push(...e.lines);
+const SMALLTALK = PACKS.smalltalk?.lines || [];
+
 // ================= 组合展开 =================
 const SPEAKERS = Object.keys(VOICES);
 const db = {};
@@ -393,6 +409,13 @@ for (const key of SPEAKERS) {
   for (const mem of MEMORIES[key] || []) {
     for (const frame of ['说起来,{m}……', '有时想起,{m}。', '{m}——一晃这么多年了。', '跟你说件旧事:{m}。']) {
       addLine(key, `${mood()}${frame.replace('{m}', mem)}${tail()}`);
+    }
+  }
+  // 9b) 通用寒暄(所有人都能说,各带自己的口癖)
+  for (const st of SMALLTALK) {
+    for (let k = 0; k < 2; k++) {
+      const ctx2 = pick(['dawn', 'day', 'dusk', 'night']);
+      addLine(key, `${rnd() < 0.4 ? pick(OPENERS[ctx2]) : ''}${mood()}${st}${tail()}`, 'any');
     }
   }
   // 9) 称呼玩家的寒暄(时辰)
