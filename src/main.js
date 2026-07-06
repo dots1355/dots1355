@@ -560,6 +560,185 @@ exGroup.add(exBar, exDot);
 exGroup.position.set(world.questGiverPos.x, 2.1, world.questGiverPos.z);
 scene.add(exGroup);
 
+// ================= 钓鱼(栈桥尽头) =================
+const FISH_SPOT = { x: -100, z: 82 };
+const fishing = { active: false, phase: 'wait', t: 0 };
+const CATCHES = [
+  { w: 45, text: '一条小鲫鱼!老周按行价收了 3 金币。', coins: 3 },
+  { w: 30, text: '一条肥鲤鱼!老周眼睛都亮了,给了 6 金币。', coins: 6 },
+  { w: 12, text: '一只老靴子……老周说他找这只鞋找了十年,硬塞给你 2 金币。', coins: 2, ach: 'boot' },
+  { w: 8,  text: '水草一团。人生就是这样。', coins: 0 },
+  { w: 5,  text: '银月湖大鱼!!鱼尾拍得水花四溅——15 金币,今晚渔村有故事讲了!', coins: 15, ach: 'bigfish' },
+];
+function startFishing() {
+  fishing.active = true;
+  fishing.phase = 'wait';
+  fishing.t = 2.5 + Math.random() * 4;
+  player.yaw = Math.PI; // 面向湖心
+  toast('🎣 抛竿……盯紧浮漂,咬钩时按 E!', 3);
+}
+function fishingReel() {
+  if (fishing.phase === 'bite') {
+    const total = CATCHES.reduce((s, c) => s + c.w, 0);
+    let roll = Math.random() * total;
+    let got = CATCHES[0];
+    for (const c of CATCHES) { roll -= c.w; if (roll <= 0) { got = c; break; } }
+    player.coins += got.coins;
+    if (got.coins > 0) sfx.coin();
+    sfx.splash();
+    if (got.ach) unlockAch(got.ach);
+    openDialog([`(收杆!)${got.text}`]);
+  } else {
+    sfx.splash();
+    toast('收早了,鱼吐着泡跑了。', 2);
+  }
+  fishing.active = false;
+}
+function updateFishing(dt) {
+  if (!fishing.active) return;
+  fishing.t -= dt;
+  if (fishing.phase === 'wait' && fishing.t <= 0) {
+    fishing.phase = 'bite';
+    fishing.t = 0.9;
+    sfx.splash();
+  } else if (fishing.phase === 'bite' && fishing.t <= 0) {
+    fishing.phase = 'wait';
+    fishing.t = 2.5 + Math.random() * 4;
+    toast('浮漂动了一下又静了……鱼跑了。', 2);
+  }
+}
+
+// ================= 街头随机事件(GTA 式) =================
+const streetEvent = { type: null, t: 0, villager: null, bandit: null, horse: null, cooldown: 70 };
+function endStreetEvent() {
+  if (streetEvent.bandit && !streetEvent.bandit.dead) {
+    scene.remove(streetEvent.bandit.group);
+    const i = bandits.indexOf(streetEvent.bandit);
+    if (i >= 0) bandits.splice(i, 1);
+  }
+  if (streetEvent.horse) streetEvent.horse.runaway = false;
+  streetEvent.type = null;
+  streetEvent.bandit = null;
+  streetEvent.horse = null;
+  streetEvent.cooldown = 80 + Math.random() * 60;
+}
+function trySpawnStreetEvent() {
+  if (Math.random() < 0.5) {
+    // 抢劫:挑一个不太远的清醒村民
+    const v = villagers.find((x) => !x.sleeping && x.downT <= 0 &&
+      dist2(player.pos.x, player.pos.z, x.pos.x, x.pos.z) < 3600 &&
+      dist2(player.pos.x, player.pos.z, x.pos.x, x.pos.z) > 100);
+    if (!v) return;
+    streetEvent.type = 'robbery';
+    streetEvent.villager = v;
+    streetEvent.t = 40;
+    streetEvent.bandit = addBandit(v.pos.x + 6, v.pos.z + 3, { escort: false });
+    streetEvent.bandit.robber = true;
+    toast('⚠️ 有盗贼在抢劫路人!快去帮忙!', 3.5);
+    sfx.wanted();
+  } else {
+    streetEvent.type = 'horse';
+    streetEvent.t = 60;
+    const a = Math.random() * 6.28;
+    streetEvent.horse = addHorse(player.pos.x + Math.cos(a) * 25, player.pos.z + Math.sin(a) * 25,
+      0x7a4a30, false);
+    streetEvent.horse.runaway = true;
+    toast('🐴 一匹受惊的马狂奔而过!骑上它让它安静下来!', 3.5);
+  }
+}
+function updateStreetEvent(dt) {
+  if (!streetEvent.type) {
+    streetEvent.cooldown -= dt;
+    if (streetEvent.cooldown <= 0 && started && !player.dead && quest.idx > 0) trySpawnStreetEvent();
+    return;
+  }
+  streetEvent.t -= dt;
+  if (streetEvent.type === 'robbery') {
+    const b = streetEvent.bandit, v = streetEvent.villager;
+    if (b.dead) {
+      unlockAch('hero');
+      player.coins += 15;
+      sfx.coin();
+      showBubble(v, v.id.name, '恩人呐!这点心意您一定收下!(塞给你 15 金币)', 4);
+      streetEvent.bandit = null;
+      endStreetEvent();
+      return;
+    }
+    if (streetEvent.t <= 0) { endStreetEvent(); return; }
+    // 盗贼得手后逃向森林
+    if (b.fleeing) {
+      moveEntity(b, -150, -20, 6.5, dt);
+      b.group.position.copy(b.pos);
+      b.group.rotation.y = b.yaw;
+      animateLimbs(b.parts, b.walkT, true, b.group, 1);
+      if (dist2(b.pos.x, b.pos.z, -150, -20) < 100) endStreetEvent();
+    }
+  } else if (streetEvent.type === 'horse') {
+    const h = streetEvent.horse;
+    if (player.mounted === h) {
+      h.runaway = false;
+      player.coins += 10;
+      sfx.coin();
+      toast('🐴 马安静了下来。马主人追上来,塞给你 10 金币连声道谢!', 4);
+      streetEvent.horse = null;
+      endStreetEvent();
+      return;
+    }
+    if (streetEvent.t <= 0) { endStreetEvent(); return; }
+  }
+}
+
+// ================= 悬赏板(无限重复) =================
+const BOUNTY_NAMES = ['独眼汉斯', '瘸腿约里克', '大鼻子威利', '无声的多特', '斑脸巴克', '铁牙戈登'];
+const BOUNTY_SPOTS = [
+  ['幽暗森林', -150, -20], ['哨塔遗迹', 80, -118], ['先祖石环', 168, -58], ['静眠墓园', -42, -118],
+];
+const bountyRT = { target: null, name: '', cooldown: 0 };
+{
+  // 告示板
+  const bb = new THREE.Group();
+  for (const s of [-1, 1]) {
+    const post = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.09, 2.2, 5),
+      lambert(0x6b4a2f, { roughness: 0.9 }));
+    post.position.set(0.8 * s, 1.1, 0);
+    bb.add(post);
+  }
+  const bCanvas = document.createElement('canvas');
+  bCanvas.width = 128; bCanvas.height = 96;
+  const bg = bCanvas.getContext('2d');
+  bg.fillStyle = '#d8c9a0'; bg.fillRect(0, 0, 128, 96);
+  bg.fillStyle = '#5a3a1a'; bg.font = 'bold 40px serif';
+  bg.textAlign = 'center'; bg.fillText('悬赏', 64, 58);
+  const plank = new THREE.Mesh(new THREE.PlaneGeometry(2, 1.4),
+    new THREE.MeshStandardMaterial({ map: new THREE.CanvasTexture(bCanvas), side: THREE.DoubleSide, roughness: 0.95 }));
+  plank.position.y = 1.6;
+  bb.add(plank);
+  bb.position.set(8, 0, 46);
+  bb.rotation.y = -0.5;
+  scene.add(bb);
+  colliders.circles.push({ x: 8, z: 46, r: 0.9 });
+}
+function takeBounty() {
+  const [place, bx, bz] = BOUNTY_SPOTS[Math.floor(Math.random() * BOUNTY_SPOTS.length)];
+  bountyRT.name = BOUNTY_NAMES[Math.floor(Math.random() * BOUNTY_NAMES.length)];
+  bountyRT.target = addBandit(bx + (Math.random() * 8 - 4), bz + (Math.random() * 8 - 4),
+    { hp: 5, scale: 1.12, dmg: 2 });
+  bountyRT.target.bountyHead = true;
+  sfx.accept();
+  openDialog([`(揭下悬赏令)通缉要犯「${bountyRT.name}」,现身于${place}一带。生死不论,赏金 30 枚。`]);
+}
+function updateBounty(dt) {
+  if (bountyRT.cooldown > 0) bountyRT.cooldown -= dt;
+  if (bountyRT.target && bountyRT.target.dead) {
+    player.coins += 30;
+    sfx.fanfare();
+    toast(`📜 「${bountyRT.name}」已伏法,赏金 30 金币到手!`, 4);
+    bountyRT.target = null;
+    bountyRT.cooldown = 30;
+    saveGame();
+  }
+}
+
 // ================= 具名 NPC =================
 const npcStyles = {
   king: { shirt: 0x7a1f8a, pants: 0x3a2a4a, hair: 0xd8d8d8 },
@@ -584,6 +763,9 @@ namedNPCs.push(steward);
 
 // ================= 无意义成就(奖励瞎玩) =================
 const ACH_DEFS = {
+  boot:     { name: '湖底时尚', desc: '钓上一只老靴子' },
+  bigfish:  { name: '银月传说', desc: '钓上湖中大鱼' },
+  hero:     { name: '见义勇为', desc: '阻止一次街头抢劫' },
   chucker:  { name: '禽兽行为', desc: '扔出 10 次鸡' },
   pecked:   { name: '鸡下败将', desc: '被复仇鸡群啄中 5 次' },
   windmill: { name: '第二位风车骑士', desc: '对着风车挥剑' },
@@ -1396,6 +1578,8 @@ function clearWanted() {
 let promptText = '';
 function tryInteract() {
   if (!started || player.dead) return;
+  // 钓鱼中:收杆
+  if (fishing.active) { fishingReel(); return; }
   // 扔鸡(抱着鸡时 E 投掷)
   if (player.carrying) {
     const c = player.carrying;
@@ -1506,6 +1690,18 @@ function tryInteract() {
     if (n.key === 'gambler') { gamble(); return; }
     if (n.key === 'bard') { bardSong(); return; }
     openDialog([`${n.def.name}:${n.def.idle[n.lineIdx++ % n.def.idle.length]}`]);
+    return;
+  }
+  // 栈桥垂钓
+  if (!player.mounted && dist2(player.pos.x, player.pos.z, FISH_SPOT.x, FISH_SPOT.z) < 10) {
+    startFishing();
+    return;
+  }
+  // 悬赏板
+  if (dist2(player.pos.x, player.pos.z, 8, 46) < 8) {
+    if (bountyRT.target) openDialog([`(告示板)悬赏令仍在追缉中——「${bountyRT.name}」,生死不论。`]);
+    else if (bountyRT.cooldown > 0) openDialog(['(告示板)新的悬赏令还没贴出来,过一会儿再来看看。']);
+    else takeBounty();
     return;
   }
   // 抱鸡(半径小,贴身优先)
@@ -1692,7 +1888,7 @@ function tryAttack() {
       dropCoins(b.pos, b.boss ? 20 : 5);
       addPickup('heart', b.pos.x, b.pos.z + 1, 30);
       if (b.boss) toast('⚔️ 血斧巴罗克倒下了!黑石兄弟会土崩瓦解!', 5);
-      if (quest.active && missions[quest.idx].type === 'bandits' && !b.boss && !b.escort) {
+      if (quest.active && missions[quest.idx].type === 'bandits' && !b.boss && !b.escort && !b.bountyHead && !b.robber) {
         quest.progress++;
         toast(`击败盗贼 ${quest.progress}/3`, 2);
         if (quest.progress >= 3) completeMission();
@@ -1727,6 +1923,7 @@ function damagePlayer(n) {
   player.hp -= n;
   player.invulnT = 0.7;
   camShake = 0.45;
+  fishing.active = false;
   sfx.hurt();
   flashEl.style.opacity = 0.45;
   setTimeout(() => (flashEl.style.opacity = 0), 120);
@@ -1869,9 +2066,37 @@ function updateGuards(dt) {
   }
 }
 
+function updateRobber(b, dt) {
+  if (b.stunT > 0) { b.stunT -= dt; return; }
+  const v = streetEvent.villager;
+  if (b.fleeing || !v) return; // 逃跑移动由事件管理器驱动
+  b.attackCd = Math.max(0, b.attackCd - dt);
+  let moving = false;
+  if (v.downT > 0) {
+    b.fleeing = true;
+    toast('盗贼得手了,正往幽暗森林逃!', 2.5);
+  } else {
+    const vd = Math.hypot(v.pos.x - b.pos.x, v.pos.z - b.pos.z);
+    if (vd > 1.3) { moveEntity(b, v.pos.x, v.pos.z, 5.2, dt); moving = true; }
+    else if (b.attackCd <= 0) {
+      b.attackCd = 1;
+      b.swingT = 0.35;
+      v.downT = 8;
+      v.group.rotation.x = -Math.PI / 2;
+      sfx.hit();
+    }
+  }
+  b.group.position.copy(b.pos);
+  b.group.rotation.y = b.yaw;
+  b.parts._attackAnim = (b.swingT || 0) > 0;
+  animateLimbs(b.parts, b.walkT, moving, b.group, 1);
+  if (b.swingT > 0) { b.swingT -= dt; meleeSwing(b.parts, Math.min(1, 1 - b.swingT / 0.35)); }
+}
+
 function updateBandits(dt) {
   for (const b of bandits) {
     if (b.dead) continue;
+    if (b.robber) { updateRobber(b, dt); continue; }
     if (b.stunT > 0) { b.stunT -= dt; continue; }
     b.attackCd = Math.max(0, b.attackCd - dt);
     const pd = Math.hypot(player.pos.x - b.pos.x, player.pos.z - b.pos.z);
@@ -1978,6 +2203,20 @@ function updateHorses(dt) {
     if (h === player.mounted) continue;
     // 空中下马后自然回落地面
     if (h.pos.y > 0) h.pos.y = Math.max(0, h.pos.y - 22 * dt);
+    if (h.runaway) {
+      // 受惊狂奔:不停变向
+      h.timer -= dt;
+      if (h.timer <= 0) {
+        h.timer = 1.2 + Math.random();
+        const a = Math.random() * 6.28;
+        h.rTarget = [h.pos.x + Math.cos(a) * 20, h.pos.z + Math.sin(a) * 20];
+      }
+      if (h.rTarget) moveEntityHorse(h, h.rTarget[0], h.rTarget[1], 9, dt);
+      h.group.position.copy(h.pos);
+      h.group.rotation.y = h.yaw;
+      animHorseLegs(h, 1.5);
+      continue;
+    }
     h.timer -= dt;
     let moving = false;
     if (h.timer <= 0) {
@@ -2156,6 +2395,10 @@ function updatePlayer(dt) {
     player.walkT += dt * speed * 2.2;
   }
   moveState = moving ? (speed > 5 ? 2 : 1) : 0;
+  if (fishing.active && moving) {
+    fishing.active = false;
+    toast('收竿了。', 1.5);
+  }
   // 疾跑扬尘
   if (moving && player.onGround && speed > 5) {
     player.stepT = (player.stepT || 0) - dt;
@@ -2328,6 +2571,11 @@ function updateQuest(dt) {
   exGroup.rotation.y += dt * 2;
 
   beacon.visible = false;
+  if (bountyRT.target && !bountyRT.target.dead) {
+    beacon.visible = true;
+    beacon.position.x = bountyRT.target.pos.x;
+    beacon.position.z = bountyRT.target.pos.z;
+  }
   if (!quest.active || player.dead) return;
   const m = missions[quest.idx];
   const setBeacon = (x, z) => { beacon.visible = true; beacon.position.x = x; beacon.position.z = z; };
@@ -2650,6 +2898,10 @@ function computePrompt() {
   promptText = '';
   promptTargetPos = null;
   if (!started || player.dead) return;
+  if (fishing.active) {
+    promptText = fishing.phase === 'bite' ? '‼️ 咬钩了!按 E 收杆!!' : '🎣 等鱼上钩……(走动收竿)';
+    return;
+  }
   if (player.carrying) { promptText = '按 E 扔鸡!'; return; }
   if (player.mounted) { promptText = player.mounted.sheep ? '按 E 下羊(它松了口气)' : '按 E 下马'; return; }
   if (dialog.open) return;
@@ -2677,6 +2929,16 @@ function computePrompt() {
       prophet: '按 E 听老糊涂的预言(?)',
       quixote: '按 E 与风车骑士交谈',
     }[n.key];
+    return;
+  }
+  if (!player.mounted && dist2(player.pos.x, player.pos.z, FISH_SPOT.x, FISH_SPOT.z) < 10) {
+    mark(FISH_SPOT.x, FISH_SPOT.z, 1.6);
+    promptText = '按 E 垂钓';
+    return;
+  }
+  if (dist2(player.pos.x, player.pos.z, 8, 46) < 8) {
+    mark(8, 46, 2.4);
+    promptText = bountyRT.target ? '按 E 查看悬赏令' : '按 E 揭悬赏令(赏金 30)';
     return;
   }
   for (const c of chickens) {
@@ -2829,7 +3091,7 @@ function drawMinimap() {
 // 调试/自动化测试句柄
 window.__gtm = {
   player, quest, questRT, horses, guards, bandits, villagers, wolves, namedNPCs, steward,
-  chickens, funnyNPCs,
+  chickens, funnyNPCs, fishing, streetEvent, bountyRT, takeBounty, trySpawnStreetEvent,
   crime, weather, setWeather, talkQuestGiver, completeMission, missions, advanceDialog,
   getWanted: () => wanted,
   setTime: (t) => { dayTime = t; },
@@ -2872,6 +3134,9 @@ function loop(now) {
   updatePickups(dt);
   updateQuest(dt);
   updateWanted(dt);
+  updateFishing(dt);
+  updateStreetEvent(dt);
+  updateBounty(dt);
   updateWeather(dt);
   updateRegion(dt);
   updateBubble(dt);
