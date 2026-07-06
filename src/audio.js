@@ -81,6 +81,12 @@ export const weatherAudio = {
 
 export const sfx = {
   hoof()    { tone(300 + Math.random() * 80, 0.045, 'triangle', 0.06, 0, -140); },
+  cluck()   { const f = 900 + Math.random() * 500; tone(f, 0.05, 'square', 0.07, 0, 300); tone(f * 0.8, 0.06, 'square', 0.06, 0.06, -200); },
+  baa()     { tone(360, 0.28, 'sawtooth', 0.09, 0, -140); tone(300, 0.18, 'sawtooth', 0.06, 0.12, -80); },
+  dice()    { tone(2000, 0.02, 'square', 0.08); tone(1600, 0.02, 'square', 0.08, 0.06); tone(1800, 0.03, 'square', 0.08, 0.13); },
+  splash()  { tone(500, 0.12, 'sine', 0.1, 0, -350); tone(900, 0.08, 'sine', 0.05, 0.05, -500); },
+  lute()    { [392, 494, 587].forEach((f, i) => tone(f, 0.2, 'triangle', 0.09, i * 0.09)); },
+  hiccup()  { tone(300, 0.07, 'square', 0.09, 0, 500); },
   coin()    { tone(988, 0.08, 'square', 0.1); tone(1319, 0.22, 'square', 0.1, 0.08); },
   jump()    { tone(300, 0.16, 'square', 0.09, 0, 420); },
   stomp()   { tone(220, 0.14, 'square', 0.14, 0, -160); tone(440, 0.1, 'square', 0.1, 0.1, 300); },

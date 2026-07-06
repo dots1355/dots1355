@@ -237,6 +237,84 @@ export function makeWolf() {
   return { group: g, parts };
 }
 
+// ---- 鸡(面朝 +Z,惹不起的存在)----
+export function makeChicken() {
+  const g = new THREE.Group();
+  const parts = { legs: [] };
+  const white = lambert(0xf2eee6, { roughness: 0.95 });
+  const body = new THREE.Mesh(new THREE.SphereGeometry(0.18, 8, 6), white);
+  body.scale.set(1, 0.95, 1.25);
+  body.position.y = 0.26;
+  body.castShadow = true;
+  g.add(body);
+  parts.body = body;
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.09, 7, 6), white);
+  head.position.set(0, 0.46, 0.16);
+  g.add(head);
+  parts.head = head;
+  const beak = new THREE.Mesh(new THREE.ConeGeometry(0.03, 0.08, 4), lambert(0xe8a020));
+  beak.rotation.x = Math.PI / 2;
+  beak.position.set(0, 0, 0.11);
+  head.add(beak);
+  const comb = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.06, 0.08), lambert(0xd03030));
+  comb.position.set(0, 0.1, 0);
+  head.add(comb);
+  const tail = new THREE.Mesh(new THREE.ConeGeometry(0.08, 0.16, 5), white);
+  tail.rotation.x = -Math.PI / 3;
+  tail.position.set(0, 0.34, -0.2);
+  g.add(tail);
+  for (const s of [-1, 1]) {
+    const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.14, 4), lambert(0xe8a020));
+    leg.position.set(0.05 * s, 0.09, 0);
+    g.add(leg);
+    parts.legs.push(leg);
+  }
+  return { group: g, parts };
+}
+
+// ---- 绵羊(面朝 +Z,可以骑,为什么不呢)----
+export function makeSheep() {
+  const g = new THREE.Group();
+  const parts = { legs: [] };
+  const woolGeo = new THREE.IcosahedronGeometry(0.42, 1);
+  {
+    const p = woolGeo.attributes.position;
+    for (let i = 0; i < p.count; i++) {
+      p.setXYZ(i,
+        p.getX(i) + (Math.random() - 0.5) * 0.1,
+        p.getY(i) + (Math.random() - 0.5) * 0.1,
+        p.getZ(i) + (Math.random() - 0.5) * 0.1);
+    }
+    woolGeo.computeVertexNormals();
+  }
+  const wool = new THREE.Mesh(woolGeo, lambert(0xf0ece2, { roughness: 1 }));
+  wool.scale.set(1, 0.9, 1.3);
+  wool.position.y = 0.58;
+  wool.castShadow = true;
+  g.add(wool);
+  const head = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.22, 0.26), lambert(0x2e2a26));
+  head.position.set(0, 0.72, 0.56);
+  head.castShadow = true;
+  g.add(head);
+  for (const s of [-1, 1]) {
+    const ear = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.05, 0.06), lambert(0x2e2a26));
+    ear.position.set(0.13 * s, 0.06, -0.02);
+    ear.rotation.z = -s * 0.5;
+    head.add(ear);
+  }
+  const legGeo = new THREE.CylinderGeometry(0.045, 0.05, 0.4, 5);
+  for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+    const pivot = new THREE.Group();
+    pivot.position.set(0.18 * sx, 0.42, 0.3 * sz);
+    const leg = new THREE.Mesh(legGeo, lambert(0x2e2a26));
+    leg.position.y = -0.18;
+    pivot.add(leg);
+    g.add(pivot);
+    parts.legs.push(pivot);
+  }
+  return { group: g, parts };
+}
+
 // ---- 碰撞:圆形与轴对齐盒 ----
 export function resolveCollisions(p, r, colliders) {
   for (const c of colliders.circles) {

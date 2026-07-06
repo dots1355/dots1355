@@ -1,7 +1,7 @@
 // 《侠盗猎马人:中世纪王国》主逻辑
 import * as THREE from 'three';
 import { buildWorld } from './world.js';
-import { makeHumanoid, makeHorse, makeWolf, resolveCollisions, angleLerp, dist2, lambert } from './entities.js';
+import { makeHumanoid, makeHorse, makeWolf, makeChicken, makeSheep, resolveCollisions, angleLerp, dist2, lambert } from './entities.js';
 import { INTRO, REGIONS, GUARD_LINES, NPCS, MISSIONS, VILLAGERS, DIALOGS, TIME_GREETINGS } from './story.js';
 import { initAudio, sfx, startMusic, toggleMusic, weatherAudio } from './audio.js';
 import { preloadAIAssets, generateRemoteAITextures } from './textures.js';
@@ -283,6 +283,7 @@ const player = {
   hp: 10, maxHp: 10, coins: 0,
   walkT: 0, attackT: 0, invulnT: 0, mounted: null, dead: false,
   parcel: null, swordLv: 1, royalHorse: false,
+  carrying: null, drunkT: 0, hiccupT: 0,
 };
 player.group.position.copy(player.pos);
 scene.add(player.group);
@@ -413,6 +414,129 @@ function killWolf(w) {
   }
 }
 
+// ================= 鸡(惹不起的存在) =================
+const chickens = [];
+let chickenAnger = 0, chickenAngerT = 0, revengeT = 0;
+function addChicken(x, z) {
+  const c = { ...makeChicken(), pos: new THREE.Vector3(x, 0, z), yaw: Math.random() * 6.28,
+    home: new THREE.Vector3(x, 0, z), state: 'idle', timer: Math.random() * 3,
+    vel: new THREE.Vector3(), walkT: 0, peckCd: 0, extra: false };
+  c.group.position.copy(c.pos);
+  scene.add(c.group);
+  chickens.push(c);
+  return c;
+}
+[[18, 84], [22, 88], [26, 84], [10, 22], [-14, 20], [44, 14], [14, 78], [-16, 90]]
+  .forEach(([x, z]) => addChicken(x, z));
+
+function pokeChicken(c) {
+  sfx.cluck();
+  c.state = 'flee';
+  c.timer = 2.5;
+  chickenAnger++;
+  chickenAngerT = 30;
+  spawnDust(c.pos.x, 0.3, c.pos.z, 3, 0.4, 1.2);
+  if (chickenAnger === 2) toast('🐔 那只鸡狠狠地瞪了你一眼。', 2);
+  if (chickenAnger >= 3 && revengeT <= 0) {
+    revengeT = 22;
+    toast('🐔🐔🐔 你惹怒了鸡群!!快跑!!', 3.5);
+    sfx.wanted();
+    for (let i = 0; i < 5; i++) {
+      const a = Math.random() * 6.28;
+      const rc = addChicken(player.pos.x + Math.cos(a) * 12, player.pos.z + Math.sin(a) * 12);
+      rc.extra = true;
+    }
+  }
+}
+
+function updateChickens(dt) {
+  if (chickenAngerT > 0) { chickenAngerT -= dt; if (chickenAngerT <= 0) chickenAnger = 0; }
+  if (revengeT > 0) {
+    revengeT -= dt;
+    if (revengeT <= 0) {
+      chickenAnger = 0;
+      toast('鸡群消气了……这次就算了。', 2.5);
+      for (let i = chickens.length - 1; i >= 0; i--) {
+        if (chickens[i].extra) { scene.remove(chickens[i].group); chickens.splice(i, 1); }
+        else chickens[i].state = 'idle';
+      }
+    }
+  }
+  for (const c of chickens) {
+    if (c === player.carrying) continue;
+    let moving = false;
+    if (c.state === 'thrown') {
+      c.vel.y -= 14 * dt;
+      if (c.vel.y < -3) c.vel.y = -3; // 扑腾缓降
+      c.pos.addScaledVector(c.vel, dt);
+      c.walkT += dt * 30;
+      if (c.pos.y <= 0) {
+        c.pos.y = 0;
+        c.state = 'flee';
+        c.timer = 3;
+        sfx.cluck();
+        // 鸡弹砸中卫兵:袭警!
+        for (const g of guards) {
+          if (g.downT <= 0 && dist2(c.pos.x, c.pos.z, g.pos.x, g.pos.z) < 2.2) {
+            g.stunT = Math.max(g.stunT, 2.5);
+            crime(1, '🐔 你用一只鸡袭击了卫兵!');
+            break;
+          }
+        }
+        // 砸中村民:吓个半死(不算犯罪,算没品)
+        for (const v of villagers) {
+          if (!v.sleeping && v.downT <= 0 && dist2(c.pos.x, c.pos.z, v.pos.x, v.pos.z) < 2.2) {
+            v.fleeT = 3.5;
+            toast('🐔 精准鸡击!村民魂飞魄散。', 2);
+            break;
+          }
+        }
+      }
+    } else if (revengeT > 0 && !player.dead) {
+      c.peckCd = Math.max(0, c.peckCd - dt);
+      const pd = Math.hypot(player.pos.x - c.pos.x, player.pos.z - c.pos.z);
+      if (pd > 0.7) { moveEntity(c, player.pos.x, player.pos.z, 6.8, dt); moving = true; }
+      else if (c.peckCd <= 0) {
+        c.peckCd = 1.1;
+        damagePlayer(1);
+        sfx.cluck();
+        if (++stats.pecks >= 5) unlockAch('pecked');
+      }
+    } else if (c.state === 'flee') {
+      c.timer -= dt;
+      if (c.timer <= 0) c.state = 'idle';
+      const fx = c.pos.x - player.pos.x, fz = c.pos.z - player.pos.z;
+      const d = Math.hypot(fx, fz) || 1;
+      moveEntity(c, c.pos.x + (fx / d) * 4, c.pos.z + (fz / d) * 4, 5.5, dt);
+      moving = true;
+    } else {
+      c.timer -= dt;
+      if (c.timer <= 0) {
+        c.timer = 1.5 + Math.random() * 3;
+        const a = Math.random() * 6.28;
+        c.target = [c.home.x + Math.cos(a) * 4, c.home.z + Math.sin(a) * 4];
+      }
+      if (c.target && !moveEntity(c, c.target[0], c.target[1], 1.6, dt)) moving = true;
+    }
+    c.group.position.copy(c.pos);
+    c.group.rotation.y = c.yaw;
+    c.parts.head.position.z = 0.16 + (moving ? Math.sin(c.walkT * 2) * 0.05 : 0);
+    c.parts.body.position.y = 0.26 + (moving ? Math.abs(Math.sin(c.walkT)) * 0.03 : 0);
+  }
+}
+
+// ================= 绵羊(可以骑,为什么不呢) =================
+function addSheep(x, z) {
+  const s = { ...makeSheep(), pos: new THREE.Vector3(x, 0, z), yaw: Math.random() * 6.28,
+    home: new THREE.Vector3(x, 0, z), owned: false, stolen: false, sheep: true,
+    state: 'idle', timer: Math.random() * 4, walkT: 0, baaT: 0 };
+  s.group.position.copy(s.pos);
+  scene.add(s.group);
+  horses.push(s); // 复用坐骑系统
+  return s;
+}
+[[-38, 63], [-42, 67], [-36, 68], [-44, 62], [-40, 71], [-34, 64]].forEach(([x, z]) => addSheep(x, z));
+
 // ================= 任务系统 =================
 const missions = MISSIONS;
 const quest = { idx: 0, active: false, progress: 0, timer: 0 };
@@ -457,6 +581,156 @@ for (const [key, [nx, nz, nyaw]] of Object.entries(world.npcSpots)) {
 const steward = { group: questGiver.group, parts: questGiver.parts, key: 'steward',
   def: NPCS.steward, pos: world.questGiverPos.clone(), yaw: Math.PI, lineIdx: 0, walkT: 0 };
 namedNPCs.push(steward);
+
+// ================= 无意义成就(奖励瞎玩) =================
+const ACH_DEFS = {
+  chucker:  { name: '禽兽行为', desc: '扔出 10 次鸡' },
+  pecked:   { name: '鸡下败将', desc: '被复仇鸡群啄中 5 次' },
+  windmill: { name: '第二位风车骑士', desc: '对着风车挥剑' },
+  wisher:   { name: '许愿池钉子户', desc: '许愿 10 次' },
+  drunkard: { name: '酒中豪杰', desc: '醉倒 3 次' },
+  loser:    { name: '赌怪', desc: '骰子连输 3 把' },
+  shepherd: { name: '羊骑士', desc: '骑羊走过 100 米' },
+  bouncer:  { name: '弹簧靴', desc: '2 秒内连环踩踏两个目标' },
+};
+const stats = { thrown: 0, pecks: 0, wishes: 0, drunks: 0, loseStreak: 0, sheepDist: 0, lastStomp: -99 };
+let achUnlocked = [];
+function unlockAch(key) {
+  if (achUnlocked.includes(key)) return;
+  achUnlocked.push(key);
+  sfx.fanfare();
+  toast(`🏆 无意义成就:${ACH_DEFS[key].name} —— ${ACH_DEFS[key].desc}`, 4);
+  saveGame();
+}
+
+// ================= 搞笑 NPC(无意义但快乐) =================
+const FUNNY = {
+  gambler: {
+    name: '赌鬼豆子', spot: [8, 74.5, 2.6],
+    style: { shirt: 0x8a6a1a, pants: 0x3a3026, hair: 0x1a1a14 },
+    idle: [
+      '手气这东西,越没有越想要。',
+      '我戒赌了。从今天中午开始。',
+      '这对骰子跟了我十年,输了我八年。',
+      '别信什么必胜法,信我——也别信。',
+    ],
+  },
+  bard: {
+    name: '吟游诗人皮波', spot: [-5, 9.5, 2.8],
+    style: { shirt: 0x9a3aa0, pants: 0x2a2a3a, hair: 0xd0b040 },
+    idle: [
+      '琴弦一响,金币作响……最好是。',
+      '我给巨龙写过歌。它没来听,万幸。',
+      '灵感这东西,和跳蚤一样,痒的时候抓不着。',
+      '想听你自己的歌吗?我出词,你出事迹。',
+    ],
+  },
+  prophet: {
+    name: '疯子老糊涂', spot: [-11, 1.5, 1.2],
+    style: { shirt: 0x5a5a52, pants: 0x4a4640, hair: 0xcccccc },
+    idle: [
+      '我看见了!头顶的太阳每四分钟绕一圈——这合理吗?!',
+      '世界的尽头有一堵看不见的墙。我走过去,鼻子撞扁了。',
+      '雨不是云下的!是有人在天上倒水!我数过,每次都是一千一百条雨丝!',
+      '金币会自己转圈圈,你没发现吗?没有风!它们自己在转!',
+      '我梦见我们都是一堆会走路的方块……醒来后我看了看我的手,不敢再想。',
+      '每天清晨,面包师都从同一个位置出现。时间是个圈!圈!',
+      '月亮和太阳从来不同时出现超过一炷香——有人在换布景!',
+      '你走路的样子……腿的摆动像被人操纵着。你自己知道吗?!',
+    ],
+  },
+  quixote: {
+    name: '风车骑士唐豆', spot: [133.5, 14.5, 1.0],
+    style: { shirt: 0x7a7a86, pants: 0x3a3a44, helmet: true, sword: true },
+    idle: [
+      '退后!那个挥舞四条巨臂的巨人是我的对手!',
+      '我叫唐豆,风车骑士!已与此巨人激战三年,不分胜负!',
+      '它转一圈,我砍一剑。公平的决斗!',
+      '别被它温和的外表骗了——它在积蓄力量,我看得出来!',
+      '等我打败它,磨坊主会把它的四条手臂送给我做纪念。他亲口答应的!',
+    ],
+  },
+};
+const funnyNPCs = [];
+for (const [key, def] of Object.entries(FUNNY)) {
+  const n = { ...makeHumanoid(def.style), key, def,
+    pos: new THREE.Vector3(def.spot[0], 0, def.spot[1]), yaw: def.spot[2],
+    lineIdx: 0, walkT: 0, swingT: 0 };
+  n.group.position.copy(n.pos);
+  n.group.rotation.y = n.yaw;
+  scene.add(n.group);
+  funnyNPCs.push(n);
+}
+const quixote = funnyNPCs.find((n) => n.key === 'quixote');
+let quixoteT = 2;
+
+// 骰子赌局
+function gamble() {
+  sfx.dice();
+  if (player.coins < 10) {
+    openDialog(['豆子:(把骰子一收)兜里连十个金币都没有?去去去,赚够了再来坐庄家对面。']);
+    return;
+  }
+  const a = 1 + Math.floor(Math.random() * 6), b = 1 + Math.floor(Math.random() * 6);
+  const c = 1 + Math.floor(Math.random() * 6), d = 1 + Math.floor(Math.random() * 6);
+  const my = a + b, his = c + d;
+  let result;
+  if (my > his) { player.coins += 10; stats.loseStreak = 0; result = '豆子:(肉痛地推来金币)哎哟!拿走拿走,今晚喝西北风的是我。'; }
+  else if (my < his) {
+    player.coins -= 10;
+    if (++stats.loseStreak >= 3) unlockAch('loser');
+    result = '豆子:(笑眯眯地扒拉金币)承让承让——骰子亲我,不亲你。';
+  }
+  else { result = '豆子:平局!钱各回各家……真没意思,再来?'; }
+  openDialog([
+    '豆子:(搓了搓骰子)十个金币,买定离手——',
+    `豆子:(哗啦一掷)你 ${a}+${b}=${my} 点,我 ${c}+${d}=${his} 点!`,
+    result,
+  ]);
+}
+
+// 吟游诗人:按你的真实事迹即兴打油诗
+function bardSong() {
+  sfx.lute();
+  const deeds = [];
+  if (wanted > 0) deeds.push(`通缉星星头上飘,卫兵追他满城跑`);
+  if (horses.some((h) => h.stolen)) deeds.push('顺过人家一匹马(嘘——)');
+  if (player.royalHorse) deeds.push('胯下疾风踏烟尘');
+  if (wolfKills > 0) deeds.push(`林中恶狼${wolfKills}头倒`);
+  if (crestsFound.length > 0) deeds.push(`皇家纹章寻得${crestsFound.length}枚`);
+  if (quest.idx >= missions.length) deeds.push('血斧授首,要塞已平');
+  else if (quest.idx > 0) deeds.push(`领主的委托办完${quest.idx}件`);
+  deeds.push(`腰间金币${player.coins}枚,叮当作响赛铃铛`);
+  if (deeds.length < 3) deeds.push('初来乍到名声浅,且看来日翻波澜');
+  const pages = ['皮波:(拨响鲁特琴)咳咳——《绿帽游侠之歌》,即兴版,走你!'];
+  for (let i = 0; i < deeds.length; i += 2) {
+    pages.push(`皮波:♪ ${deeds.slice(i, i + 2).join(';')} ♪`);
+  }
+  pages.push('皮波:(潇洒收弦)……打赏随意,掌声免费!');
+  openDialog(pages);
+}
+
+// 喷泉许愿
+const WISHES = [
+  ['水花溅了你一脸。愿望大概是收到了。', null],
+  ['一条鱼吐了个泡,像是在嘲笑你。', null],
+  ['你听见硬币落底的声音……它去和另外三百枚作伴了。', null],
+  ['什么都没发生。这就是人生。', null],
+  ['水面映出你的绿帽子。真好看。就这样。', null],
+  ['一只青蛙浮上来看了你一眼,又沉下去了。', null],
+  ['你许愿的瞬间打了个喷嚏。愿望作废,金币不退。', null],
+  ['湖神打了个喷嚏——十枚金币喷了出来?!', 'coins'],
+  ['一颗心从水里浮了上来?!别问,快捡!', 'heart'],
+];
+function fountainWish() {
+  player.coins--;
+  sfx.splash();
+  if (++stats.wishes >= 10) unlockAch('wisher');
+  const [text, effect] = WISHES[Math.floor(Math.random() * WISHES.length)];
+  if (effect === 'coins') { player.coins += 10; sfx.coin(); }
+  if (effect === 'heart') addPickup('heart', player.pos.x + 1, player.pos.z + 1, 20);
+  openDialog([`(叮——金币入水)${text}`]);
+}
 
 // 具名 NPC 的一天:白天守铺 → 黄昏去旅店 → 夜里回家
 const NPC_SCHEDULE = {
@@ -630,6 +904,14 @@ function villagerChatter() {
     showBubble(g, null, dbLine('guard') || GUARD_LINES[Math.floor(Math.random() * GUARD_LINES.length)]);
     return;
   }
+  for (const n of funnyNPCs) {
+    if (dist2(player.pos.x, player.pos.z, n.pos.x, n.pos.z) > 12) continue;
+    const last = bubble.cooldowns.get(n) || 0;
+    if (now - last < 20000) continue;
+    bubble.cooldowns.set(n, now);
+    showBubble(n, n.def.name, n.def.idle[Math.floor(Math.random() * n.def.idle.length)]);
+    return;
+  }
 }
 
 // ================= 操作说明:20 秒后淡出,按 H 呼出 =================
@@ -780,6 +1062,7 @@ function saveGame() {
       coins: player.coins, questIdx: quest.idx, crests: crestsFound,
       swordLv: player.swordLv, royalHorse: player.royalHorse,
       kingRewarded: namedNPCs.find((n) => n.key === 'king')?.rewarded || false,
+      ach: achUnlocked, stats,
     }));
   } catch { /* 隐私模式等 */ }
 }
@@ -796,6 +1079,8 @@ function loadGame() {
       const king = namedNPCs.find((n) => n.key === 'king');
       if (king) king.rewarded = true;
     }
+    if (Array.isArray(s.ach)) achUnlocked = s.ach;
+    if (s.stats) Object.assign(stats, s.stats);
     return true;
   } catch { return false; }
 }
@@ -1111,6 +1396,17 @@ function clearWanted() {
 let promptText = '';
 function tryInteract() {
   if (!started || player.dead) return;
+  // 扔鸡(抱着鸡时 E 投掷)
+  if (player.carrying) {
+    const c = player.carrying;
+    player.carrying = null;
+    c.state = 'thrown';
+    c.pos.set(player.pos.x, player.pos.y + 1.9, player.pos.z);
+    c.vel.set(Math.sin(player.yaw) * 8, 3.5, Math.cos(player.yaw) * 8);
+    sfx.cluck();
+    if (++stats.thrown >= 10) unlockAch('chucker');
+    return;
+  }
   // 下马
   if (player.mounted) {
     const h = player.mounted;
@@ -1187,9 +1483,41 @@ function tryInteract() {
       }
       return;
     }
+    if (n.key === 'innkeep' && player.drunkT <= 0) {
+      // 满血就来一杯?
+      if (player.coins >= 2) {
+        player.coins -= 2;
+        player.drunkT = 25;
+        sfx.hiccup();
+        if (++stats.drunks >= 3) unlockAch('drunkard');
+        openDialog(['罗莎:(推来一大杯麦酒)自家酿的,后劲儿足——哎哎哎,你别一口闷啊!']);
+      } else {
+        openDialog(['罗莎:麦酒 2 金币。赊账?上一个赊账的还在后院劈柴呢。']);
+      }
+      return;
+    }
     // 闲聊
     npcTalk(n);
     return;
+  }
+  // 搞笑 NPC
+  for (const n of funnyNPCs) {
+    if (dist2(player.pos.x, player.pos.z, n.pos.x, n.pos.z) > 7) continue;
+    if (n.key === 'gambler') { gamble(); return; }
+    if (n.key === 'bard') { bardSong(); return; }
+    openDialog([`${n.def.name}:${n.def.idle[n.lineIdx++ % n.def.idle.length]}`]);
+    return;
+  }
+  // 抱鸡(半径小,贴身优先)
+  for (const c of chickens) {
+    if (c.state === 'thrown') continue;
+    if (dist2(player.pos.x, player.pos.z, c.pos.x, c.pos.z) < 3.5) {
+      player.carrying = c;
+      c.state = 'carried';
+      sfx.cluck();
+      toast('你抱起了一只鸡。它一脸问号。', 2.5);
+      return;
+    }
   }
   // 村民对话(优先 65 万字对话库,按情境选行)
   for (const v of villagers) {
@@ -1198,6 +1526,11 @@ function tryInteract() {
     const l1 = dbLine(v.dbKey) || v.id.lines[v.lineIdx++ % v.id.lines.length];
     const l2 = dbLine(v.dbKey) || v.id.lines[v.lineIdx++ % v.id.lines.length];
     openDialog([`${v.id.name}:${l1}`, `${v.id.name}:${l2}`]);
+    return;
+  }
+  // 喷泉许愿
+  if (player.coins > 0 && dist2(player.pos.x, player.pos.z, 0, 5) < 20) {
+    fountainWish();
     return;
   }
   // 宝箱
@@ -1222,9 +1555,15 @@ function tryInteract() {
     if (d < bd) { bd = d; best = h; }
   }
   if (best) {
+    if (player.carrying) { player.carrying.state = 'idle'; player.carrying = null; }
     player.mounted = best;
     player.jumps = 0;
-    sfx.mount();
+    if (best.sheep) {
+      sfx.baa();
+      toast('🐑 咩?!(它似乎认命了)', 2.5);
+    } else {
+      sfx.mount();
+    }
     if (best.owned && !best.stolen) {
       best.stolen = true;
       crime(1, '你偷了一匹马!卫兵被惊动了!');
@@ -1323,9 +1662,10 @@ function completeMission() {
 
 // ================= 攻击 =================
 function tryAttack() {
-  if (!started || player.dead || player.attackT > 0 || player.mounted) return;
+  if (!started || player.dead || player.attackT > 0 || player.mounted || player.carrying) return;
   player.attackT = 0.35;
   sfx.sword();
+  if (dist2(player.pos.x, player.pos.z, 140, 20) < 80) unlockAch('windmill');
   const dmg = player.swordLv; // 陨铁剑升级后伤害 2
   const fx = Math.sin(player.yaw), fz = Math.cos(player.yaw);
   const hitOne = (list, onHit) => {
@@ -1363,6 +1703,10 @@ function tryAttack() {
     w.hp -= dmg; sfx.hit(); hitFX(w);
     if (w.hp <= 0) killWolf(w);
   });
+  // 鸡不会死,但它们会记住你
+  hitOne(chickens, (c) => {
+    if (c.state !== 'thrown' && c !== player.carrying) pokeChicken(c);
+  });
   hitOne(villagers, (v) => {
     if (v.downT > 0) return;
     v.downT = 10; v.group.rotation.x = -Math.PI / 2;
@@ -1392,6 +1736,8 @@ function damagePlayer(n) {
 function gameOver() {
   player.dead = true;
   player.hp = 0;
+  player.drunkT = 0;
+  if (player.carrying) { player.carrying.state = 'idle'; player.carrying = null; }
   sfx.gameover();
   gameoverText.textContent = wanted > 0 ? '你被王国卫兵抓住了!' : '你倒下了……';
   if (titleArtURL) {
@@ -1696,6 +2042,18 @@ function updatePlayer(dt) {
   if (player.dead) return;
   player.invulnT = Math.max(0, player.invulnT - dt);
 
+  // 醉酒:打嗝 + 清醒判定
+  if (player.drunkT > 0) {
+    player.drunkT -= dt;
+    player.hiccupT -= dt;
+    if (player.hiccupT <= 0) {
+      player.hiccupT = 3 + Math.random() * 3;
+      sfx.hiccup();
+      camShake = Math.max(camShake, 0.12);
+    }
+    if (player.drunkT <= 0) toast('你清醒过来了……头好痛。', 2.5);
+  }
+
   // 攻击动画(三段式:蓄力→劈砍→收势)
   if (player.attackT > 0) {
     player.attackT -= dt;
@@ -1719,15 +2077,27 @@ function updatePlayer(dt) {
   const mv = _moveVec.set(f.x * iz + r.x * ix, f.y * iz + r.y * ix);
   const moving = mv.lengthSq() > 0;
   if (moving) mv.normalize();
+  // 醉酒:走路画龙
+  if (moving && player.drunkT > 0) {
+    const wob = Math.sin(performance.now() * 0.0012) * 0.7;
+    const cw = Math.cos(wob), sw = Math.sin(wob);
+    mv.set(mv.x * cw - mv.y * sw, mv.x * sw + mv.y * cw);
+  }
 
   if (player.mounted) {
     const h = player.mounted;
-    const speed = (keys['ShiftLeft'] || keys['ShiftRight'] ? 17 : 11) * (h.fast ? 1.2 : 1);
+    const speed = h.sheep
+      ? (keys['ShiftLeft'] || keys['ShiftRight'] ? 4.6 : 3.2)
+      : (keys['ShiftLeft'] || keys['ShiftRight'] ? 17 : 11) * (h.fast ? 1.2 : 1);
     if (moving) {
       h.pos.x += mv.x * speed * dt;
       h.pos.z += mv.y * speed * dt;
       h.yaw = angleLerp(h.yaw, Math.atan2(mv.x, mv.y), dt * 6);
       h.walkT += dt * speed * 1.6;
+      if (h.sheep) {
+        stats.sheepDist += speed * dt;
+        if (stats.sheepDist >= 100) unlockAch('shepherd');
+      }
     }
     // 骑乘跳跃
     if (keys['Space'] && player.onGround) {
@@ -1750,7 +2120,8 @@ function updatePlayer(dt) {
       h.stepT = (h.stepT || 0) - dt;
       if (h.stepT <= 0) {
         h.stepT = (keys['ShiftLeft'] || keys['ShiftRight']) ? 0.17 : 0.32;
-        sfx.hoof();
+        if (h.sheep) { if (Math.random() < 0.22) sfx.baa(); }
+        else sfx.hoof();
         spawnDust(h.pos.x - Math.sin(h.yaw) * 1.1, 0.08, h.pos.z - Math.cos(h.yaw) * 1.1,
           (keys['ShiftLeft'] || keys['ShiftRight']) ? 3 : 1, 0.8, 1.3);
       }
@@ -1765,8 +2136,8 @@ function updatePlayer(dt) {
     player.pos.x = h.pos.x;
     player.pos.z = h.pos.z;
     player.yaw = h.yaw;
-    // 骑手随马起伏,疾驰时前倾
-    player.group.position.set(h.pos.x, h.pos.y + 1.35 + (h.visBob || 0), h.pos.z);
+    // 骑手随马起伏,疾驰时前倾(骑羊时……贴地飞行)
+    player.group.position.set(h.pos.x, h.pos.y + (h.sheep ? 0.72 : 1.35) + (h.visBob || 0), h.pos.z);
     player.group.rotation.y = h.yaw;
     player.parts.legL.rotation.x = -1.1;
     player.parts.legR.rotation.x = -1.1;
@@ -1811,6 +2182,8 @@ function updatePlayer(dt) {
   const wasAirborne = !player.onGround;
   const fallSpeed = player.vy;
   player.vy -= 22 * dt;
+  // 抱着鸡:扑腾缓降(塞尔达欠我们的)
+  if (player.carrying && player.vy < -2.4) player.vy = -2.4;
   player.pos.y += player.vy * dt;
   if (player.pos.y <= 0) {
     player.pos.y = 0;
@@ -1852,6 +2225,19 @@ function updatePlayer(dt) {
   // 受伤闪烁
   player.group.visible = player.invulnT > 0 ? Math.floor(performance.now() / 80) % 2 === 0 : true;
   animateLimbs(player.parts, player.walkT, moving, player.group, speed / 7.6);
+  // 抱鸡:高举过头,鸡随身,空中扑腾
+  if (player.carrying) {
+    const c = player.carrying;
+    c.pos.set(player.pos.x, player.pos.y + 1.78, player.pos.z);
+    c.group.position.copy(c.pos);
+    c.group.rotation.y = player.yaw;
+    c.walkT += dt * (player.onGround ? 4 : 26);
+    c.parts.body.position.y = 0.26 + (!player.onGround ? Math.abs(Math.sin(c.walkT)) * 0.07 : 0);
+    if (!player.parts._attackAnim) {
+      player.parts.armL.rotation.x = Math.PI * 0.92;
+      player.parts.armR.rotation.x = Math.PI * 0.92;
+    }
+  }
 }
 
 function checkStomp() {
@@ -1864,6 +2250,9 @@ function checkStomp() {
         player.onGround = false;
         player.jumps = 1;
         sfx.stomp();
+        const nowS = performance.now() / 1000;
+        if (nowS - stats.lastStomp < 2) unlockAch('bouncer');
+        stats.lastStomp = nowS;
         spawnDust(e.pos.x, 0.3, e.pos.z, 6, 0.8, 1.6);
         toast(isGuard ? '踩晕了卫兵!' : '踩晕了敌人!', 1.5);
         if (isGuard) crime(1);
@@ -1872,6 +2261,18 @@ function checkStomp() {
     }
     return false;
   };
+  // 踩到鸡:弹起 + 拉仇恨
+  for (const c of chickens) {
+    if (c === player.carrying || c.state === 'thrown') continue;
+    if (dist2(player.pos.x, player.pos.z, c.pos.x, c.pos.z) < 1.1) {
+      pokeChicken(c);
+      player.vy = 7.5;
+      player.onGround = false;
+      player.jumps = 1;
+      sfx.stomp();
+      return true;
+    }
+  }
   return tryStomp(guards, true) || tryStomp(bandits, false) || tryStomp(wolves, false);
 }
 
@@ -2153,8 +2554,14 @@ const _camDesired = new THREE.Vector3();
 const _camRay = new THREE.Raycaster();
 const _camDir = new THREE.Vector3();
 function updateCamera(dt) {
-  const dist = player.mounted ? 9 : 6.2;
-  const ty = player.pos.y + (player.mounted ? 2.6 : 1.7);
+  const dist = player.mounted ? (player.mounted.sheep ? 6 : 9) : 6.2;
+  const ty = player.pos.y + (player.mounted ? (player.mounted.sheep ? 1.7 : 2.6) : 1.7);
+  // 醉酒:地平线跟着晃
+  if (player.drunkT > 0) {
+    camera.up.set(Math.sin(performance.now() * 0.0011) * 0.16, 1, 0).normalize();
+  } else {
+    camera.up.set(0, 1, 0);
+  }
   _camOff.set(
     Math.sin(camYaw) * Math.cos(camPitch),
     Math.sin(camPitch),
@@ -2243,7 +2650,8 @@ function computePrompt() {
   promptText = '';
   promptTargetPos = null;
   if (!started || player.dead) return;
-  if (player.mounted) { promptText = '按 E 下马'; return; }
+  if (player.carrying) { promptText = '按 E 扔鸡!'; return; }
+  if (player.mounted) { promptText = player.mounted.sheep ? '按 E 下羊(它松了口气)' : '按 E 下马'; return; }
   if (dialog.open) return;
   const mark = (x, z, h) => { promptTargetPos = { x, y: h, z }; };
   for (const n of namedNPCs) {
@@ -2260,6 +2668,25 @@ function computePrompt() {
     promptText = `按 E 与${n.def.name}交谈`;
     return;
   }
+  for (const n of funnyNPCs) {
+    if (dist2(player.pos.x, player.pos.z, n.pos.x, n.pos.z) > 7) continue;
+    mark(n.pos.x, n.pos.z, 2.15);
+    promptText = {
+      gambler: '按 E 掷骰子(赌 10 金币)',
+      bard: '按 E 点一首《你自己的歌》',
+      prophet: '按 E 听老糊涂的预言(?)',
+      quixote: '按 E 与风车骑士交谈',
+    }[n.key];
+    return;
+  }
+  for (const c of chickens) {
+    if (c.state === 'thrown') continue;
+    if (dist2(player.pos.x, player.pos.z, c.pos.x, c.pos.z) < 3.5) {
+      mark(c.pos.x, c.pos.z, 1.0);
+      promptText = '按 E 抱起鸡(为什么?)';
+      return;
+    }
+  }
   for (const v of villagers) {
     if (v.downT > 0 || v.sleeping) continue;
     if (dist2(player.pos.x, player.pos.z, v.pos.x, v.pos.z) <= 5.5) {
@@ -2267,6 +2694,11 @@ function computePrompt() {
       promptText = `按 E 与${v.id.name}交谈`;
       return;
     }
+  }
+  if (player.coins > 0 && dist2(player.pos.x, player.pos.z, 0, 5) < 20) {
+    mark(0, 5, 3);
+    promptText = '按 E 向喷泉许愿(1 金币)';
+    return;
   }
   for (const c of world.chests) {
     if (!c.opened && dist2(player.pos.x, player.pos.z, c.x, c.z) < 5) {
@@ -2277,8 +2709,9 @@ function computePrompt() {
   }
   for (const h of horses) {
     if (dist2(player.pos.x, player.pos.z, h.pos.x, h.pos.z) < 7) {
-      mark(h.pos.x, h.pos.z, 2.7);
-      promptText = h.owned && !h.stolen ? '按 E 偷马 (会引来通缉!)' : '按 E 骑马';
+      mark(h.pos.x, h.pos.z, h.sheep ? 1.4 : 2.7);
+      promptText = h.sheep ? '按 E 骑羊(为什么不呢)'
+        : h.owned && !h.stolen ? '按 E 偷马 (会引来通缉!)' : '按 E 骑马';
       return;
     }
   }
@@ -2396,11 +2829,13 @@ function drawMinimap() {
 // 调试/自动化测试句柄
 window.__gtm = {
   player, quest, questRT, horses, guards, bandits, villagers, wolves, namedNPCs, steward,
+  chickens, funnyNPCs,
   crime, weather, setWeather, talkQuestGiver, completeMission, missions, advanceDialog,
   getWanted: () => wanted,
   setTime: (t) => { dayTime = t; },
   getCrests: () => crestsFound.length,
   dialogOpen: () => dialog.open,
+  getRevenge: () => revengeT,
 };
 
 let last = performance.now();
@@ -2431,6 +2866,7 @@ function loop(now) {
   updateGuards(dt);
   updateBandits(dt);
   updateWolves(dt);
+  updateChickens(dt);
   updateVillagers(dt);
   updateHorses(dt);
   updatePickups(dt);
@@ -2440,7 +2876,7 @@ function loop(now) {
   updateRegion(dt);
   updateBubble(dt);
   villagerChatter();
-  // 具名 NPC:按日程走位;到位后待机呼吸,玩家靠近时转身面对
+  // 具名/搞笑 NPC:按日程走位;到位后待机呼吸,玩家靠近时转身面对
   {
     const phase = dayPhase();
     for (const n of namedNPCs) {
@@ -2458,6 +2894,31 @@ function loop(now) {
             Math.atan2(player.pos.x - n.pos.x, player.pos.z - n.pos.z), dt * 4);
         }
       }
+    }
+    for (const n of funnyNPCs) {
+      if (n.key === 'quixote') continue; // 他忙着决斗
+      animateLimbs(n.parts, 0, false);
+      if (dist2(player.pos.x, player.pos.z, n.pos.x, n.pos.z) < 30) {
+        n.group.rotation.y = angleLerp(n.group.rotation.y,
+          Math.atan2(player.pos.x - n.pos.x, player.pos.z - n.pos.z), dt * 4);
+      }
+    }
+    // 风车骑士唐豆:每 3 秒向"巨人"发起冲锋
+    quixoteT -= dt;
+    if (quixoteT <= 0) {
+      quixoteT = 3;
+      quixote.swingT = 0.35;
+      quixote.yaw = Math.atan2(140 - quixote.pos.x, 20 - quixote.pos.z);
+      quixote.group.rotation.y = quixote.yaw;
+      if (dist2(player.pos.x, player.pos.z, quixote.pos.x, quixote.pos.z) < 900) sfx.sword();
+    }
+    animateLimbs(quixote.parts, 0, false);
+    if (quixote.swingT > 0) {
+      quixote.swingT -= dt;
+      quixote.parts._attackAnim = true;
+      meleeSwing(quixote.parts, Math.min(1, 1 - quixote.swingT / 0.35));
+    } else {
+      quixote.parts._attackAnim = false;
     }
   }
   updateRain(dt);
