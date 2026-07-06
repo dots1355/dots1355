@@ -9,15 +9,15 @@ export const CORE = 470;          // 核心手工区域半径(此范围内不生
 export const WORLD_LIMIT = 50000; // 世界半径 → 总幅面 100000×100000
 
 const chunks = new Map();
+const seenChunks = new Set(); // 本次会话已生成过的区块:重访不再重刷战利品(防反复越界刷金币/红心)
 let scene = null;
 let colliders = null;
 let hooks = null;
-const pending = [];
 
 export function initWilderness(s, c, h) {
   scene = s;
   colliders = c;
-  hooks = h; // { spawnWolf/spawnHorse/spawnSheep/spawnBandit(x,z,chunkKey), dropCoin/dropHeart(x,z), removeChunkEntities(chunkKey) }
+  hooks = h; // { spawnWolf/spawnHorse/spawnSheep/spawnBandit(x,z,chunkKey), dropCoin/dropHeart(x,z,chunkKey), removeChunkEntities(chunkKey) }
 }
 
 // ---- 确定性随机 ----
@@ -122,6 +122,11 @@ function genChunk(cx, cz) {
   const rng = makeRng(seed);
   const g = new THREE.Group();
   const cols = [];
+  const firstVisit = !seenChunks.has(key);
+  seenChunks.add(key);
+  // 战利品只在本会话首次生成时掉落;重访只重建景物与生物
+  const drop = firstVisit ? (x, z) => hooks.dropCoin(x, z, key) : () => {};
+  const dropH = firstVisit ? (x, z) => hooks.dropHeart(x, z, key) : () => {};
   const baseX = cx * CHUNK, baseZ = cz * CHUNK;
   const centerX = baseX + CHUNK / 2, centerZ = baseZ + CHUNK / 2;
   const biome = biomeAt(centerX, centerZ);
@@ -181,13 +186,13 @@ function genChunk(cx, cz) {
     // 废弃营地:篝火 + 帐篷 + 金币
     campfire(px, pz);
     tentAt(px + 3, pz + 1);
-    for (let i = 0; i < 5; i++) hooks.dropCoin(px + (rng() - 0.5) * 5, pz + (rng() - 0.5) * 5);
+    for (let i = 0; i < 5; i++) drop(px + (rng() - 0.5) * 5, pz + (rng() - 0.5) * 5);
   } else if (roll < 0.12) {
     // 无名石碑 + 金币环
     stone(px, pz, 2.6 + rng());
     for (let i = 0; i < 6; i++) {
       const a = (i / 6) * Math.PI * 2;
-      hooks.dropCoin(px + Math.cos(a) * 2.5, pz + Math.sin(a) * 2.5);
+      drop(px + Math.cos(a) * 2.5, pz + Math.sin(a) * 2.5);
     }
   } else if (roll < 0.18 && biome !== 'desert') {
     // 狼群窝
@@ -215,13 +220,13 @@ function genChunk(cx, cz) {
       const b = hooks.spawnBandit(px + (rng() - 0.5) * 6, pz + (rng() - 0.5) * 6, key);
       if (b) spawned.push(b);
     }
-    for (let i = 0; i < 7; i++) hooks.dropCoin(px + (rng() - 0.5) * 4, pz + (rng() - 0.5) * 4);
+    for (let i = 0; i < 7; i++) drop(px + (rng() - 0.5) * 4, pz + (rng() - 0.5) * 4);
   } else if (roll < 0.38) {
     // 猎人营地(安全补给):帐篷 + 一颗心
     tentAt(px, pz, 0x5a6a45);
     campfire(px + 2.2, pz);
-    hooks.dropHeart(px + 1, pz + 2);
-    hooks.dropCoin(px - 1.5, pz + 1);
+    dropH(px + 1, pz + 2);
+    drop(px - 1.5, pz + 1);
   } else if (roll < 0.42) {
     // 废弃哨塔:断塔 + 木箱 + 金币
     const t = new THREE.Mesh(new THREE.CylinderGeometry(1.8, 2.2, 4 + rng() * 3, 8), lambert(0x8d8476, { roughness: 0.95 }));
@@ -239,7 +244,7 @@ function genChunk(cx, cz) {
       cr.castShadow = true;
       g.add(cr);
     }
-    for (let i = 0; i < 6; i++) hooks.dropCoin(px + (rng() - 0.5) * 6, pz + (rng() - 0.5) * 6);
+    for (let i = 0; i < 6; i++) drop(px + (rng() - 0.5) * 6, pz + (rng() - 0.5) * 6);
   } else if (roll < 0.46 && biome === 'forest') {
     // 蘑菇圈:一圈红菇 + 一颗心
     for (let i = 0; i < 8; i++) {
@@ -252,7 +257,7 @@ function genChunk(cx, cz) {
       cap.position.set(px + Math.cos(a) * 2, 0.34, pz + Math.sin(a) * 2);
       g.add(cap);
     }
-    hooks.dropHeart(px, pz);
+    dropH(px, pz);
   } else if (roll < 0.5) {
     // 群系水晶/仙人掌花:装饰 + 两枚金币
     const c = new THREE.Mesh(new THREE.ConeGeometry(0.5, 1.8, 5),
@@ -262,42 +267,57 @@ function genChunk(cx, cz) {
     c.rotation.z = (rng() - 0.5) * 0.4;
     c.castShadow = true;
     g.add(c);
-    hooks.dropCoin(px + 1, pz);
-    hooks.dropCoin(px - 1, pz + 0.5);
+    drop(px + 1, pz);
+    drop(px - 1, pz + 0.5);
   } else if (roll < 0.54) {
     // 迷你石阵
     for (let i = 0; i < 4; i++) {
       const a = (i / 4) * Math.PI * 2 + rng();
       stone(px + Math.cos(a) * 3, pz + Math.sin(a) * 3, 1.6 + rng() * 1.2, 0.8);
     }
-    for (let i = 0; i < 4; i++) hooks.dropCoin(px + (rng() - 0.5) * 3, pz + (rng() - 0.5) * 3);
+    for (let i = 0; i < 4; i++) drop(px + (rng() - 0.5) * 3, pz + (rng() - 0.5) * 3);
   }
 
   scene.add(g);
-  chunks.set(key, { group: g, cols, spawned, key });
+  chunks.set(key, { group: g, cols, spawned, key, cx, cz });
+  colliders.dirty = true; // 通知碰撞网格重建
 }
 
 function unloadChunk(key) {
   const c = chunks.get(key);
   if (!c) return;
   scene.remove(c.group);
-  c.group.traverse((o) => { if (o.geometry) o.geometry.dispose(); });
+  c.group.traverse((o) => {
+    if (o.geometry) o.geometry.dispose();
+    if (o.material) o.material.dispose(); // lambert() 每次都是新材质,不释放会漏显存
+  });
   for (const col of c.cols) {
     const i = colliders.circles.indexOf(col);
     if (i >= 0) colliders.circles.splice(i, 1);
   }
+  colliders.dirty = true;
   hooks.removeChunkEntities(key);
   chunks.delete(key);
 }
 
 // 每帧调用:围绕玩家维护区块窗口(每帧最多生成 1 块)
+// 玩家没跨区块边界且窗口已齐时直接空转,零分配零扫描
+let lastPcx = 1e9, lastPcz = 1e9, wildPending = true;
+const _toUnload = [];
 export function updateWilderness(px, pz) {
   const pcx = Math.floor(px / CHUNK), pcz = Math.floor(pz / CHUNK);
-  // 卸载远处
-  for (const key of [...chunks.keys()]) {
-    const [cx, cz] = key.split(',').map(Number);
-    if (Math.abs(cx - pcx) > VIEW_R + 1 || Math.abs(cz - pcz) > VIEW_R + 1) unloadChunk(key);
+  if (pcx !== lastPcx || pcz !== lastPcz) {
+    lastPcx = pcx;
+    lastPcz = pcz;
+    wildPending = true;
   }
+  if (!wildPending) return;
+  // 卸载远处
+  _toUnload.length = 0;
+  for (const c of chunks.values()) {
+    if (Math.abs(c.cx - pcx) > VIEW_R + 1 || Math.abs(c.cz - pcz) > VIEW_R + 1) _toUnload.push(c.key);
+  }
+  for (const k of _toUnload) unloadChunk(k);
   // 加载附近(每帧一块)
   for (let dz = -VIEW_R; dz <= VIEW_R; dz++) {
     for (let dx = -VIEW_R; dx <= VIEW_R; dx++) {
@@ -313,4 +333,5 @@ export function updateWilderness(px, pz) {
       }
     }
   }
+  wildPending = false; // 窗口齐了,下次跨界再扫
 }

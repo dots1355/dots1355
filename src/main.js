@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import { buildWorld } from './world.js';
 import { makeHumanoid, makeHorse, makeWolf, makeChicken, makeSheep, resolveCollisions, angleLerp, dist2, lambert } from './entities.js';
-import { INTRO, REGIONS, GUARD_LINES, NPCS, MISSIONS, VILLAGERS, DIALOGS, TIME_GREETINGS } from './story.js';
+import { INTRO, REGIONS, GUARD_LINES, NPCS, MISSIONS, VILLAGERS, DIALOGS, TIME_GREETINGS, LORE } from './story.js';
 import { initAudio, sfx, startMusic, toggleMusic, weatherAudio } from './audio.js';
 import { preloadAIAssets, generateRemoteAITextures } from './textures.js';
 import { initWilderness, updateWilderness, wildRegionName, CORE } from './wilderness.js';
@@ -19,7 +19,7 @@ import { RoomEnvironment } from '../lib/jsm/environments/RoomEnvironment.js';
 const container = document.getElementById('game');
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5)); // 1.5 上限:SMAA 在,肉眼无差,填充率省一半
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -87,7 +87,7 @@ const hemi = new THREE.HemisphereLight(0xbfd9ff, 0x6a7d55, 0.7);
 scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xfff3d6, 2.6);
 sun.castShadow = true;
-sun.shadow.mapSize.set(LOWFX ? 1024 : 4096, LOWFX ? 1024 : 4096);
+sun.shadow.mapSize.set(LOWFX ? 1024 : 2048, LOWFX ? 1024 : 2048); // 2048 在此画风下与 4096 无肉眼差,阴影渲染省 4 倍
 sun.shadow.camera.left = -130; sun.shadow.camera.right = 130;
 sun.shadow.camera.top = 130; sun.shadow.camera.bottom = -130;
 sun.shadow.camera.far = 600;
@@ -251,7 +251,9 @@ const heartsEl = $('hearts'), coinsEl = $('coins'), wantedEl = $('wanted'),
   missionEl = $('mission'), timerEl = $('timer'), promptEl = $('prompt'),
   toastEl = $('toast'), flashEl = $('flash'), titleEl = $('title'),
   gameoverEl = $('gameover'), gameoverText = $('gameover-text'),
-  minimap = $('minimap'), mm = minimap.getContext('2d');
+  minimap = $('minimap'), mm = minimap.getContext('2d'),
+  lowhpEl = $('lowhp'), weatherEl = $('weather'), equipEl = $('equip'),
+  bosshpEl = $('bosshp'), bosshpFillEl = $('bosshp-fill');
 
 // 顶部细条通知:队列化,一次一条,不遮挡视野
 let toastTimer = 0; // >0 显示中,<0 淡出间隔
@@ -282,7 +284,7 @@ const player = {
   pos: world.playerSpawn.clone(),
   vy: 0, yaw: 0, onGround: true, jumps: 0,
   hp: 10, maxHp: 10, coins: 0,
-  walkT: 0, attackT: 0, invulnT: 0, mounted: null, dead: false,
+  walkT: 0, attackT: 0, invulnT: 0, mounted: null, dead: false, herbs: 0, venison: 0,
   parcel: null, swordLv: 1, royalHorse: false,
   carrying: null, drunkT: 0, hiccupT: 0,
 };
@@ -394,13 +396,19 @@ initWilderness(scene, colliders, {
     b.chunk = chunkKey;
     return b;
   },
-  dropCoin(x, z) {
-    addPickup('coin', x, z, 600);
+  dropCoin(x, z, chunkKey) {
+    addPickup('coin', x, z, 600, -1, chunkKey);
   },
-  dropHeart(x, z) {
-    addPickup('heart', x, z, 600);
+  dropHeart(x, z, chunkKey) {
+    addPickup('heart', x, z, 600, -1, chunkKey);
   },
   removeChunkEntities(chunkKey) {
+    for (let i = pickups.length - 1; i >= 0; i--) {
+      if (pickups[i].chunk === chunkKey) {
+        scene.remove(pickups[i].mesh);
+        pickups.splice(i, 1);
+      }
+    }
     for (let i = wolves.length - 1; i >= 0; i--) {
       if (wolves[i].chunk === chunkKey) {
         scene.remove(wolves[i].group);
@@ -438,6 +446,7 @@ function updateWolves(dt) {
       }
       continue;
     }
+    if (!w.raidTarget && !w.arena && entFar(w)) continue; // 远处的狼睡觉去
     if (w.stunT > 0) { w.stunT -= dt; continue; }
     w.attackCd = Math.max(0, w.attackCd - dt);
     w.lungeCd = Math.max(0, (w.lungeCd || 0) - dt);
@@ -523,7 +532,8 @@ function killWolf(w) {
   setTimeout(() => { if (w.dead) w.group.visible = false; }, 2500);
   dropCoins(w.pos, 2);
   wolfKills++;
-  if (quest.active && missions[quest.idx].type === 'wolves') {
+  // 竞技场里的狼不算狼灾任务(和盗贼任务的排除规则对齐)
+  if (!w.arena && quest.active && missions[quest.idx].type === 'wolves') {
     quest.progress++;
     toast(`猎杀恶狼 ${quest.progress}/${missions[quest.idx].goal}`, 2);
     if (quest.progress >= missions[quest.idx].goal) completeMission();
@@ -675,6 +685,10 @@ function arrowHitEntities(a) {
   if (tryHit(wolves, (w) => {
     w.hp -= dmg; sfx.hit(); hitFX(w, 0.4); showDamage(w.pos, dmg);
     if (w.hp <= 0) killWolf(w);
+  })) return true;
+  if (tryHit(deers, (d) => {
+    sfx.hit();
+    killDeer(d);
   })) return true;
   for (const c of chickens) {
     if (c === player.carrying || c.state === 'thrown') continue;
@@ -885,13 +899,14 @@ function updateChickens(dt) {
       chickenAnger = 0;
       toast('鸡群消气了……这次就算了。', 2.5);
       for (let i = chickens.length - 1; i >= 0; i--) {
-        if (chickens[i].extra) { scene.remove(chickens[i].group); chickens.splice(i, 1); }
-        else chickens[i].state = 'idle';
+        if (chickens[i].extra && chickens[i] !== player.carrying) { scene.remove(chickens[i].group); chickens.splice(i, 1); }
+        else chickens[i].state = chickens[i] === player.carrying ? 'carried' : 'idle';
       }
     }
   }
   for (const c of chickens) {
     if (c === player.carrying) continue;
+    if (c.state !== 'thrown' && revengeT <= 0 && entFar(c)) continue; // 远处的鸡不啄米
     let moving = false;
     if (c.state === 'thrown') {
       c.vel.y -= 14 * dt;
@@ -969,6 +984,203 @@ function addSheep(x, z) {
 for (const [ax, az] of [[-368, -30], [-390, -52], [-372, -60]]) {
   const b = addBandit(ax, az, { hp: 3 });
   b.ambient = true;
+}
+
+// ================= 远距休眠(性能):够远又没有戏份的实体这一帧不演 =================
+const CULL_D2 = 120 * 120;
+function entFar(e) {
+  return dist2(player.pos.x, player.pos.z, e.pos.x, e.pos.z) > CULL_D2;
+}
+
+// ================= 猎鹿(卖鹿肉给罗莎) =================
+const deers = [];
+function addDeer(x, z) {
+  const d = { ...makeHorse(0x9a7148), pos: new THREE.Vector3(x, 0, z), yaw: Math.random() * 6.28,
+    home: new THREE.Vector3(x, 0, z), deer: true, state: 'graze', timer: Math.random() * 4,
+    walkT: 0, dead: false, respawnT: 0, fleeT: 0, downT: 0, hp: 1 };
+  d.group.scale.setScalar(0.62);
+  d.group.position.copy(d.pos);
+  scene.add(d.group);
+  deers.push(d);
+  return d;
+}
+[[-150, -30], [-120, -70], [-172, -94], [-60, -122], [96, -92], [-214, 62], [64, 124], [-70, 134]]
+  .forEach(([x, z]) => addDeer(x, z));
+
+function updateDeers(dt) {
+  for (const d of deers) {
+    if (d.dead) {
+      d.respawnT -= dt;
+      if (d.respawnT <= 0) {
+        d.dead = false;
+        d.hp = 1;
+        d.pos.copy(d.home);
+        d.group.rotation.z = 0;
+        d.group.visible = true;
+      }
+      continue;
+    }
+    if (entFar(d)) continue;
+    const pd2 = dist2(player.pos.x, player.pos.z, d.pos.x, d.pos.z);
+    let moving = false;
+    if (pd2 < 130 && !player.dead) {
+      // 受惊逃窜:朝远离玩家的方向跑
+      d.fleeT = 1.2;
+    }
+    if (d.fleeT > 0) {
+      d.fleeT -= dt;
+      const fx = d.pos.x - player.pos.x, fz = d.pos.z - player.pos.z;
+      const fd = Math.hypot(fx, fz) || 1;
+      moveEntity(d, d.pos.x + (fx / fd) * 10, d.pos.z + (fz / fd) * 10, 8.6, dt);
+      moving = true;
+    } else {
+      d.timer -= dt;
+      if (d.timer <= 0) {
+        d.timer = 2 + Math.random() * 4;
+        d.tx = d.home.x + (Math.random() - 0.5) * 22;
+        d.tz = d.home.z + (Math.random() - 0.5) * 22;
+      }
+      if (d.tx !== undefined && !moveEntity(d, d.tx, d.tz, 1.8, dt)) moving = true;
+    }
+    d.group.position.copy(d.pos);
+    d.group.rotation.y = d.yaw;
+    const sw = moving ? Math.sin(d.walkT) * 0.55 : 0;
+    d.parts.legs[0].rotation.x = sw;
+    d.parts.legs[1].rotation.x = -sw;
+    d.parts.legs[2].rotation.x = -sw;
+    d.parts.legs[3].rotation.x = sw;
+  }
+}
+function killDeer(d) {
+  d.dead = true;
+  d.respawnT = 300;
+  startFall(d);
+  setTimeout(() => { if (d.dead) d.group.visible = false; }, 2500);
+  player.venison++;
+  stats.deer = (stats.deer || 0) + 1;
+  if (stats.deer >= 5) unlockAch('hunter');
+  toast(`🦌 猎到一头鹿!鹿肉 ×${player.venison}(卖给旅店老板娘,5 金币一块)`, 3);
+}
+
+// ================= 采蘑菇(卖给女巫玛尔戈) =================
+const mushrooms = [];
+const MUSH_SPOTS = [
+  [-128, -44], [-142, -58], [-160, -36], [-176, -70], [-150, -102], [-118, -88],
+  [-196, -18], [-124, -18], [-282, 210], [-266, 244], [58, 132], [84, 118], [-52, 148], [-204, 84],
+];
+{
+  const stemG = new THREE.CylinderGeometry(0.09, 0.12, 0.34, 5);
+  const capG = new THREE.SphereGeometry(0.26, 7, 5);
+  for (const [mx, mz] of MUSH_SPOTS) {
+    const grp = new THREE.Group();
+    const stem = new THREE.Mesh(stemG, lambert(0xe8e0d0));
+    stem.position.y = 0.17;
+    grp.add(stem);
+    const cap = new THREE.Mesh(capG, lambert(Math.random() < 0.5 ? 0xc03028 : 0xb98a3a, { roughness: 0.7 }));
+    cap.scale.y = 0.62;
+    cap.position.y = 0.4;
+    cap.castShadow = true;
+    grp.add(cap);
+    grp.position.set(mx, 0, mz);
+    scene.add(grp);
+    mushrooms.push({ group: grp, x: mx, z: mz, picked: false });
+  }
+}
+function respawnMushrooms() {
+  for (const m of mushrooms) { m.picked = false; m.group.visible = true; }
+}
+
+// ================= 世界观铭文(可阅读的石碑,集齐 12 处) =================
+let loreRead = [];
+const loreStones = [];
+{
+  const slabG = new THREE.BoxGeometry(1.0, 1.5, 0.26);
+  const baseG = new THREE.BoxGeometry(1.3, 0.3, 0.5);
+  for (const L of LORE) {
+    const grp = new THREE.Group();
+    const slab = new THREE.Mesh(slabG, lambert(0x8d8a84, { roughness: 0.9 }));
+    slab.position.y = 0.95;
+    slab.castShadow = true;
+    grp.add(slab);
+    const base = new THREE.Mesh(baseG, lambert(0x6f6c66));
+    base.position.y = 0.15;
+    grp.add(base);
+    const rune = new THREE.Mesh(new THREE.PlaneGeometry(0.7, 1.0),
+      new THREE.MeshStandardMaterial({ color: 0x9adcc8, emissive: 0x1a5548, emissiveIntensity: 0.5, roughness: 0.6 }));
+    rune.position.set(0, 0.98, 0.14);
+    grp.add(rune);
+    grp.position.set(L.x, 0, L.z);
+    grp.rotation.y = Math.random() * 6.28;
+    scene.add(grp);
+    loreStones.push({ group: grp, def: L });
+  }
+}
+function readLore(s) {
+  const idx = LORE.indexOf(s.def);
+  const isNew = !loreRead.includes(idx);
+  if (isNew) {
+    loreRead.push(idx);
+    sfx.chest();
+    saveGame();
+  }
+  // 长文按句切页,读起来不挤
+  const parts = s.def.text.split(/(?<=[。」])/).filter(Boolean);
+  const pages = [`【铭文 · ${s.def.title}】`];
+  let cur = '';
+  for (const p of parts) {
+    if ((cur + p).length > 60) { pages.push(cur); cur = p; } else cur += p;
+  }
+  if (cur) pages.push(cur);
+  if (isNew) pages.push(`(📜 已收录铭文 ${loreRead.length}/${LORE.length}${loreRead.length >= LORE.length ? ' —— 全部集齐!' : ''})`);
+  openDialog(pages, isNew && loreRead.length >= LORE.length ? () => unlockAch('scribe') : null);
+}
+
+// ================= 王国公告牌(每日 AI 撰写,离线用内置文风) =================
+const NOTICE_POS = { x: -5, z: 12 };
+{
+  const grp = new THREE.Group();
+  const postG = new THREE.CylinderGeometry(0.09, 0.11, 2.2, 6);
+  for (const sx of [-0.8, 0.8]) {
+    const post = new THREE.Mesh(postG, lambert(0x6b4a2f));
+    post.position.set(sx, 1.1, 0);
+    grp.add(post);
+  }
+  const panel = new THREE.Mesh(new THREE.BoxGeometry(2.1, 1.2, 0.1), lambert(0x8a6a45, { roughness: 0.9 }));
+  panel.position.y = 1.55;
+  panel.castShadow = true;
+  grp.add(panel);
+  const paper = new THREE.Mesh(new THREE.PlaneGeometry(1.5, 0.85),
+    new THREE.MeshStandardMaterial({ color: 0xe8ddc2, roughness: 0.95 }));
+  paper.position.set(0, 1.55, 0.06);
+  grp.add(paper);
+  grp.position.set(NOTICE_POS.x, 0, NOTICE_POS.z);
+  grp.rotation.y = 2.4;
+  scene.add(grp);
+}
+let proclaimText = null;
+const PROCLAIM_STOCK = [
+  '城中井水甘冽如常,巡逻如常,税吏比巡逻更如常。',
+  '南门吊桥的响声已聆听半年,领主府表示:再听听。',
+  '风车、面包与告示,是王都每天醒来的三件事。',
+  '卫兵队提醒:抱着鸡奔跑不犯法,但很可疑。',
+  '喷泉许愿池本月捞出金币三百枚,愿望办理进度:排队中。',
+];
+function composeProclaimOffline() {
+  const sp = todaySpecial();
+  const head = `${SEASONS[seasonIdx()]}季第 ${seasonDay()} 日`;
+  const fest = sp ? `今日${sp.name}——${sp.desc}。` : '';
+  const stage = quest.idx >= missions.length ? '王国大患已除,领主嘉许全城同庆。'
+    : quest.idx > 0 ? `绿衣游侠已为王国办结 ${quest.idx} 件委托,领主府记功在案。` : '领主府招募能人异士,详情垂询管家埃隆。';
+  return `【王国公告 · ${head}】${fest}${stage}${PROCLAIM_STOCK[calendar.day % PROCLAIM_STOCK.length]}`;
+}
+function refreshProclaim() {
+  proclaimText = composeProclaimOffline();
+  const sp = todaySpecial();
+  aiLine(
+    `你是中世纪王国艾尔德里亚的王室传令官。今天是${SEASONS[seasonIdx()]}季第${seasonDay()}日` +
+    `${sp ? ',逢' + sp.name : ''},天气${{ clear: '晴', cloudy: '多云', rain: '雨', storm: '雷暴' }[weather.state]}。` +
+    '用中文写一则60字以内的每日公告,口吻庄重里带点冷幽默,只输出公告正文,不要引号。', null, 8000,
+  ).then((t) => { if (t) proclaimText = `【王国公告 · ${SEASONS[seasonIdx()]}季第 ${seasonDay()} 日】${t}`; });
 }
 
 // ================= 任务系统 =================
@@ -1051,7 +1263,14 @@ function endStreetEvent() {
     const i = bandits.indexOf(streetEvent.bandit);
     if (i >= 0) bandits.splice(i, 1);
   }
-  if (streetEvent.horse) streetEvent.horse.runaway = false;
+  if (streetEvent.horse) {
+    streetEvent.horse.runaway = false;
+    // 事件的马不留档:骑着就归你,否则撤走,免得满地图攒野马
+    if (streetEvent.horse !== player.mounted) {
+      const hi = horses.indexOf(streetEvent.horse);
+      if (hi >= 0) { scene.remove(streetEvent.horse.group); horses.splice(hi, 1); }
+    }
+  }
   streetEvent.type = null;
   streetEvent.bandit = null;
   streetEvent.horse = null;
@@ -1667,8 +1886,11 @@ const ACH_DEFS = {
   loser:    { name: '赌怪', desc: '骰子连输 3 把' },
   shepherd: { name: '羊骑士', desc: '骑羊走过 100 米' },
   bouncer:  { name: '弹簧靴', desc: '2 秒内连环踩踏两个目标' },
+  hunter:   { name: '荒野猎手', desc: '猎到 5 头鹿' },
+  forager:  { name: '采菇人', desc: '采到 15 朵蘑菇' },
+  scribe:   { name: '史官', desc: '读遍全部 12 处世界观铭文' },
 };
-const stats = { thrown: 0, pecks: 0, wishes: 0, drunks: 0, loseStreak: 0, sheepDist: 0, lastStomp: -99 };
+const stats = { thrown: 0, pecks: 0, wishes: 0, drunks: 0, loseStreak: 0, sheepDist: 0, lastStomp: -99, deer: 0, mushrooms: 0 };
 let achUnlocked = [];
 function unlockAch(key) {
   if (achUnlocked.includes(key)) return;
@@ -1712,6 +1934,16 @@ const FUNNY = {
       '每天清晨,面包师都从同一个位置出现。时间是个圈!圈!',
       '月亮和太阳从来不同时出现超过一炷香——有人在换布景!',
       '你走路的样子……腿的摆动像被人操纵着。你自己知道吗?!',
+    ],
+  },
+  storyteller: {
+    name: '盲眼说书人苟叔', spot: [17, 73, -2.2],
+    style: { shirt: 0x4a4038, pants: 0x33302a, hair: 0xd8d8d8 },
+    idle: [
+      '(敲了敲烟杆)故事嘛,得等火候。',
+      '我眼睛瞎了,故事反倒看得更清了。',
+      '旅店的酒是引子,故事才是正菜。',
+      '想听哪段?龙骨?湖底?还是……你自己的?',
     ],
   },
   quixote: {
@@ -1807,6 +2039,38 @@ function bardSongOffline() {
   openDialog(pages);
 }
 
+// 盲眼说书人:AI 现场编故事,离线用内置话本
+const TALES = [
+  '说是龙骨之地的龙啊,不是死的,是睡的。有个牧童在龙头骨里躲雨,听见了呼噜声——他发誓那不是风。第二天他把羊都数了三遍,一只没少,就是每只羊看他的眼神都变了。',
+  '银月湖底的神殿,每逢月圆就亮一盏灯。老辈渔夫说,那是守殿人还在换灯油。有人问守了多少年,老渔夫掰着指头数了半天说:比湖里的鱼加起来还老。',
+  '先祖石环立石那晚,天上的星星多得挤不下。立石的人说:我们数过星星,星星也在数我们。后来星星数累了,掉下来一颗,就成了如今许愿的喷泉。',
+  '迷途丘陵里有个货郎,转了七天七夜出不来。最后他把担子一撂,坐地上骂了半个时辰——骂完抬头,路就在眼前。所以老话讲:丘陵认怂不认路。',
+  '灰烬荒地那一仗,两边打到最后发现军旗上绣的是同一句家训。停手那天,活下来的人凑了一锅粥,一人一碗,喝完各自回家。从那以后那地方长不出草,倒年年长出野葱。',
+  '狼月之夜,猎人罗尔夫的爷爷跟一头老狼在雪地里对坐了一宿。天亮时老狼起身走了,留下一只兔子。他爷爷说:那是狼在还二十年前的一箭之情。',
+  '许愿池里住着个数钱的湖神。有年发大水,金币冲出来铺了半条街,湖神心疼得三天没显灵。后来它学乖了,愿望办不办另说,钱先沉到最底下。',
+  '三石村有头驴,学会了拿嘴开门栓。村长把门栓换了三次,驴学了三次。第四次村长服了,给驴配了把钥匙——挂脖子上那种。驴现在见了村长还点头。',
+];
+let taleIdx = Math.floor(Math.random() * TALES.length);
+async function tellStory() {
+  sfx.chest();
+  toast('🎙️ 苟叔捋了捋胡子,烟杆在桌沿磕了磕……', 2);
+  const sp = todaySpecial();
+  const ai = await aiLine(
+    `你是中世纪王国旅店里的盲眼说书人苟叔。现在是${SEASONS[seasonIdx()]}季${sp ? '·' + sp.name : ''}。` +
+    '用中文讲一个三句话的小故事,关于艾尔德里亚王国(可用素材:龙骨之地的老龙、银月湖底神殿、先祖石环、迷途丘陵、狼月、许愿池湖神、会开门的驴)。' +
+    '要有起承转合和一个妙尾,三分怪谈七分人味。只输出故事正文,不要引号。', null, 8000);
+  const text = ai || TALES[taleIdx++ % TALES.length];
+  const parts = text.split(/(?<=[。!?])/).filter((p) => p.trim());
+  const pages = ['苟叔:(压低嗓子)听好了——'];
+  let cur = '';
+  for (const p of parts) {
+    if ((cur + p).length > 55) { pages.push(`苟叔:${cur}`); cur = p; } else cur += p;
+  }
+  if (cur) pages.push(`苟叔:${cur}`);
+  pages.push('苟叔:(烟杆一点)欲知后事——明儿,还是这张桌。');
+  openDialog(pages);
+}
+
 // 喷泉许愿
 const WISHES = [
   ['水花溅了你一脸。愿望大概是收到了。', null],
@@ -1837,8 +2101,8 @@ const NPC_SCHEDULE = {
   fisher:     { dawn: [-100, 72], day: [-100, 72], dusk: [-100, 58], night: [-108, 60] },
 };
 
-// ================= 对话数据库(65 万字,tools/gen-dialogue.mjs 生成) =================
-// 每行按情境标签(时辰/天气/任务进度)筛选,近期说过的不复读
+// ================= 对话数据库(100 万字,tools/gen-dialogue.mjs 生成) =================
+// 每行按情境标签(时辰/天气/季节/节庆/任务进度)筛选,近期说过的不复读
 let DB = null;
 const dbUsed = new Map();
 fetch('./src/dialogue-db.json')
@@ -1850,7 +2114,10 @@ function dbLine(key) {
   if (!DB || !DB[key]) return null;
   const lines = DB[key];
   const w = weather.state === 'cloudy' ? 'clear' : weather.state;
-  const ctxs = new Set([`q${Math.min(quest.idx, 8)}`, dayPhase(), w]);
+  const ctxs = new Set([`q${Math.min(quest.idx, 8)}`, dayPhase(), w,
+    ['spring', 'summer', 'autumn', 'winter'][seasonIdx()]]);
+  const sp = todaySpecial();
+  if (sp) ctxs.add(sp.key);
   let used = dbUsed.get(key);
   if (!used) { used = new Set(); dbUsed.set(key, used); }
   if (used.size > lines.length * 0.8) used.clear();
@@ -2230,6 +2497,32 @@ function startSpecialDay(key) {
   }
 }
 
+// 新的一天:换日、刷新每日限额/蘑菇/公告,报时
+function newDay() {
+  calendar.day++;
+  dailyEvents = 4;
+  applySeason();
+  respawnMushrooms();
+  const sp = todaySpecial();
+  if (started) {
+    const sd = seasonDay();
+    toast(`🌅 ${SEASON_ICON[seasonIdx()]} ${SEASONS[seasonIdx()]}·第 ${sd} 日` +
+      (sd === 1 ? `,${SEASONS[seasonIdx()]}天来了` : '') +
+      (sp ? ` — 今日${sp.name}:${sp.desc}` : ''), sp ? 5.5 : 3.2);
+    if (sp) startSpecialDay(sp.key);
+    refreshProclaim();
+    saveGame();
+  }
+}
+
+// 睡到天亮:换日 + 回满生命(旅店过夜用)
+function sleepToMorning() {
+  dayTime = 0.27;
+  calendar.lastPhase = 'dawn';
+  player.hp = player.maxHp;
+  newDay();
+}
+
 // 天亮换日:昼夜相位从 night 跨入 dawn 时 day++
 function updateCalendar() {
   const phase = dayPhase();
@@ -2237,18 +2530,7 @@ function updateCalendar() {
   const from = calendar.lastPhase;
   calendar.lastPhase = phase;
   if (phase === 'dawn' && from === 'night') {
-    calendar.day++;
-    dailyEvents = 4;
-    applySeason();
-    const sp = todaySpecial();
-    if (started) {
-      const sd = seasonDay();
-      toast(`🌅 ${SEASON_ICON[seasonIdx()]} ${SEASONS[seasonIdx()]}·第 ${sd} 日` +
-        (sd === 1 ? `,${SEASONS[seasonIdx()]}天来了` : '') +
-        (sp ? ` — 今日${sp.name}:${sp.desc}` : ''), sp ? 5.5 : 3.2);
-      if (sp) startSpecialDay(sp.key);
-      saveGame();
-    }
+    newDay();
   } else if (phase === 'dusk' && started && todaySpecial()?.key === 'wolfmoon') {
     toast('🌕 狼月将升……天黑后狼群会变得凶猛,备好武器', 4);
   } else if (phase === 'night' && started && todaySpecial()?.key === 'fullmoon') {
@@ -2271,6 +2553,7 @@ function saveGame() {
       swordLv: player.swordLv, royalHorse: player.royalHorse,
       kingRewarded: namedNPCs.find((n) => n.key === 'king')?.rewarded || false,
       ach: achUnlocked, stats, day: calendar.day,
+      herbs: player.herbs, venison: player.venison, lore: loreRead,
       weapon: player.weapon, weaponsOwned: player.weaponsOwned, armor: player.armor,
     }));
   } catch { /* 隐私模式等 */ }
@@ -2291,6 +2574,9 @@ function loadGame() {
     if (Array.isArray(s.ach)) achUnlocked = s.ach;
     if (s.stats) Object.assign(stats, s.stats);
     calendar.day = Math.max(1, s.day || 1);
+    player.herbs = s.herbs || 0;
+    player.venison = s.venison || 0;
+    if (Array.isArray(s.lore)) loreRead = s.lore;
     if (Array.isArray(s.weaponsOwned)) player.weaponsOwned = s.weaponsOwned;
     if (s.weapon && player.weaponsOwned.includes(s.weapon)) player.weapon = s.weapon;
     if (s.armor) {
@@ -2354,7 +2640,7 @@ const crestG = crestGeo();
 const crestMat = new THREE.MeshStandardMaterial({
   color: 0x3f6fd0, emissive: 0x1a3a88, emissiveIntensity: 0.7, metalness: 0.8, roughness: 0.25 });
 
-function addPickup(type, x, z, ttl = Infinity, id = -1) {
+function addPickup(type, x, z, ttl = Infinity, id = -1, chunk = null) {
   let mesh;
   if (type === 'coin') mesh = new THREE.Mesh(coinGeo, coinMat);
   else if (type === 'heart') mesh = new THREE.Mesh(heartG, heartMat);
@@ -2365,7 +2651,7 @@ function addPickup(type, x, z, ttl = Infinity, id = -1) {
   if (type === 'star') mesh.scale.setScalar(1.4);
   mesh.castShadow = true;
   scene.add(mesh);
-  pickups.push({ mesh, type, x, z, ttl, id, t: Math.random() * 6 });
+  pickups.push({ mesh, type, x, z, ttl, id, chunk, t: Math.random() * 6 });
 }
 for (const [x, z] of world.coinSpots) addPickup('coin', x, z);
 
@@ -2449,6 +2735,7 @@ titleEl.addEventListener('click', () => {
   startMusic();
   titleEl.style.display = 'none';
   started = true;
+  refreshProclaim(); // 今日公告(联网时由 AI 现写)
   renderer.domElement.requestPointerLock();
   toast('欢迎来到艾尔德里亚!去喷泉广场找管家埃隆接取委托吧(按 E 互动)', 5);
 });
@@ -2702,13 +2989,20 @@ function tryInteract() {
       }
       return;
     }
-    if (n.key === 'innkeep' && player.hp < player.maxHp) {
+    if (n.key === 'innkeep' && player.venison > 0) {
+      const pay = player.venison * 5;
+      openDialog([`罗莎:(眼睛一亮)新鲜鹿肉?!今晚炖肉管够了!${player.venison} 块,一共 ${pay} 金币,拿好!`]);
+      player.coins += pay;
+      player.venison = 0;
+      sfx.coin();
+      return;
+    }
+    if (n.key === 'innkeep' && (player.hp < player.maxHp || dayPhase() === 'night')) {
       if (wanted > 0) { openDialog(['罗莎:(压低声音)后门快走!卫兵刚搜过一轮,我可藏不住你。']); return; }
       if (player.coins >= 10) {
         player.coins -= 10;
-        player.hp = player.maxHp;
-        dayTime = 0.28;
         sfx.heart();
+        sleepToMorning();
         openDialog(['罗莎:(掀开门帘)天亮了,汤在灶上。伤都歇利索了吧?路上小心。']);
       } else {
         openDialog(['罗莎:住店 10 金币……先坐着喝口水吧,看你风尘仆仆的。']);
@@ -2738,6 +3032,12 @@ function tryInteract() {
         } else {
           openDialog(['玛尔戈:一勺回魂汤,8 个金币。穷?那就去湖里洗把脸,精神精神。']);
         }
+      } else if (player.herbs > 0) {
+        const pay = player.herbs * 3;
+        openDialog([`玛尔戈:(扒拉着你的蘑菇篓)成色不错……${player.herbs} 朵,${pay} 金币。别问进了哪口锅。`]);
+        player.coins += pay;
+        player.herbs = 0;
+        sfx.coin();
       } else {
         openDialog([`玛尔戈:${EXTRA_NPCS.witch.lines[n.lineIdx++ % EXTRA_NPCS.witch.lines.length]}`]);
       }
@@ -2779,6 +3079,7 @@ function tryInteract() {
     if (dist2(player.pos.x, player.pos.z, n.pos.x, n.pos.z) > 7) continue;
     if (n.key === 'gambler') { gamble(); return; }
     if (n.key === 'bard') { bardSong(); return; }
+    if (n.key === 'storyteller') { tellStory(); return; }
     if (n.key === 'prophet') {
       const fb = n.def.idle[n.lineIdx++ % n.def.idle.length];
       aiLine(
@@ -2814,6 +3115,32 @@ function tryInteract() {
     else takeBounty();
     return;
   }
+  // 王国公告牌(每日 AI 撰写)
+  if (dist2(player.pos.x, player.pos.z, NOTICE_POS.x, NOTICE_POS.z) < 6) {
+    if (!proclaimText) refreshProclaim();
+    openDialog([proclaimText || composeProclaimOffline()]);
+    return;
+  }
+  // 世界观铭文
+  for (const s of loreStones) {
+    if (dist2(player.pos.x, player.pos.z, s.def.x, s.def.z) < 8) {
+      readLore(s);
+      return;
+    }
+  }
+  // 采蘑菇
+  for (const m of mushrooms) {
+    if (!m.picked && dist2(player.pos.x, player.pos.z, m.x, m.z) < 4) {
+      m.picked = true;
+      m.group.visible = false;
+      player.herbs++;
+      stats.mushrooms = (stats.mushrooms || 0) + 1;
+      if (stats.mushrooms >= 15) unlockAch('forager');
+      sfx.coin();
+      toast(`🍄 采到一朵伞菇(篓里 ×${player.herbs},女巫玛尔戈按 3 金币收)`, 2.5);
+      return;
+    }
+  }
   // 抱鸡(半径小,贴身优先)
   for (const c of chickens) {
     if (c.state === 'thrown') continue;
@@ -2825,13 +3152,24 @@ function tryInteract() {
       return;
     }
   }
-  // 村民对话(优先 65 万字对话库,按情境选行)
+  // 村民对话(优先 100 万字对话库,按情境选行;AI 情境台词后台预取,下次开口就用)
   for (const v of villagers) {
     if (v.downT > 0 || v.sleeping) continue;
     if (dist2(player.pos.x, player.pos.z, v.pos.x, v.pos.z) > 5.5) continue;
-    const l1 = dbLine(v.dbKey) || v.id.lines[v.lineIdx++ % v.id.lines.length];
+    const l1 = v.aiNext || dbLine(v.dbKey) || v.id.lines[v.lineIdx++ % v.id.lines.length];
+    v.aiNext = null;
     const l2 = dbLine(v.dbKey) || v.id.lines[v.lineIdx++ % v.id.lines.length];
     openDialog([`${v.id.name}:${l1}`, `${v.id.name}:${l2}`]);
+    if (!AI_TEXT_OFF && !v.aiPending && Math.random() < 0.35) {
+      v.aiPending = true;
+      const sp = todaySpecial();
+      aiLine(
+        `你是中世纪王国的村民「${v.id.name}」。现在是${SEASONS[seasonIdx()]}季` +
+        `${sp ? '·' + sp.name : ''},${{ dawn: '清晨', day: '白天', dusk: '黄昏', night: '夜里' }[dayPhase()]},` +
+        `天气${{ clear: '晴', cloudy: '多云', rain: '下雨', storm: '雷暴' }[weather.state]}。` +
+        '用中文说一句40字以内、符合你身份的闲聊,口语化,不要引号不要名字前缀。', null, 9000,
+      ).then((t) => { v.aiPending = false; if (t) v.aiNext = t; });
+    }
     return;
   }
   // 喷泉许愿
@@ -2882,11 +3220,21 @@ function clearRaceRings() {
   questRT.rings = [];
 }
 
+function removeEscortBandits() {
+  for (let i = bandits.length - 1; i >= 0; i--) {
+    if (bandits[i].escort) {
+      scene.remove(bandits[i].group);
+      bandits.splice(i, 1);
+    }
+  }
+}
+
 function failMission(msg) {
   quest.active = false;
   if (player.parcel) { player.group.remove(player.parcel); player.parcel = null; }
   clearRaceRings();
   if (questRT.merchant) { scene.remove(questRT.merchant.group); questRT.merchant = null; }
+  removeEscortBandits(); // 伏兵随任务失败一并撤走,否则重接任务时旧伏兵会追杀新商人
   toast(msg, 3.5);
 }
 
@@ -2959,6 +3307,7 @@ function completeMission() {
   if (player.parcel) { player.group.remove(player.parcel); player.parcel = null; }
   clearRaceRings();
   if (questRT.merchant) { scene.remove(questRT.merchant.group); questRT.merchant = null; }
+  removeEscortBandits();
   saveGame();
   if (quest.idx >= missions.length) {
     addPickup('star', 0, 13);
@@ -3014,6 +3363,10 @@ function tryAttack() {
   hitOne(wolves, (w) => {
     w.hp -= dmg; sfx.hit(); hitFX(w, def.knock); showDamage(w.pos, dmg, dmg >= 3);
     if (w.hp <= 0) killWolf(w);
+  });
+  hitOne(deers, (d) => {
+    sfx.hit();
+    killDeer(d);
   });
   // 鸡不会死,但它们会记住你
   hitOne(chickens, (c) => {
@@ -3097,8 +3450,9 @@ function moveEntity(e, tx, tz, speed, dt) {
 }
 
 // 人形动画:四肢摆动 + 身体起伏 + 奔跑前倾 + 呼吸怠速 + 头部环视
+let nowMs = performance.now(); // 主循环每帧更新,免得几十个实体各查一次时钟
 function animateLimbs(p, walkT, moving, group = null, speedNorm = 0.6) {
-  const now = performance.now();
+  const now = nowMs;
   const swing = moving ? Math.sin(walkT) * (0.45 + 0.35 * speedNorm) : 0;
   p.legL.rotation.x = swing;
   p.legR.rotation.x = -swing;
@@ -3159,6 +3513,7 @@ function updateGuards(dt) {
       if (g.stunT <= 0) g.group.rotation.z = 0;
       continue;
     }
+    if (wanted === 0 && g.state !== 'chase' && entFar(g)) continue; // 无通缉时远处卫兵不巡逻动画
     g.attackCd = Math.max(0, g.attackCd - dt);
     const pd = Math.hypot(player.pos.x - g.pos.x, player.pos.z - g.pos.z);
     const sight = 22 + wanted * 8;
@@ -3240,6 +3595,8 @@ function updateBandits(dt) {
       }
       continue;
     }
+    if (!b.boss && !b.escort && !b.robber && !b.convict && !b.bountyHead &&
+        !b.duel && !b.arena && !b.eventFoe && entFar(b)) continue; // 远处匪徒待机
     if (b.robber) { updateRobber(b, dt); continue; }
     if (b.convict) {
       if (b.stunT > 0) { b.stunT -= dt; continue; }
@@ -3311,6 +3668,7 @@ function updateVillagers(dt) {
       if (v.downT <= 0) v.group.rotation.x = 0;
       continue;
     }
+    if (v.fleeT <= 0 && entFar(v)) continue; // 远处村民不演日程
     // 夜里睡觉:走到家,消失在屋里
     if (phase === 'night' && v.fleeT <= 0) {
       if (v.sleeping) continue;
@@ -3363,6 +3721,7 @@ function updateVillagers(dt) {
 function updateHorses(dt) {
   for (const h of horses) {
     if (h === player.mounted) continue;
+    if (!h.runaway && entFar(h)) continue; // 远处的马原地吃草
     // 空中下马后自然回落地面
     if (h.pos.y > 0) h.pos.y = Math.max(0, h.pos.y - 22 * dt);
     if (h.runaway) {
@@ -4112,14 +4471,14 @@ function updateHUD() {
   const key = hearts + '|' + player.coins + '|' + player.weapon + player.armor + '|' + stars + '|' + missionText + '|' + timer + '|' + promptText + '|' + wIcon + phaseIcon + calText + '|' + bossHp;
   if (key === hudCache) return;
   hudCache = key;
-  document.getElementById('weather').textContent = `${calText} ${phaseIcon} ${wIcon}`;
+  weatherEl.textContent = `${calText} ${phaseIcon} ${wIcon}`;
   heartsEl.textContent = hearts;
   coinsEl.textContent = `🪙 ${player.coins}`;
   wantedEl.textContent = stars;
   wantedEl.style.display = wanted > 0 ? 'block' : 'none';
   missionEl.textContent = missionText;
   const wDef = WEAPONS[player.weapon];
-  document.getElementById('equip').textContent =
+  equipEl.textContent =
     `${wDef.icon} ${wDef.name}${player.swordLv >= 2 ? '+1' : ''}` +
     (player.armor ? ` · 🛡️ ${ARMORS[player.armor].name}` : '') +
     (player.weaponsOwned.length > 1 ? '(Q 切换)' : '');
@@ -4127,12 +4486,11 @@ function updateHUD() {
   promptEl.style.display = promptText ? 'block' : 'none';
   // Boss 血条(仅 Boss 战期间)
   const boss = questRT.boss;
-  const bossEl = document.getElementById('bosshp');
   if (boss && !boss.dead && quest.active) {
-    bossEl.style.display = 'block';
-    document.getElementById('bosshp-fill').style.width = `${Math.max(0, (boss.hp / 12) * 100)}%`;
+    bosshpEl.style.display = 'block';
+    bosshpFillEl.style.width = `${Math.max(0, (boss.hp / 12) * 100)}%`;
   } else {
-    bossEl.style.display = 'none';
+    bosshpEl.style.display = 'none';
   }
 }
 
@@ -4154,8 +4512,11 @@ function computePrompt() {
     if (n.key === 'steward' && quest.idx < missions.length) { promptText = '按 E 与管家埃隆交谈(委托)'; return; }
     if (n.key === 'blacksmith') { promptText = '按 E 打开铁匠铺(武器/护甲)'; return; }
     if (n.key === 'trader' && !player.royalHorse) { promptText = '按 E 找马贩瑟尔玛(皇家骏马 80 金币)'; return; }
+    if (n.key === 'innkeep' && player.venison > 0) { promptText = `按 E 卖鹿肉 ×${player.venison}(每块 5 金币)`; return; }
     if (n.key === 'innkeep' && player.hp < player.maxHp) { promptText = '按 E 住店休息,回满生命(10 金币)'; return; }
+    if (n.key === 'innkeep' && dayPhase() === 'night') { promptText = '按 E 住店过夜,睡到天亮(10 金币)'; return; }
     if (n.key === 'witch' && player.hp < player.maxHp) { promptText = '按 E 买回魂汤(8 金币)'; return; }
+    if (n.key === 'witch' && player.herbs > 0) { promptText = `按 E 卖蘑菇 ×${player.herbs}(每朵 3 金币)`; return; }
     if (n.key === 'king') {
       promptText = quest.idx >= missions.length && !n.rewarded ? '按 E 领取领主的重赏' : '按 E 谒见领主';
       return;
@@ -4181,8 +4542,29 @@ function computePrompt() {
       bard: '按 E 点一首《你自己的歌》',
       prophet: '按 E 听老糊涂的预言(?)',
       quixote: '按 E 与风车骑士交谈',
+      storyteller: '按 E 听苟叔说书(AI 现编)',
     }[n.key];
     return;
+  }
+  if (dist2(player.pos.x, player.pos.z, NOTICE_POS.x, NOTICE_POS.z) < 6) {
+    mark(NOTICE_POS.x, NOTICE_POS.z, 2.2);
+    promptText = '按 E 看今日王国公告';
+    return;
+  }
+  for (const s of loreStones) {
+    if (dist2(player.pos.x, player.pos.z, s.def.x, s.def.z) < 8) {
+      mark(s.def.x, s.def.z, 2.0);
+      promptText = loreRead.includes(LORE.indexOf(s.def))
+        ? `按 E 重读铭文《${s.def.title}》` : `按 E 阅读铭文(${loreRead.length}/${LORE.length})`;
+      return;
+    }
+  }
+  for (const m of mushrooms) {
+    if (!m.picked && dist2(player.pos.x, player.pos.z, m.x, m.z) < 4) {
+      mark(m.x, m.z, 0.8);
+      promptText = '按 E 采蘑菇';
+      return;
+    }
   }
   if (!player.mounted && dist2(player.pos.x, player.pos.z, FISH_SPOT.x, FISH_SPOT.z) < 10) {
     mark(FISH_SPOT.x, FISH_SPOT.z, 1.6);
@@ -4356,6 +4738,10 @@ window.__gtm = {
   setDay: (d) => { calendar.day = Math.max(1, d); applySeason(); },
   getDailyEvents: () => dailyEvents,
   wilderness: { CORE },
+  deers, mushrooms, loreStones, LORE, tellStory, sleepToMorning, newDay,
+  getLoreRead: () => loreRead.length,
+  getProclaim: () => proclaimText,
+  refreshProclaim,
   getCrests: () => crestsFound.length,
   dialogOpen: () => dialog.open,
   getRevenge: () => revengeT,
@@ -4367,6 +4753,7 @@ function loop(now) {
   requestAnimationFrame(loop);
   let dt = Math.min(0.05, (now - last) / 1000);
   last = now;
+  nowMs = now;
   if (!started) { composer.render(); return; }
   if (paused) { composer.render(); return; } // 暂停:世界冻结,仅渲染
   // 击杀慢动作
@@ -4397,6 +4784,7 @@ function loop(now) {
   updateChickens(dt);
   updateVillagers(dt);
   updateHorses(dt);
+  updateDeers(dt);
   updatePickups(dt);
   updateQuest(dt);
   updateWanted(dt);
@@ -4417,6 +4805,7 @@ function loop(now) {
   {
     const phase = dayPhase();
     for (const n of namedNPCs) {
+      if (entFar(n)) continue;
       const sched = NPC_SCHEDULE[n.key];
       const spot = sched ? sched[phase] : null;
       if (spot && Math.hypot(n.pos.x - spot[0], n.pos.z - spot[1]) > 1.2) {
@@ -4439,6 +4828,7 @@ function loop(now) {
     }
     for (const n of funnyNPCs) {
       if (n.key === 'quixote') continue; // 他忙着决斗
+      if (entFar(n)) continue;
       animateLimbs(n.parts, 0, false);
       if (dist2(player.pos.x, player.pos.z, n.pos.x, n.pos.z) < 30) {
         n.group.rotation.y = angleLerp(n.group.rotation.y,
@@ -4498,15 +4888,14 @@ function loop(now) {
 
   updateEnvIntensity();
   // 残血红晕与心跳
-  const lowEl = document.getElementById('lowhp');
   if (player.hp <= 3 && !player.dead) {
-    lowEl.style.opacity = 0.55 + Math.sin(now * 0.008) * 0.3;
+    lowhpEl.style.opacity = 0.55 + Math.sin(now * 0.008) * 0.3;
     player.hbT = (player.hbT || 0) - dt;
     if (player.hbT <= 0) { player.hbT = 0.95; sfx.heartbeat(); }
-  } else {
-    lowEl.style.opacity = 0;
+  } else if (lowhpEl.style.opacity !== '0') {
+    lowhpEl.style.opacity = 0;
   }
-  computePrompt();
+  if (frameNo % 3 === 0 || fishing.active || player.carrying || player.mounted) computePrompt();
   updateHUD();
   if (frameNo++ % 2 === 0) drawMinimap(); // 小地图 30Hz 足够
   composer.render();

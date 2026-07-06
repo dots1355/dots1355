@@ -316,18 +316,86 @@ export function makeSheep() {
 }
 
 // ---- 碰撞:圆形与轴对齐盒 ----
-export function resolveCollisions(p, r, colliders) {
-  for (const c of colliders.circles) {
-    const dx = p.x - c.x, dz = p.z - c.z;
-    const d2 = dx * dx + dz * dz;
-    const rr = r + c.r;
-    if (d2 < rr * rr && d2 > 1e-8) {
-      const d = Math.sqrt(d2);
-      p.x = c.x + (dx / d) * rr;
-      p.z = c.z + (dz / d) * rr;
+// 圆形碰撞体走空间哈希网格:每个实体每帧只查身边 1~4 格,而不是线性扫全表。
+// 荒野区块增删碰撞体后置 colliders.dirty = true(或长度变化)即自动重建。
+const GRID_CELL = 16;
+let _grid = null, _gridSrc = null, _gridLen = -1;
+let _boxGrid = null, _bigBoxes = null, _boxSrc = null, _boxLen = -1;
+const _gk = (gx, gz) => gx * 200003 + gz;
+
+function rebuildCircleGrid(circles) {
+  _grid = new Map();
+  for (const c of circles) {
+    const x0 = Math.floor((c.x - c.r) / GRID_CELL), x1 = Math.floor((c.x + c.r) / GRID_CELL);
+    const z0 = Math.floor((c.z - c.r) / GRID_CELL), z1 = Math.floor((c.z + c.r) / GRID_CELL);
+    for (let gx = x0; gx <= x1; gx++) {
+      for (let gz = z0; gz <= z1; gz++) {
+        const k = _gk(gx, gz);
+        let cell = _grid.get(k);
+        if (!cell) { cell = []; _grid.set(k, cell); }
+        cell.push(c);
+      }
     }
   }
-  for (const b of colliders.boxes) {
+}
+function rebuildBoxGrid(boxes) {
+  _boxGrid = new Map();
+  _bigBoxes = [];
+  for (const b of boxes) {
+    const x0 = Math.floor(b.minX / GRID_CELL), x1 = Math.floor(b.maxX / GRID_CELL);
+    const z0 = Math.floor(b.minZ / GRID_CELL), z1 = Math.floor(b.maxZ / GRID_CELL);
+    if ((x1 - x0 + 1) * (z1 - z0 + 1) > 64) { _bigBoxes.push(b); continue; } // 世界边界墙等超长盒走线性
+    for (let gx = x0; gx <= x1; gx++) {
+      for (let gz = z0; gz <= z1; gz++) {
+        const k = _gk(gx, gz);
+        let cell = _boxGrid.get(k);
+        if (!cell) { cell = []; _boxGrid.set(k, cell); }
+        cell.push(b);
+      }
+    }
+  }
+}
+
+function resolveCircle(p, r, c) {
+  const dx = p.x - c.x, dz = p.z - c.z;
+  const d2 = dx * dx + dz * dz;
+  const rr = r + c.r;
+  if (d2 < rr * rr && d2 > 1e-8) {
+    const d = Math.sqrt(d2);
+    p.x = c.x + (dx / d) * rr;
+    p.z = c.z + (dz / d) * rr;
+  }
+}
+
+export function resolveCollisions(p, r, colliders) {
+  const circles = colliders.circles;
+  if (circles !== _gridSrc || circles.length !== _gridLen || colliders.dirty) {
+    rebuildCircleGrid(circles);
+    _gridSrc = circles;
+    _gridLen = circles.length;
+    colliders.dirty = false;
+  }
+  const boxes = colliders.boxes;
+  if (boxes !== _boxSrc || boxes.length !== _boxLen) {
+    rebuildBoxGrid(boxes);
+    _boxSrc = boxes;
+    _boxLen = boxes.length;
+  }
+  const gx0 = Math.floor((p.x - r) / GRID_CELL), gx1 = Math.floor((p.x + r) / GRID_CELL);
+  const gz0 = Math.floor((p.z - r) / GRID_CELL), gz1 = Math.floor((p.z + r) / GRID_CELL);
+  for (let gx = gx0; gx <= gx1; gx++) {
+    for (let gz = gz0; gz <= gz1; gz++) {
+      const cell = _grid.get(_gk(gx, gz));
+      if (cell) for (const c of cell) resolveCircle(p, r, c);
+      const bcell = _boxGrid.get(_gk(gx, gz));
+      if (bcell) for (const b of bcell) resolveBox(p, r, b);
+    }
+  }
+  for (const b of _bigBoxes) resolveBox(p, r, b);
+}
+
+function resolveBox(p, r, b) {
+  {
     const cx = Math.max(b.minX, Math.min(p.x, b.maxX));
     const cz = Math.max(b.minZ, Math.min(p.z, b.maxZ));
     const dx = p.x - cx, dz = p.z - cz;
