@@ -424,6 +424,28 @@ function updateWolves(dt) {
       w.group.position.copy(w.pos);
       continue;
     }
+    // 事件:袭击居民的狼优先咬村民
+    if (w.raidTarget && w.raidTarget.downT <= 0 && pd > 9) {
+      const v = w.raidTarget;
+      const vd = Math.hypot(v.pos.x - w.pos.x, v.pos.z - w.pos.z);
+      if (vd > 1.2) { moveEntity(w, v.pos.x, v.pos.z, w.speed, dt); moving = true; }
+      else if (w.attackCd <= 0) {
+        w.attackCd = 1.4;
+        v.downT = 6;
+        v.group.rotation.x = -Math.PI / 2;
+        sfx.hit();
+        w.raidTarget = villagers.find((x) => !x.sleeping && x.downT <= 0 &&
+          dist2(w.pos.x, w.pos.z, x.pos.x, x.pos.z) < 900) || null;
+      }
+      w.group.position.copy(w.pos);
+      w.group.rotation.y = w.yaw;
+      const sw2 = moving ? Math.sin(w.walkT) * 0.6 : 0;
+      w.parts.legs[0].rotation.x = sw2;
+      w.parts.legs[1].rotation.x = -sw2;
+      w.parts.legs[2].rotation.x = -sw2;
+      w.parts.legs[3].rotation.x = sw2;
+      continue;
+    }
     if (pd < 20 && !player.dead) {
       if (pd < 6 && pd > 1.6 && w.lungeCd <= 0) {
         // 起跳预警
@@ -605,7 +627,7 @@ function arrowHitEntities(a) {
     if (b.hp <= 0) {
       b.dead = true; startFall(b); registerKill();
       dropCoins(b.pos, b.boss ? 20 : 5);
-      if (quest.active && missions[quest.idx].type === 'bandits' && !b.boss && !b.escort && !b.bountyHead && !b.robber && !b.arena && !b.ambient) {
+      if (quest.active && missions[quest.idx].type === 'bandits' && !b.boss && !b.escort && !b.bountyHead && !b.robber && !b.arena && !b.ambient && !b.duel && !b.convict && !b.eventFoe) {
         quest.progress++;
         toast(`击败盗贼 ${quest.progress}/3`, 2);
         if (quest.progress >= 3) completeMission();
@@ -1219,6 +1241,343 @@ function updateArena(dt) {
   }
 }
 
+// ================= 事件导演:永无止境的随机事件 =================
+// 每 45~105 秒按权重与条件(时辰/位置/进度)抽取一个事件在玩家附近上演
+const director = { handle: null, cd: 40 };
+
+function spawnNearPlayer(minR, maxR) {
+  const a = Math.random() * Math.PI * 2;
+  const r = minR + Math.random() * (maxR - minR);
+  const p = { x: player.pos.x + Math.cos(a) * r, z: player.pos.z + Math.sin(a) * r };
+  resolveCollisions(p, 1, colliders);
+  return p;
+}
+function makeWanderer(style, x, z) {
+  const n = { ...makeHumanoid(style), pos: new THREE.Vector3(x, 0, z), yaw: 0, walkT: 0 };
+  n.group.position.copy(n.pos);
+  scene.add(n.group);
+  return n;
+}
+
+const DIRECTOR_EVENTS = [
+  {
+    key: 'wolfRaid', w: 10,
+    cond: () => quest.idx >= 2 && villagers.some((v) => !v.sleeping &&
+      dist2(player.pos.x, player.pos.z, v.pos.x, v.pos.z) < 3600),
+    start() {
+      const v = villagers.find((x) => !x.sleeping && dist2(player.pos.x, player.pos.z, x.pos.x, x.pos.z) < 3600);
+      const pack = [];
+      for (let i = 0; i < 3; i++) {
+        const p = spawnNearPlayer(24, 34);
+        const w = addWolf(p.x, p.z);
+        w.raidTarget = v;
+        pack.push(w);
+      }
+      toast('📣 狼群袭击了居民!快去救人!', 3.5);
+      sfx.wanted();
+      return {
+        t: 60,
+        update() {
+          if (pack.every((w) => w.dead)) {
+            player.coins += 20;
+            sfx.fanfare();
+            toast('🐺 狼群被击退!居民凑了 20 金币谢你。', 4);
+            this.t = 0;
+          }
+        },
+        end() { for (const w of pack) { w.raidTarget = null; } },
+      };
+    },
+  },
+  {
+    key: 'tollAmbush', w: 9,
+    cond: () => quest.idx >= 1 && dist2(player.pos.x, player.pos.z, 0, 0) > 8100,
+    start() {
+      const thugs = [];
+      for (let i = 0; i < 2 + Math.floor(Math.random() * 2); i++) {
+        const p = spawnNearPlayer(12, 18);
+        thugs.push(addBandit(p.x, p.z, { hp: 3 }));
+      }
+      for (const b of thugs) b.eventFoe = true;
+      toast('📣 「站住!留下买路钱!」——路霸现身!', 3.5);
+      sfx.wanted();
+      return {
+        t: 70,
+        update() {
+          if (thugs.every((b) => b.dead)) {
+            player.coins += 15;
+            toast('💰 路霸被清剿,+15 金币。', 3);
+            sfx.coin();
+            this.t = 0;
+          }
+        },
+        end() {
+          for (const b of thugs) {
+            if (!b.dead) { scene.remove(b.group); const i = bandits.indexOf(b); if (i >= 0) bandits.splice(i, 1); }
+          }
+        },
+      };
+    },
+  },
+  {
+    key: 'duelist', w: 7,
+    cond: () => quest.idx >= 2,
+    start() {
+      const p = spawnNearPlayer(10, 15);
+      const d = addBandit(p.x, p.z, { hp: 5, dmg: 1, speed: 6 });
+      d.duel = true;
+      d.eventFoe = true;
+      toast('📣 流浪剑客卡洛拔剑相向:「久仰!让我看看你的剑!」', 4);
+      return {
+        t: 90,
+        update() {
+          if (d.dead) {
+            player.coins += 20;
+            sfx.fanfare();
+            toast('🤺 卡洛抱拳认负:「好剑法!」(+20 金币)', 4);
+            this.t = 0;
+          }
+        },
+        end() {
+          if (!d.dead) {
+            toast('🤺 卡洛收剑离去:「下次再切磋。」', 3);
+            scene.remove(d.group);
+            const i = bandits.indexOf(d);
+            if (i >= 0) bandits.splice(i, 1);
+          }
+        },
+      };
+    },
+  },
+  {
+    key: 'convict', w: 8,
+    cond: () => quest.idx >= 1,
+    start() {
+      const p = spawnNearPlayer(14, 20);
+      const c = addBandit(p.x, p.z, { hp: 4, speed: 6.4 });
+      c.convict = true;
+      c.eventFoe = true;
+      toast('📣 有逃犯越狱!活捉或击倒都有赏!', 3.5);
+      sfx.wanted();
+      return {
+        t: 80,
+        update() {
+          if (c.dead) {
+            player.coins += 25;
+            sfx.fanfare();
+            toast('⛓️ 逃犯归案,+25 金币赏金!', 3.5);
+            this.t = 0;
+          } else if (dist2(player.pos.x, player.pos.z, c.pos.x, c.pos.z) > 32400) {
+            toast('⛓️ 逃犯跑远了……', 2.5);
+            this.t = 0;
+          }
+        },
+        end() {
+          if (!c.dead) { scene.remove(c.group); const i = bandits.indexOf(c); if (i >= 0) bandits.splice(i, 1); }
+        },
+      };
+    },
+  },
+  {
+    key: 'meteor', w: 6,
+    cond: () => dayPhase() === 'night' || dayPhase() === 'dusk',
+    start() {
+      const p = spawnNearPlayer(28, 50);
+      const ball = new THREE.Mesh(new THREE.SphereGeometry(0.8, 8, 6),
+        new THREE.MeshBasicMaterial({ color: 0xffcc66 }));
+      const glow = new THREE.PointLight(0xffaa44, 30, 60, 2);
+      ball.position.set(p.x + 40, 90, p.z - 30);
+      glow.position.copy(ball.position);
+      scene.add(ball, glow);
+      toast('☄️ 夜空中有什么东西坠落了!', 3);
+      let landed = false;
+      return {
+        t: 40,
+        update(dt2) {
+          if (!landed) {
+            ball.position.x -= 40 * dt2 * 0.55;
+            ball.position.y -= 90 * dt2 * 0.55;
+            ball.position.z += 30 * dt2 * 0.55;
+            glow.position.copy(ball.position);
+            if (ball.position.y <= 0.5) {
+              landed = true;
+              scene.remove(ball);
+              weatherAudio.thunder();
+              camShake = Math.max(camShake, 0.5);
+              spawnDust(p.x, 0.3, p.z, 20, 4, 2.5);
+              const crater = new THREE.Mesh(new THREE.CircleGeometry(3.2, 12),
+                lambert(0x4a4038, { roughness: 1 }));
+              crater.rotation.x = -Math.PI / 2;
+              crater.position.set(p.x, 0.04, p.z);
+              scene.add(crater);
+              this.crater = crater;
+              for (let i = 0; i < 10; i++) {
+                const a2 = Math.random() * 6.28;
+                addPickup('coin', p.x + Math.cos(a2) * (1 + Math.random() * 2.5),
+                  p.z + Math.sin(a2) * (1 + Math.random() * 2.5), 60);
+              }
+              toast('☄️ 陨石坠地!坑里散着灼热的金币!', 4);
+            }
+          } else {
+            glow.intensity = Math.max(0, glow.intensity - dt2 * 15);
+          }
+        },
+        end() { scene.remove(ball); scene.remove(glow); },
+      };
+    },
+  },
+  {
+    key: 'mysticMerchant', w: 6,
+    cond: () => true,
+    start() {
+      const p = spawnNearPlayer(12, 16);
+      const m = makeWanderer({ shirt: 0x2a3a5a, pants: 0x1a2438, hood: true }, p.x, p.z);
+      toast('📣 一位兜帽商人不知从哪儿冒了出来……', 3);
+      const h = {
+        t: 45,
+        merchant: m,
+        update() {
+          if (dist2(player.pos.x, player.pos.z, m.pos.x, m.pos.z) < 30) {
+            m.group.rotation.y = angleLerp(m.group.rotation.y,
+              Math.atan2(player.pos.x - m.pos.x, player.pos.z - m.pos.z), 0.1);
+          }
+        },
+        end() {
+          spawnDust(m.pos.x, 0.5, m.pos.z, 8, 0.8, 1.5);
+          scene.remove(m.group);
+          if (director.mystic === m) director.mystic = null;
+        },
+      };
+      director.mystic = m;
+      return h;
+    },
+  },
+  {
+    key: 'ghost', w: 5,
+    cond: () => dayPhase() === 'night',
+    start() {
+      const p = spawnNearPlayer(15, 22);
+      const g = makeWanderer({ shirt: 0xeeeeff, pants: 0xddddee, hair: 0xffffff }, p.x, p.z);
+      g.group.traverse((o) => {
+        if (o.material) { o.material.transparent = true; o.material.opacity = 0.4; }
+      });
+      toast('👻 夜色里飘着一个苍白的身影……', 3);
+      let t0 = 0;
+      return {
+        t: 50,
+        update(dt2) {
+          t0 += dt2;
+          g.group.position.y = 0.3 + Math.sin(t0 * 2) * 0.15;
+          if (dist2(player.pos.x, player.pos.z, g.pos.x, g.pos.z) < 16) {
+            sfx.hurt();
+            spawnDust(g.pos.x, 1, g.pos.z, 10, 1, 1.2);
+            for (let i = 0; i < 12; i++) {
+              const a2 = Math.random() * 6.28;
+              addPickup('coin', g.pos.x + Math.cos(a2) * 2, g.pos.z + Math.sin(a2) * 2, 40);
+            }
+            toast('👻 幽灵消散了,留下一把冰凉的古币……', 4);
+            this.t = 0;
+          }
+        },
+        end() { scene.remove(g.group); },
+      };
+    },
+  },
+  {
+    key: 'goldenChicken', w: 5,
+    cond: () => true,
+    start() {
+      const p = spawnNearPlayer(10, 14);
+      const c = addChicken(p.x, p.z);
+      c.golden = true;
+      c.extra = true;
+      c.group.traverse((o) => {
+        if (o.material && o.material.color) {
+          o.material = o.material.clone();
+          o.material.color.setHex(0xffd83d);
+          if (o.material.emissive) { o.material.emissive.setHex(0x8a5c00); o.material.emissiveIntensity = 0.5; }
+        }
+      });
+      toast('🐔✨ 一只金鸡出没!抱住它!', 3.5);
+      return {
+        t: 45,
+        update() {
+          // 金鸡永远想逃离玩家
+          if (c.state !== 'carried' && c !== player.carrying) {
+            c.state = 'flee';
+            c.timer = 1;
+          }
+          if (player.carrying === c) {
+            player.coins += 30;
+            sfx.fanfare();
+            toast('🐔✨ 金鸡在你怀里化作 30 枚金币!!', 4);
+            player.carrying = null;
+            this.t = 0;
+          }
+        },
+        end() {
+          const i = chickens.indexOf(c);
+          if (i >= 0) { scene.remove(c.group); chickens.splice(i, 1); }
+        },
+      };
+    },
+  },
+  {
+    key: 'chickenRiot', w: 3,
+    cond: () => revengeT <= 0 && dist2(player.pos.x, player.pos.z, 20, 85) < 14400,
+    start() {
+      chickenAnger = 3;
+      revengeT = 15;
+      toast('🐔 鸡群今天心情不好——暴动了!!', 3.5);
+      sfx.wanted();
+      for (let i = 0; i < 4; i++) {
+        const p = spawnNearPlayer(10, 14);
+        const rc = addChicken(p.x, p.z);
+        rc.extra = true;
+      }
+      return { t: 16, update() {}, end() {} };
+    },
+  },
+  {
+    key: 'coinRain', w: 4,
+    cond: () => true,
+    start() {
+      toast('💨 一阵怪风卷来了谁家的钱袋!', 3);
+      sfx.coin();
+      for (let i = 0; i < 10; i++) {
+        const a = Math.random() * 6.28;
+        addPickup('coin', player.pos.x + Math.cos(a) * (3 + Math.random() * 6),
+          player.pos.z + Math.sin(a) * (3 + Math.random() * 6), 30);
+      }
+      return { t: 5, update() {}, end() {} };
+    },
+  },
+];
+
+function updateDirector(dt) {
+  if (!started || player.dead || arenaRT.active) return;
+  if (director.handle) {
+    const h = director.handle;
+    h.t -= dt;
+    if (h.update) h.update(dt);
+    if (h.t <= 0) {
+      if (h.end) h.end();
+      director.handle = null;
+      director.cd = 45 + Math.random() * 60;
+    }
+    return;
+  }
+  director.cd -= dt;
+  if (director.cd > 0) return;
+  const pool = DIRECTOR_EVENTS.filter((e) => e.cond());
+  if (!pool.length) { director.cd = 15; return; }
+  let total = pool.reduce((s, e) => s + e.w, 0);
+  let roll = Math.random() * total;
+  let ev = pool[0];
+  for (const e of pool) { roll -= e.w; if (roll <= 0) { ev = e; break; } }
+  director.handle = ev.start();
+}
+
 // ================= 具名 NPC =================
 const npcStyles = {
   witch: { shirt: 0x3a2a4a, pants: 0x261a30, hood: true, hair: 0x888888 },
@@ -1360,9 +1719,31 @@ function gamble() {
   ]);
 }
 
-// 吟游诗人:按你的真实事迹即兴打油诗
-function bardSong() {
+// 吟游诗人:按你的真实事迹即兴打油诗(联网时由 AI 现场作词)
+async function bardSong() {
   sfx.lute();
+  const deedsForAI = [];
+  if (wanted > 0) deedsForAI.push(`被通缉${wanted}星`);
+  if (player.royalHorse) deedsForAI.push('有一匹皇家骏马');
+  if (wolfKills > 0) deedsForAI.push(`猎杀了${wolfKills}头恶狼`);
+  if (quest.idx > 0) deedsForAI.push(`完成了${quest.idx}件领主委托`);
+  deedsForAI.push(`身上有${player.coins}枚金币`);
+  toast('🎵 皮波拨了拨琴弦,正在酝酿……', 2);
+  const ai = await aiLine(
+    `你是中世纪吟游诗人皮波。用中文写一首恰好4行的幽默打油诗,歌颂绿帽游侠林恩:` +
+    `${deedsForAI.join(',')}。要押韵、要俏皮。只输出四行诗,不要任何解释。`, null);
+  if (ai) {
+    const lines = ai.split('\n').map((l) => l.trim()).filter(Boolean).slice(0, 4);
+    openDialog([
+      '皮波:(拨响鲁特琴)咳咳——AI……啊不,缪斯女神刚给了我灵感!',
+      ...lines.map((l) => `皮波:♪ ${l} ♪`),
+      '皮波:(潇洒收弦)……打赏随意,掌声免费!',
+    ]);
+    return;
+  }
+  bardSongOffline();
+}
+function bardSongOffline() {
   const deeds = [];
   if (wanted > 0) deeds.push(`通缉星星头上飘,卫兵追他满城跑`);
   if (horses.some((h) => h.stolen)) deeds.push('顺过人家一匹马(嘘——)');
@@ -1437,6 +1818,25 @@ function dbLine(key) {
     return L.t;
   }
   return lines[Math.floor(Math.random() * lines.length)].t;
+}
+
+// ================= 运行时 AI 文本(免费接口,离线回退) =================
+const AI_TEXT_OFF = new URLSearchParams(location.search).has('noai');
+async function aiLine(prompt, fallback, timeoutMs = 7000) {
+  if (AI_TEXT_OFF) return fallback;
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    const r = await fetch(`https://text.pollinations.ai/${encodeURIComponent(prompt)}`,
+      { signal: ctrl.signal });
+    clearTimeout(timer);
+    if (!r.ok) return fallback;
+    const t = (await r.text()).trim();
+    if (!t || t.length > 400) return fallback;
+    return t;
+  } catch {
+    return fallback;
+  }
 }
 
 // ================= 对话面板(RDR2 式多页对话) =================
@@ -2206,6 +2606,20 @@ function tryInteract() {
     npcTalk(n);
     return;
   }
+  // 神秘商人
+  if (director.mystic && dist2(player.pos.x, player.pos.z, director.mystic.pos.x, director.mystic.pos.z) < 6) {
+    if (player.hp < player.maxHp && player.coins >= 5) {
+      player.coins -= 5;
+      player.hp = player.maxHp;
+      sfx.heart();
+      openDialog(['兜帽商人:(递来一小瓶)喝吧。别问来路,好东西都没有来路。(生命全满)']);
+    } else if (player.hp < player.maxHp) {
+      openDialog(['兜帽商人:灵药 5 枚金币。没钱?缘分未到。']);
+    } else {
+      openDialog(['兜帽商人:你气色好得很,不需要我。有缘再会。(他朝虚空看了一眼)']);
+    }
+    return;
+  }
   // 竞技场主持人
   if (!arenaRT.active && dist2(player.pos.x, player.pos.z, arenaHost.pos.x, arenaHost.pos.z) < 7) {
     openDialog([
@@ -2224,6 +2638,14 @@ function tryInteract() {
     if (dist2(player.pos.x, player.pos.z, n.pos.x, n.pos.z) > 7) continue;
     if (n.key === 'gambler') { gamble(); return; }
     if (n.key === 'bard') { bardSong(); return; }
+    if (n.key === 'prophet') {
+      const fb = n.def.idle[n.lineIdx++ % n.def.idle.length];
+      aiLine(
+        '你是中世纪疯predict预言家老糊涂,总说些打破第四面墙的怪话(比如怀疑世界是个游戏)。' +
+        '用中文说一句50字以内的疯预言。只输出预言本身。', fb, 5000)
+        .then((line) => openDialog([`疯子老糊涂:${line}`]));
+      return;
+    }
     openDialog([`${n.def.name}:${n.def.idle[n.lineIdx++ % n.def.idle.length]}`]);
     return;
   }
@@ -2441,7 +2863,7 @@ function tryAttack() {
       dropCoins(b.pos, b.boss ? 20 : 5);
       addPickup('heart', b.pos.x, b.pos.z + 1, 30);
       if (b.boss) toast('⚔️ 血斧巴罗克倒下了!黑石兄弟会土崩瓦解!', 5);
-      if (quest.active && missions[quest.idx].type === 'bandits' && !b.boss && !b.escort && !b.bountyHead && !b.robber && !b.arena && !b.ambient) {
+      if (quest.active && missions[quest.idx].type === 'bandits' && !b.boss && !b.escort && !b.bountyHead && !b.robber && !b.arena && !b.ambient && !b.duel && !b.convict && !b.eventFoe) {
         quest.progress++;
         toast(`击败盗贼 ${quest.progress}/3`, 2);
         if (quest.progress >= 3) completeMission();
@@ -2678,6 +3100,16 @@ function updateBandits(dt) {
       continue;
     }
     if (b.robber) { updateRobber(b, dt); continue; }
+    if (b.convict) {
+      if (b.stunT > 0) { b.stunT -= dt; continue; }
+      const fx2 = b.pos.x - player.pos.x, fz2 = b.pos.z - player.pos.z;
+      const fd = Math.hypot(fx2, fz2) || 1;
+      moveEntity(b, b.pos.x + (fx2 / fd) * 8, b.pos.z + (fz2 / fd) * 8, b.speed, dt);
+      b.group.position.copy(b.pos);
+      b.group.rotation.y = b.yaw;
+      animateLimbs(b.parts, b.walkT, true, b.group, 1);
+      continue;
+    }
     if (b.stunT > 0) { b.stunT -= dt; continue; }
     b.attackCd = Math.max(0, b.attackCd - dt);
     const pd = Math.hypot(player.pos.x - b.pos.x, player.pos.z - b.pos.z);
@@ -3587,6 +4019,11 @@ function computePrompt() {
     promptText = `按 E 与${n.def.name}交谈`;
     return;
   }
+  if (director.mystic && dist2(player.pos.x, player.pos.z, director.mystic.pos.x, director.mystic.pos.z) < 6) {
+    mark(director.mystic.pos.x, director.mystic.pos.z, 2.15);
+    promptText = '按 E 与兜帽商人交易(灵药 5 金币)';
+    return;
+  }
   if (!arenaRT.active && dist2(player.pos.x, player.pos.z, arenaHost.pos.x, arenaHost.pos.z) < 7) {
     mark(arenaHost.pos.x, arenaHost.pos.z, 2.15);
     promptText = `按 E 参加角斗(最佳纪录:${stats.arenaBest || 0} 波)`;
@@ -3767,6 +4204,7 @@ window.__gtm = {
   player, quest, questRT, horses, guards, bandits, villagers, wolves, namedNPCs, steward,
   chickens, funnyNPCs, fishing, streetEvent, bountyRT, takeBounty, trySpawnStreetEvent,
   arrows, WEAPONS, cycleWeapon, openShop, refreshShop, tryRob, doRoll, arenaRT, arenaHost, startArenaWave,
+  director, DIRECTOR_EVENTS,
   crime, weather, setWeather, talkQuestGiver, completeMission, missions, advanceDialog,
   getWanted: () => wanted,
   setTime: (t) => { dayTime = t; },
@@ -3820,6 +4258,7 @@ function loop(now) {
   updateCombo(dt);
   updateFalls(dt);
   updateArena(dt);
+  updateDirector(dt);
   updateStreetEvent(dt);
   updateBounty(dt);
   updateWeather(dt);
