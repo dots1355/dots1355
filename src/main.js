@@ -414,6 +414,228 @@ function killWolf(w) {
   }
 }
 
+// ================= 武器与护甲系统 =================
+const WEAPONS = {
+  sword:      { name: '铁剑', icon: '🗡️', dmg: 1, range: 2.4, cd: 0.35, knock: 0.55, price: 0 },
+  dagger:     { name: '短匕', icon: '🔪', dmg: 1, range: 2.0, cd: 0.16, knock: 0.3, price: 30 },
+  greatsword: { name: '巨剑', icon: '⚔️', dmg: 3, range: 2.9, cd: 0.7, knock: 1.3, price: 90 },
+  bow:        { name: '猎弓', icon: '🏹', dmg: 2, range: 0, cd: 0.8, knock: 0.4, price: 60 },
+};
+const ARMORS = [
+  { name: '', bonus: 0 },
+  { name: '皮甲', bonus: 2, price: 40, color: 0x7a5230 },
+  { name: '板甲', bonus: 4, price: 120, color: 0x9aa4ad },
+];
+player.weapon = 'sword';
+player.weaponsOwned = ['sword'];
+player.armor = 0;
+player.blocking = false;
+player.rollT = 0;
+player.rollCd = 0;
+player.rollDir = new THREE.Vector2(0, 1);
+
+// 手中武器外观
+function setWeaponVisual(type) {
+  const armR = player.parts.armR;
+  if (player.weaponGroup) armR.remove(player.weaponGroup);
+  if (player.bowGroup) { player.parts.armL.remove(player.bowGroup); player.bowGroup = null; }
+  const g = new THREE.Group();
+  const steel = lambert(player.swordLv >= 2 ? 0xe8c34a : 0xd8dde2,
+    { metalness: 0.85, roughness: 0.25 });
+  if (type === 'dagger') {
+    const blade = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.42, 0.02), steel);
+    blade.position.y = -0.46;
+    const guard = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.04, 0.05), lambert(0x6b4a2f));
+    guard.position.y = -0.28;
+    g.add(blade, guard);
+  } else if (type === 'greatsword') {
+    const blade = new THREE.Mesh(new THREE.BoxGeometry(0.11, 1.15, 0.035), steel);
+    blade.position.y = -0.82;
+    const guard = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.06, 0.08), lambert(0x8a6a20, { metalness: 0.6, roughness: 0.35 }));
+    guard.position.y = -0.28;
+    g.add(blade, guard);
+  } else if (type === 'bow') {
+    // 弓持在左手
+    const bow = new THREE.Group();
+    const arc = new THREE.Mesh(new THREE.TorusGeometry(0.42, 0.03, 6, 14, Math.PI), lambert(0x6b4a2f, { roughness: 0.8 }));
+    arc.rotation.z = Math.PI / 2;
+    bow.add(arc);
+    const stringMesh = new THREE.Mesh(new THREE.BoxGeometry(0.012, 0.84, 0.012), lambert(0xd8d0c0));
+    bow.add(stringMesh);
+    bow.position.set(0, -0.42, 0.06);
+    player.parts.armL.add(bow);
+    player.bowGroup = bow;
+  } else {
+    const blade = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.75, 0.03), steel);
+    blade.position.y = -0.62;
+    const guard = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.05, 0.06), lambert(0xc9a227));
+    guard.position.y = -0.26;
+    g.add(blade, guard);
+  }
+  g.position.y = -0.2;
+  armR.add(g);
+  player.weaponGroup = g;
+  if (player.parts.sword) player.parts.sword.visible = false; // 隐藏初始剑模型
+}
+function setArmorVisual(level) {
+  if (player.armorMesh) { player.group.remove(player.armorMesh); player.armorMesh = null; }
+  if (level <= 0) return;
+  const vest = new THREE.Mesh(new THREE.CylinderGeometry(0.23, 0.285, 0.5, 10),
+    lambert(ARMORS[level].color, { metalness: level === 2 ? 0.7 : 0.1, roughness: level === 2 ? 0.35 : 0.8 }));
+  vest.position.y = 0.8;
+  player.group.add(vest);
+  player.armorMesh = vest;
+}
+function applyArmor(level) {
+  player.armor = level;
+  player.maxHp = 10 + ARMORS[level].bonus;
+  player.hp = Math.min(player.hp + ARMORS[level].bonus, player.maxHp);
+  setArmorVisual(level);
+}
+function cycleWeapon() {
+  if (player.weaponsOwned.length < 2 || player.mounted || player.carrying) return;
+  const i = player.weaponsOwned.indexOf(player.weapon);
+  player.weapon = player.weaponsOwned[(i + 1) % player.weaponsOwned.length];
+  setWeaponVisual(player.weapon);
+  sfx.equip();
+  toast(`${WEAPONS[player.weapon].icon} 已装备:${WEAPONS[player.weapon].name}`, 1.5);
+}
+
+// ---- 箭矢 ----
+const arrows = [];
+const arrowGeo = new THREE.CylinderGeometry(0.015, 0.015, 0.55, 4);
+arrowGeo.rotateX(Math.PI / 2);
+const arrowMat = lambert(0x8a6a45, { roughness: 0.8 });
+function pointBlocked(x, z) {
+  for (const b of colliders.boxes) {
+    if (x > b.minX && x < b.maxX && z > b.minZ && z < b.maxZ) return true;
+  }
+  for (const cc of colliders.circles) {
+    const dx = x - cc.x, dz = z - cc.z;
+    if (dx * dx + dz * dz < cc.r * cc.r) return true;
+  }
+  return false;
+}
+function shootArrow() {
+  const mesh = new THREE.Mesh(arrowGeo, arrowMat);
+  const dir = new THREE.Vector3(Math.sin(player.yaw), 0.06, Math.cos(player.yaw)).normalize();
+  const pos = new THREE.Vector3(player.pos.x + dir.x * 0.6, player.pos.y + 1.15, player.pos.z + dir.z * 0.6);
+  mesh.position.copy(pos);
+  scene.add(mesh);
+  arrows.push({ mesh, pos, vel: dir.multiplyScalar(26), ttl: 3, stuck: false });
+  sfx.arrow();
+}
+function arrowHitEntities(a) {
+  const dmg = WEAPONS.bow.dmg + (player.swordLv >= 2 ? 1 : 0);
+  const tryHit = (list, onHit) => {
+    for (const e of list) {
+      if (e.dead || e.downT > 0) continue;
+      const dy = a.pos.y - 0.9;
+      if (dy > 1.4 || dy < -0.9) continue;
+      if (dist2(a.pos.x, a.pos.z, e.pos.x, e.pos.z) < 0.8) { onHit(e); return true; }
+    }
+    return false;
+  };
+  if (tryHit(guards, (g) => {
+    g.hp -= dmg; sfx.hit(); hitFX(g, 0.4);
+    if (!g.wantedHit) { g.wantedHit = true; crime(1, '你放箭射击卫兵!'); }
+    if (g.hp <= 0) {
+      g.downT = 14; g.stunT = 0; g.group.rotation.x = -Math.PI / 2; g.group.rotation.z = 0;
+      g.wantedHit = false; dropCoins(g.pos, 3);
+    } else g.state = 'chase';
+  })) return true;
+  if (tryHit(bandits, (b) => {
+    b.hp -= dmg; sfx.hit(); hitFX(b, 0.4);
+    if (b.hp <= 0) {
+      b.dead = true; b.group.rotation.x = -Math.PI / 2;
+      dropCoins(b.pos, b.boss ? 20 : 5);
+      if (quest.active && missions[quest.idx].type === 'bandits' && !b.boss && !b.escort && !b.bountyHead && !b.robber) {
+        quest.progress++;
+        toast(`击败盗贼 ${quest.progress}/3`, 2);
+        if (quest.progress >= 3) completeMission();
+      }
+    }
+  })) return true;
+  if (tryHit(wolves, (w) => {
+    w.hp -= dmg; sfx.hit(); hitFX(w, 0.4);
+    if (w.hp <= 0) killWolf(w);
+  })) return true;
+  for (const c of chickens) {
+    if (c === player.carrying || c.state === 'thrown') continue;
+    if (dist2(a.pos.x, a.pos.z, c.pos.x, c.pos.z) < 0.5 && a.pos.y < 1) { pokeChicken(c); return true; }
+  }
+  return false;
+}
+function updateArrows(dt) {
+  for (let i = arrows.length - 1; i >= 0; i--) {
+    const a = arrows[i];
+    a.ttl -= dt;
+    if (a.ttl <= 0) { scene.remove(a.mesh); arrows.splice(i, 1); continue; }
+    if (a.stuck) continue;
+    a.vel.y -= 7 * dt;
+    a.pos.addScaledVector(a.vel, dt);
+    a.mesh.position.copy(a.pos);
+    a.mesh.lookAt(a.pos.x + a.vel.x, a.pos.y + a.vel.y, a.pos.z + a.vel.z);
+    if (arrowHitEntities(a)) { scene.remove(a.mesh); arrows.splice(i, 1); continue; }
+    if (a.pos.y <= 0.05 || pointBlocked(a.pos.x, a.pos.z)) {
+      a.stuck = true;
+      a.ttl = Math.min(a.ttl, 2);
+      a.pos.y = Math.max(0.05, a.pos.y);
+      a.mesh.position.copy(a.pos);
+    }
+  }
+}
+
+// ---- 铁匠铺(装备商店) ----
+const shopEl = document.getElementById('shop');
+let shopOpen = false;
+function refreshShop() {
+  const items = [
+    ['shop-dagger', `🔪 短匕 —— 30 金币(出手极快)`, () => !player.weaponsOwned.includes('dagger') && player.coins >= 30,
+      () => { player.coins -= 30; player.weaponsOwned.push('dagger'); }],
+    ['shop-greatsword', `⚔️ 巨剑 —— 90 金币(势大力沉,击退拉满)`, () => !player.weaponsOwned.includes('greatsword') && player.coins >= 90,
+      () => { player.coins -= 90; player.weaponsOwned.push('greatsword'); }],
+    ['shop-bow', `🏹 猎弓 —— 60 金币(远程射击,箭矢管够)`, () => !player.weaponsOwned.includes('bow') && player.coins >= 60,
+      () => { player.coins -= 60; player.weaponsOwned.push('bow'); }],
+    ['shop-temper', `🔥 淬火陨铁 —— 50 金币(所有武器伤害 +1)`, () => player.swordLv === 1 && player.coins >= 50,
+      () => { player.coins -= 50; player.swordLv = 2; setWeaponVisual(player.weapon); }],
+    ['shop-leather', `🛡️ 皮甲 —— 40 金币(生命上限 +1 心)`, () => player.armor < 1 && player.coins >= 40,
+      () => { player.coins -= 40; applyArmor(1); }],
+    ['shop-plate', `🛡️ 板甲 —— 120 金币(生命上限 +2 心)`, () => player.armor < 2 && player.coins >= 120,
+      () => { player.coins -= 120; applyArmor(2); }],
+  ];
+  for (const [id, label, canBuy, buy] of items) {
+    const btn = document.getElementById(id);
+    const owned = id === 'shop-dagger' ? player.weaponsOwned.includes('dagger')
+      : id === 'shop-greatsword' ? player.weaponsOwned.includes('greatsword')
+      : id === 'shop-bow' ? player.weaponsOwned.includes('bow')
+      : id === 'shop-temper' ? player.swordLv >= 2
+      : id === 'shop-leather' ? player.armor >= 1
+      : player.armor >= 2;
+    btn.textContent = owned ? `${label.split('——')[0]}—— 已拥有` : label;
+    btn.disabled = !canBuy();
+    btn.onclick = () => {
+      if (!canBuy()) return;
+      buy();
+      sfx.chest();
+      saveGame();
+      refreshShop();
+    };
+  }
+}
+function openShop() {
+  shopOpen = true;
+  refreshShop();
+  shopEl.style.display = 'flex';
+  document.exitPointerLock();
+}
+document.getElementById('shop-close').onclick = () => {
+  shopOpen = false;
+  shopEl.style.display = 'none';
+  renderer.domElement.requestPointerLock();
+  toast('格罗姆:武器认主,好好待它们。', 2);
+};
+
 // ================= 鸡(惹不起的存在) =================
 const chickens = [];
 let chickenAnger = 0, chickenAngerT = 0, revengeT = 0;
@@ -1245,6 +1467,7 @@ function saveGame() {
       swordLv: player.swordLv, royalHorse: player.royalHorse,
       kingRewarded: namedNPCs.find((n) => n.key === 'king')?.rewarded || false,
       ach: achUnlocked, stats,
+      weapon: player.weapon, weaponsOwned: player.weaponsOwned, armor: player.armor,
     }));
   } catch { /* 隐私模式等 */ }
 }
@@ -1263,6 +1486,13 @@ function loadGame() {
     }
     if (Array.isArray(s.ach)) achUnlocked = s.ach;
     if (s.stats) Object.assign(stats, s.stats);
+    if (Array.isArray(s.weaponsOwned)) player.weaponsOwned = s.weaponsOwned;
+    if (s.weapon && player.weaponsOwned.includes(s.weapon)) player.weapon = s.weapon;
+    if (s.armor) {
+      player.armor = s.armor;
+      player.maxHp = 10 + ARMORS[s.armor].bonus;
+      player.hp = player.maxHp;
+    }
     return true;
   } catch { return false; }
 }
@@ -1353,10 +1583,8 @@ if (hasSave) {
   });
 }
 // 读档后应用升级效果
-if (player.swordLv >= 2) {
-  const blade = player.parts.sword?.children[0];
-  if (blade) blade.material = lambert(0xe8c34a, { metalness: 0.9, roughness: 0.2 });
-}
+setWeaponVisual(player.weapon);
+setArmorVisual(player.armor);
 if (player.royalHorse) {
   const rh = addHorse(world.stablePos.x - 3, world.stablePos.z - 3, 0xe8d9b0, false);
   rh.fast = true;
@@ -1368,7 +1596,7 @@ let camYaw = 0, camPitch = 0.35, locked = false;
 window.addEventListener('keydown', (e) => {
   if (e.code === 'Space') e.preventDefault();
   if (e.repeat) return; // 忽略系统按键自动重复,防止长按空格吞掉二段跳/长按 E 反复上下马
-  if (paused) return;
+  if (paused || shopOpen) return;
   keys[e.code] = true;
   if (e.code === 'KeyE') {
     if (dialog.open) advanceDialog();
@@ -1377,6 +1605,19 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyF' && !dialog.open) tryAttack();
   if (e.code === 'KeyM') toast(toggleMusic() ? '♪ 音乐开' : '♪ 音乐关', 1.5);
   if (e.code === 'KeyH') toggleHint();
+  if (e.code === 'KeyQ') cycleWeapon();
+  if ((e.code === 'KeyC' || e.code === 'ControlLeft') && !dialog.open) doRoll();
+  if (e.code === 'KeyG' && !dialog.open) tryRob();
+});
+// 右键格挡(按住)
+renderer.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
+window.addEventListener('mousedown', (e) => {
+  if (e.button === 2 && started && !player.dead && !player.mounted && player.weapon !== 'bow') {
+    player.blocking = true;
+  }
+});
+window.addEventListener('mouseup', (e) => {
+  if (e.button === 2) player.blocking = false;
 });
 window.addEventListener('keyup', (e) => (keys[e.code] = false));
 renderer.domElement.addEventListener('mousedown', (e) => {
@@ -1388,7 +1629,7 @@ renderer.domElement.addEventListener('mousedown', (e) => {
 document.addEventListener('pointerlockchange', () => {
   locked = document.pointerLockElement === renderer.domElement;
   // ESC 解锁鼠标 → 弹出暂停菜单(GTA 式)
-  if (!locked && started && !player.dead && !dialog.open) setPaused(true);
+  if (!locked && started && !player.dead && !dialog.open && !shopOpen) setPaused(true);
 });
 document.addEventListener('mousemove', (e) => {
   if (!locked) return;
@@ -1626,21 +1867,13 @@ function tryInteract() {
       }
     }
     // 商店行为
-    if (n.key === 'blacksmith' && player.swordLv === 1) {
-      if (player.coins >= 50) {
-        player.coins -= 50;
-        player.swordLv = 2;
-        sfx.chest();
-        const blade = player.parts.sword?.children[0];
-        if (blade) blade.material = lambert(0xe8c34a, { metalness: 0.9, roughness: 0.2 });
-        openDialog(['格罗姆:(火星四溅)……成了。摸摸这剑刃,陨铁的凉,能吃进骨头里。去吧,别让它闲着。']);
-        saveGame();
-      } else {
-        openDialog(['格罗姆:淬陨铁要 50 金币。铁不等人,钱也一样。']);
-      }
+    if (n.key === 'blacksmith') {
+      if (wanted > 0) { openDialog(['格罗姆:(把铁钳一横)通缉犯?我不做黑生意。洗白了再来。']); return; }
+      openShop();
       return;
     }
     if (n.key === 'trader' && !player.royalHorse) {
+      if (wanted > 0) { openDialog(['瑟尔玛:(挡在马厩前)带着通缉令买马?马会被连坐充公的,快走!']); return; }
       if (player.coins >= 80) {
         player.coins -= 80;
         player.royalHorse = true;
@@ -1656,6 +1889,7 @@ function tryInteract() {
       return;
     }
     if (n.key === 'innkeep' && player.hp < player.maxHp) {
+      if (wanted > 0) { openDialog(['罗莎:(压低声音)后门快走!卫兵刚搜过一轮,我可藏不住你。']); return; }
       if (player.coins >= 10) {
         player.coins -= 10;
         player.hp = player.maxHp;
@@ -1699,6 +1933,18 @@ function tryInteract() {
   }
   // 悬赏板
   if (dist2(player.pos.x, player.pos.z, 8, 46) < 8) {
+    if (wanted > 0) {
+      const fine = wanted * 20;
+      if (player.coins >= fine) {
+        player.coins -= fine;
+        clearWanted();
+        sfx.clear();
+        openDialog([`(你把 ${fine} 枚金币塞进告示板下的罚金箱)卫兵把你的通缉令撕了下来。你自由了——暂时。`]);
+      } else {
+        openDialog([`(告示板)你的通缉罚金是 ${fine} 金币,兜里不够。要么凑钱,要么躲风头。`]);
+      }
+      return;
+    }
     if (bountyRT.target) openDialog([`(告示板)悬赏令仍在追缉中——「${bountyRT.name}」,生死不论。`]);
     else if (bountyRT.cooldown > 0) openDialog(['(告示板)新的悬赏令还没贴出来,过一会儿再来看看。']);
     else takeBounty();
@@ -1858,22 +2104,26 @@ function completeMission() {
 
 // ================= 攻击 =================
 function tryAttack() {
-  if (!started || player.dead || player.attackT > 0 || player.mounted || player.carrying) return;
-  player.attackT = 0.35;
+  if (!started || player.dead || player.attackT > 0 || player.mounted || player.carrying ||
+      player.blocking || player.rollT > 0) return;
+  const def = WEAPONS[player.weapon];
+  player.attackT = def.cd;
+  player.attackDur = def.cd;
+  if (player.weapon === 'bow') { shootArrow(); return; }
   sfx.sword();
   if (dist2(player.pos.x, player.pos.z, 140, 20) < 80) unlockAch('windmill');
-  const dmg = player.swordLv; // 陨铁剑升级后伤害 2
+  const dmg = def.dmg + (player.swordLv >= 2 ? 1 : 0);
   const fx = Math.sin(player.yaw), fz = Math.cos(player.yaw);
   const hitOne = (list, onHit) => {
     for (const e of list) {
       if (e.downT > 0 || e.dead) continue;
       const dx = e.pos.x - player.pos.x, dz = e.pos.z - player.pos.z;
       const d = Math.hypot(dx, dz);
-      if (d < 2.4 && (dx * fx + dz * fz) / (d || 1) > 0.35) onHit(e);
+      if (d < def.range && (dx * fx + dz * fz) / (d || 1) > 0.35) onHit(e);
     }
   };
   hitOne(guards, (g) => {
-    g.hp -= dmg; sfx.hit(); hitFX(g);
+    g.hp -= dmg; sfx.hit(); hitFX(g, def.knock);
     if (!g.wantedHit) { g.wantedHit = true; crime(1, '你袭击了卫兵!'); }
     if (g.hp <= 0) {
       g.downT = 14; g.stunT = 0; g.group.rotation.x = -Math.PI / 2; g.group.rotation.z = 0;
@@ -1882,7 +2132,7 @@ function tryAttack() {
     } else g.state = 'chase';
   });
   hitOne(bandits, (b) => {
-    b.hp -= dmg; sfx.hit(); hitFX(b, b.boss ? 0.25 : 0.55);
+    b.hp -= dmg; sfx.hit(); hitFX(b, b.boss ? def.knock * 0.4 : def.knock);
     if (b.hp <= 0) {
       b.dead = true; b.group.rotation.x = -Math.PI / 2;
       dropCoins(b.pos, b.boss ? 20 : 5);
@@ -1896,7 +2146,7 @@ function tryAttack() {
     }
   });
   hitOne(wolves, (w) => {
-    w.hp -= dmg; sfx.hit(); hitFX(w);
+    w.hp -= dmg; sfx.hit(); hitFX(w, def.knock);
     if (w.hp <= 0) killWolf(w);
   });
   // 鸡不会死,但它们会记住你
@@ -1920,6 +2170,12 @@ function dropCoins(pos, n) {
 
 function damagePlayer(n) {
   if (player.invulnT > 0 || player.dead) return;
+  if (player.blocking && player.rollT <= 0) {
+    sfx.clank();
+    camShake = Math.max(camShake, 0.15);
+    player.invulnT = 0.35;
+    return;
+  }
   player.hp -= n;
   player.invulnT = 0.7;
   camShake = 0.45;
@@ -1936,6 +2192,7 @@ function gameOver() {
   player.drunkT = 0;
   if (player.carrying) { player.carrying.state = 'idle'; player.carrying = null; }
   sfx.gameover();
+  player.jailed = wanted > 0;
   gameoverText.textContent = wanted > 0 ? '你被王国卫兵抓住了!' : '你倒下了……';
   if (titleArtURL) {
     gameoverEl.style.backgroundImage =
@@ -1945,7 +2202,8 @@ function gameOver() {
   }
   gameoverEl.style.display = 'flex';
   setTimeout(() => {
-    player.pos.copy(world.playerSpawn);
+    if (player.jailed) player.pos.set(13, 0, -28);
+    else player.pos.copy(world.playerSpawn);
     player.hp = player.maxHp;
     player.coins = Math.floor(player.coins / 2);
     player.mounted = null;
@@ -1953,7 +2211,9 @@ function gameOver() {
     clearWanted();
     player.dead = false;
     gameoverEl.style.display = 'none';
-    toast('你在喷泉旁醒来,一半金币被没收充公…', 4);
+    toast(player.jailed
+      ? '⛓️ 你在王都地牢蹲了一夜,罚没一半金币后被踢了出来。'
+      : '你在喷泉旁醒来,一半金币被没收充公…', 4);
   }, 2600);
 }
 
@@ -2144,6 +2404,7 @@ function dayPhase() {
 function updateVillagers(dt) {
   const phase = dayPhase();
   for (const v of villagers) {
+    if (v.robbedT > 0) v.robbedT -= dt;
     if (v.downT > 0) {
       v.downT -= dt;
       if (v.downT <= 0) v.group.rotation.x = 0;
@@ -2296,7 +2557,7 @@ function updatePlayer(dt) {
   // 攻击动画(三段式:蓄力→劈砍→收势)
   if (player.attackT > 0) {
     player.attackT -= dt;
-    const t = 1 - player.attackT / 0.35;
+    const t = 1 - player.attackT / (player.attackDur || 0.35);
     player.parts._attackAnim = true;
     meleeSwing(player.parts, Math.min(1, t));
     if (player.attackT <= 0) {
@@ -2386,7 +2647,21 @@ function updatePlayer(dt) {
     return;
   }
 
-  const speed = keys['ShiftLeft'] || keys['ShiftRight'] ? 7.6 : 4.6;
+  // 翻滚接管本帧
+  if (player.rollCd > 0) player.rollCd -= dt;
+  if (player.rollT > 0) {
+    player.rollT -= dt;
+    player.pos.x += player.rollDir.x * 13 * dt;
+    player.pos.z += player.rollDir.y * 13 * dt;
+    resolveCollisions(player.pos, 0.45, colliders);
+    player.group.position.copy(player.pos);
+    player.group.rotation.y = player.yaw;
+    player.group.rotation.x = -(1 - Math.max(0, player.rollT) / 0.38) * Math.PI * 2;
+    if (player.rollT <= 0) player.group.rotation.x = 0;
+    moveState = 2;
+    return;
+  }
+  const speed = (keys['ShiftLeft'] || keys['ShiftRight'] ? 7.6 : 4.6) * (player.blocking ? 0.45 : 1);
   const prevYaw = player.yaw;
   if (moving) {
     player.pos.x += mv.x * speed * dt;
@@ -2468,6 +2743,13 @@ function updatePlayer(dt) {
   // 受伤闪烁
   player.group.visible = player.invulnT > 0 ? Math.floor(performance.now() / 80) % 2 === 0 : true;
   animateLimbs(player.parts, player.walkT, moving, player.group, speed / 7.6);
+  // 格挡姿势
+  if (player.blocking && !player.parts._attackAnim) {
+    player.parts.armR.rotation.x = -1.35;
+    player.parts.armR.rotation.z = -0.5;
+  } else if (!player.parts._attackAnim) {
+    player.parts.armR.rotation.z = 0;
+  }
   // 抱鸡:高举过头,鸡随身,空中扑腾
   if (player.carrying) {
     const c = player.carrying;
@@ -2517,6 +2799,43 @@ function checkStomp() {
     }
   }
   return tryStomp(guards, true) || tryStomp(bandits, false) || tryStomp(wolves, false);
+}
+
+function doRoll() {
+  if (!started || player.dead || player.mounted || player.carrying ||
+      player.rollCd > 0 || player.rollT > 0 || !player.onGround) return;
+  const fx = -Math.sin(camYaw), fz = -Math.cos(camYaw);
+  const rx = -fz, rz = fx;
+  let ix = 0, iz = 0;
+  if (keys['KeyW'] || keys['ArrowUp']) iz += 1;
+  if (keys['KeyS'] || keys['ArrowDown']) iz -= 1;
+  if (keys['KeyD'] || keys['ArrowRight']) ix += 1;
+  if (keys['KeyA'] || keys['ArrowLeft']) ix -= 1;
+  let dx = fx * iz + rx * ix, dz = fz * iz + rz * ix;
+  if (dx === 0 && dz === 0) { dx = Math.sin(player.yaw); dz = Math.cos(player.yaw); }
+  const d = Math.hypot(dx, dz);
+  player.rollDir.set(dx / d, dz / d);
+  player.yaw = Math.atan2(dx, dz);
+  player.rollT = 0.38;
+  player.rollCd = 0.95;
+  player.invulnT = Math.max(player.invulnT, 0.45); // 无敌帧
+  sfx.roll();
+  spawnDust(player.pos.x, 0.05, player.pos.z, 4, 0.5, 1);
+}
+
+function tryRob() {
+  if (!started || player.dead || player.mounted) return;
+  for (const v of villagers) {
+    if (v.sleeping || v.downT > 0 || (v.robbedT || 0) > 0) continue;
+    if (dist2(player.pos.x, player.pos.z, v.pos.x, v.pos.z) > 6) continue;
+    v.robbedT = 60;
+    v.fleeT = 6;
+    dropCoins(v.pos, 3 + Math.floor(Math.random() * 4));
+    showBubble(v, v.id.name, '救命!抢劫啦——!!', 3);
+    crime(2, '💰 你抢劫了村民!');
+    return;
+  }
+  toast('附近没有可以抢的人。(你在想什么?)', 2);
 }
 
 // ================= 拾取 =================
@@ -2851,7 +3170,8 @@ let hudCache = '';
 function updateHUD() {
   const full = Math.floor(player.hp / 2);
   const half = player.hp % 2;
-  const hearts = '❤️'.repeat(full) + (half ? '💔' : '') + '🖤'.repeat(5 - full - half);
+  const heartsMax = Math.ceil(player.maxHp / 2);
+  const hearts = '❤️'.repeat(full) + (half ? '💔' : '') + '🖤'.repeat(Math.max(0, heartsMax - full - half));
   const stars = wanted > 0 ? '⭐'.repeat(wanted) + '✩'.repeat(5 - wanted) : '';
   let missionText;
   if (quest.idx >= missions.length) missionText = '🏆 全部委托完成 — 去谒见领主,王国是你的了!';
@@ -2872,7 +3192,7 @@ function updateHUD() {
   const wIcon = { clear: '☀️', cloudy: '⛅', rain: '🌧️', storm: '⛈️' }[weather.state];
   const phaseIcon = { dawn: '🌅', day: '🌞', dusk: '🌇', night: '🌙' }[dayPhase()];
   const bossHp = questRT.boss && !questRT.boss.dead && quest.active ? questRT.boss.hp : -1;
-  const key = hearts + '|' + player.coins + '|' + stars + '|' + missionText + '|' + timer + '|' + promptText + '|' + wIcon + phaseIcon + '|' + bossHp;
+  const key = hearts + '|' + player.coins + '|' + player.weapon + player.armor + '|' + stars + '|' + missionText + '|' + timer + '|' + promptText + '|' + wIcon + phaseIcon + '|' + bossHp;
   if (key === hudCache) return;
   hudCache = key;
   document.getElementById('weather').textContent = `${phaseIcon} ${wIcon}`;
@@ -2881,6 +3201,11 @@ function updateHUD() {
   wantedEl.textContent = stars;
   wantedEl.style.display = wanted > 0 ? 'block' : 'none';
   missionEl.textContent = missionText;
+  const wDef = WEAPONS[player.weapon];
+  document.getElementById('equip').textContent =
+    `${wDef.icon} ${wDef.name}${player.swordLv >= 2 ? '+1' : ''}` +
+    (player.armor ? ` · 🛡️ ${ARMORS[player.armor].name}` : '') +
+    (player.weaponsOwned.length > 1 ? '(Q 切换)' : '');
   promptEl.textContent = promptText;
   promptEl.style.display = promptText ? 'block' : 'none';
   // Boss 血条(仅 Boss 战期间)
@@ -2910,7 +3235,7 @@ function computePrompt() {
     if (dist2(player.pos.x, player.pos.z, n.pos.x, n.pos.z) > 7) continue;
     mark(n.pos.x, n.pos.z, 2.15);
     if (n.key === 'steward' && quest.idx < missions.length) { promptText = '按 E 与管家埃隆交谈(委托)'; return; }
-    if (n.key === 'blacksmith' && player.swordLv === 1) { promptText = '按 E 找铁匠格罗姆(升级佩剑 50 金币)'; return; }
+    if (n.key === 'blacksmith') { promptText = '按 E 打开铁匠铺(武器/护甲)'; return; }
     if (n.key === 'trader' && !player.royalHorse) { promptText = '按 E 找马贩瑟尔玛(皇家骏马 80 金币)'; return; }
     if (n.key === 'innkeep' && player.hp < player.maxHp) { promptText = '按 E 住店休息,回满生命(10 金币)'; return; }
     if (n.key === 'king') {
@@ -3092,6 +3417,7 @@ function drawMinimap() {
 window.__gtm = {
   player, quest, questRT, horses, guards, bandits, villagers, wolves, namedNPCs, steward,
   chickens, funnyNPCs, fishing, streetEvent, bountyRT, takeBounty, trySpawnStreetEvent,
+  arrows, WEAPONS, cycleWeapon, openShop, refreshShop, tryRob, doRoll,
   crime, weather, setWeather, talkQuestGiver, completeMission, missions, advanceDialog,
   getWanted: () => wanted,
   setTime: (t) => { dayTime = t; },
@@ -3135,6 +3461,7 @@ function loop(now) {
   updateQuest(dt);
   updateWanted(dt);
   updateFishing(dt);
+  updateArrows(dt);
   updateStreetEvent(dt);
   updateBounty(dt);
   updateWeather(dt);

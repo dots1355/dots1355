@@ -109,6 +109,19 @@
 
   #save-icon { position: absolute; bottom: 228px; left: 22px; font-size: 18px; opacity: 0;
     transition: opacity 0.6s; filter: drop-shadow(0 2px 3px #000); }
+  #shop { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+    z-index: 8; background: rgba(8,5,14,0.55); backdrop-filter: blur(3px); }
+  #shop .menu { background: rgba(16,11,6,0.95); border: 2px solid #b08d3e; border-radius: 14px;
+    padding: 24px 36px; min-width: 360px; text-align: center; }
+  #shop h2 { color: #ffd83d; font-size: 22px; letter-spacing: 4px; margin-bottom: 16px; }
+  #shop button { display: block; width: 100%; margin: 7px 0; padding: 9px 14px; font-size: 15px;
+    background: rgba(60,44,20,0.6); color: #f5e9cf; border: 1px solid #b08d3e88; border-radius: 8px;
+    cursor: pointer; font-family: inherit; text-align: left; transition: background 0.15s; }
+  #shop button:hover:not(:disabled) { background: rgba(120,90,40,0.7); color: #ffd83d; }
+  #shop button:disabled { opacity: 0.45; cursor: default; }
+  #shop #shop-close { text-align: center; margin-top: 14px; }
+  #equip { position: absolute; top: 80px; left: 20px; font-size: 14px; color: #e8dcc0;
+    text-shadow: 0 2px 4px rgba(0,0,0,0.8); }
 </style>
 <script type="importmap">
 { "imports": { "three": "./lib/three.module.js" } }
@@ -130,6 +143,7 @@
     </div>
     <div id="hearts" class="hud-text"></div>
     <div id="coins" class="hud-text"></div>
+    <div id="equip"></div>
     <div id="wanted" class="hud-text"></div>
     <div id="mission"></div>
     <div id="timer" class="hud-text"></div>
@@ -137,9 +151,9 @@
     <div id="prompt"></div>
     <div id="toast"></div>
     <div id="controls-hint" class="hud-text">
-      WASD 移动 · Shift 疾跑 · 空格 跳跃/二段跳<br>
-      E 互动/对话/骑马 · F/左键 挥剑 · 跳到敌人头上=踩晕<br>
-      M 音乐 · H 显示/隐藏本说明
+      WASD 移动 · Shift 疾跑 · 空格 跳跃/二段跳 · C 翻滚<br>
+      E 互动 · F/左键 攻击 · 右键按住 格挡 · Q 切换武器<br>
+      G 抢劫路人 · M 音乐 · H 显示/隐藏本说明
     </div>
   </div>
 
@@ -184,6 +198,19 @@
     <div class="bar"><div class="fill" id="bosshp-fill"></div></div>
   </div>
   <div id="save-icon">💾</div>
+
+  <div id="shop">
+    <div class="menu">
+      <h2>格罗姆铁匠铺</h2>
+      <button id="shop-dagger"></button>
+      <button id="shop-greatsword"></button>
+      <button id="shop-bow"></button>
+      <button id="shop-temper"></button>
+      <button id="shop-leather"></button>
+      <button id="shop-plate"></button>
+      <button id="shop-close">离开(继续冒险)</button>
+    </div>
+  </div>
 
   <script type="module" src="./src/main.js"></script>
 </body>
