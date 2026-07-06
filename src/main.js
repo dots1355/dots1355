@@ -329,7 +329,7 @@ addGuard(-40, 20, [[-40, 20], [-20, 20], [-20, -20], [-40, -20]]);
 const villagerColors = [0x7a5c8f, 0x4a7a9f, 0xa06a3a, 0x5f7a3a, 0x9f4a6a, 0x6a6a7a];
 VILLAGERS.forEach((id, i) => {
   const v = { ...makeHumanoid({ shirt: villagerColors[i % villagerColors.length], pants: 0x50412e }),
-    id, pos: new THREE.Vector3(id.home[0], 0, id.home[1]), yaw: Math.random() * 6.28,
+    id, dbKey: `v${i}`, pos: new THREE.Vector3(id.home[0], 0, id.home[1]), yaw: Math.random() * 6.28,
     home: new THREE.Vector3(id.home[0], 0, id.home[1]),
     state: 'idle', timer: Math.random() * 3, walkT: 0, fleeT: 0, downT: 0,
     sleeping: false, lineIdx: Math.floor(Math.random() * id.lines.length) };
@@ -466,6 +466,34 @@ const NPC_SCHEDULE = {
   fisher:     { dawn: [-100, 72], day: [-100, 72], dusk: [-100, 58], night: [-108, 60] },
 };
 
+// ================= 对话数据库(65 万字,tools/gen-dialogue.mjs 生成) =================
+// 每行按情境标签(时辰/天气/任务进度)筛选,近期说过的不复读
+let DB = null;
+const dbUsed = new Map();
+fetch('./src/dialogue-db.json')
+  .then((r) => (r.ok ? r.json() : null))
+  .then((d) => { DB = d; })
+  .catch(() => { /* 缺失时回退到内置台词 */ });
+
+function dbLine(key) {
+  if (!DB || !DB[key]) return null;
+  const lines = DB[key];
+  const w = weather.state === 'cloudy' ? 'clear' : weather.state;
+  const ctxs = new Set([`q${Math.min(quest.idx, 8)}`, dayPhase(), w]);
+  let used = dbUsed.get(key);
+  if (!used) { used = new Set(); dbUsed.set(key, used); }
+  if (used.size > lines.length * 0.8) used.clear();
+  for (let tries = 0; tries < 30; tries++) {
+    const i = Math.floor(Math.random() * lines.length);
+    if (used.has(i)) continue;
+    const L = lines[i];
+    if (L.c && !ctxs.has(L.c)) continue;
+    used.add(i);
+    return L.t;
+  }
+  return lines[Math.floor(Math.random() * lines.length)].t;
+}
+
 // ================= 对话面板(RDR2 式多页对话) =================
 const dialogEl = document.getElementById('dialog');
 const dialogNameEl = document.getElementById('dialog-name');
@@ -547,7 +575,11 @@ function npcTalk(n, onDone = null) {
       ...d.arcs[arcIdx].pages,
     ], onDone);
   } else {
-    openDialog([d.small[n.lineIdx++ % d.small.length]], onDone);
+    // 故事读完后:手写闲聊与对话库轮换
+    const line = Math.random() < 0.4
+      ? d.small[n.lineIdx++ % d.small.length]
+      : `${n.def.name}:${dbLine(n.key) || d.small[n.lineIdx++ % d.small.length]}`;
+    openDialog([line], onDone);
   }
 }
 
@@ -586,7 +618,7 @@ function villagerChatter() {
     const last = bubble.cooldowns.get(v) || 0;
     if (now - last < 25000) continue;
     bubble.cooldowns.set(v, now);
-    showBubble(v, v.id.name, v.id.lines[v.lineIdx++ % v.id.lines.length]);
+    showBubble(v, v.id.name, dbLine(v.dbKey) || v.id.lines[v.lineIdx++ % v.id.lines.length]);
     return;
   }
   for (const g of guards) {
@@ -595,7 +627,7 @@ function villagerChatter() {
     const last = bubble.cooldowns.get(g) || 0;
     if (now - last < 30000) continue;
     bubble.cooldowns.set(g, now);
-    showBubble(g, null, GUARD_LINES[Math.floor(Math.random() * GUARD_LINES.length)]);
+    showBubble(g, null, dbLine('guard') || GUARD_LINES[Math.floor(Math.random() * GUARD_LINES.length)]);
     return;
   }
 }
@@ -616,6 +648,100 @@ function toggleHint() {
   hintVisible = !hintVisible;
   hintEl.style.opacity = hintVisible ? 1 : 0;
   hintFadeT = hintVisible ? 20 : 0;
+}
+
+// ================= 暂停菜单(唯一系统菜单,ESC 弹出) =================
+const pauseEl = document.getElementById('pause');
+let paused = false;
+let fxHigh = !LOWFX;
+function setPaused(p) {
+  paused = p;
+  pauseEl.style.display = p ? 'flex' : 'none';
+}
+function setQuality(high) {
+  fxHigh = high;
+  gtao.enabled = bloom.enabled = smaa.enabled = gradePass.enabled = high;
+  document.getElementById('btn-quality').textContent = `画质:${high ? '精致' : '流畅'}`;
+  try { localStorage.setItem('gth-fx', high ? 'hi' : 'lo'); } catch { /* 忽略 */ }
+}
+try { if (localStorage.getItem('gth-fx') === 'lo') setQuality(false); else setQuality(fxHigh); } catch { /* 忽略 */ }
+document.getElementById('btn-resume').onclick = () => {
+  setPaused(false);
+  renderer.domElement.requestPointerLock();
+};
+document.getElementById('btn-quality').onclick = () => setQuality(!fxHigh);
+document.getElementById('btn-music').onclick = (ev) => {
+  ev.target.textContent = `音乐:${toggleMusic() ? '开' : '关'}`;
+};
+document.getElementById('btn-help').onclick = () => {
+  if (!hintVisible) toggleHint();
+  setPaused(false);
+  renderer.domElement.requestPointerLock();
+};
+document.getElementById('btn-wipe').onclick = () => {
+  localStorage.removeItem(SAVE_KEY);
+  location.reload();
+};
+
+// ================= 交互目标标记(头顶金色小箭头) =================
+const interactMarker = new THREE.Mesh(new THREE.ConeGeometry(0.15, 0.3, 4),
+  new THREE.MeshBasicMaterial({ color: 0xffd83d, transparent: true, opacity: 0.85 }));
+interactMarker.rotation.x = Math.PI;
+interactMarker.visible = false;
+scene.add(interactMarker);
+let promptTargetPos = null;
+
+// ================= 命中反馈:白闪 + 击退 =================
+function hitFX(e, push = 0.55) {
+  const dx = e.pos.x - player.pos.x, dz = e.pos.z - player.pos.z;
+  const d = Math.hypot(dx, dz) || 1;
+  e.pos.x += (dx / d) * push;
+  e.pos.z += (dz / d) * push;
+  resolveCollisions(e.pos, 0.4, colliders);
+  e.group.traverse((o) => {
+    const m = o.material;
+    if (m && m.emissive && m._e0 === undefined) {
+      m._e0 = m.emissive.getHex();
+      m._ei0 = m.emissiveIntensity;
+      m.emissive.setHex(0xffffff);
+      m.emissiveIntensity = 0.8;
+    }
+  });
+  setTimeout(() => {
+    e.group.traverse((o) => {
+      const m = o.material;
+      if (m && m._e0 !== undefined) {
+        m.emissive.setHex(m._e0);
+        m.emissiveIntensity = m._ei0;
+        delete m._e0;
+        delete m._ei0;
+      }
+    });
+  }, 90);
+}
+
+// ================= 人群软碰撞(不再穿过 NPC) =================
+function pushCrowd() {
+  const softly = (list, r) => {
+    for (const e of list) {
+      if (e.downT > 0 || e.dead || e.sleeping || e === player.mounted) continue;
+      const dx = player.pos.x - e.pos.x, dz = player.pos.z - e.pos.z;
+      const dd = dx * dx + dz * dz;
+      if (dd < r * r && dd > 1e-6) {
+        const d = Math.sqrt(dd), pv = r - d;
+        player.pos.x += (dx / d) * pv * 0.6;
+        player.pos.z += (dz / d) * pv * 0.6;
+        e.pos.x -= (dx / d) * pv * 0.35;
+        e.pos.z -= (dz / d) * pv * 0.35;
+      }
+    }
+  };
+  softly(villagers, 0.75);
+  softly(guards, 0.75);
+  softly(namedNPCs, 0.8);
+  softly(bandits, 0.75);
+  softly(wolves, 0.7);
+  softly(horses, 1.05);
 }
 
 // ================= 区域浮现(GTA 式) =================
@@ -643,7 +769,12 @@ function updateRegion(dt) {
 // ================= 存档 =================
 const SAVE_KEY = 'gth-save-v1';
 let crestsFound = [];
+let saveIconTimer = null;
 function saveGame() {
+  const icon = document.getElementById('save-icon');
+  icon.style.opacity = 1;
+  clearTimeout(saveIconTimer);
+  saveIconTimer = setTimeout(() => { icon.style.opacity = 0; }, 1000);
   try {
     localStorage.setItem(SAVE_KEY, JSON.stringify({
       coins: player.coins, questIdx: quest.idx, crests: crestsFound,
@@ -770,6 +901,7 @@ let camYaw = 0, camPitch = 0.35, locked = false;
 window.addEventListener('keydown', (e) => {
   if (e.code === 'Space') e.preventDefault();
   if (e.repeat) return; // 忽略系统按键自动重复,防止长按空格吞掉二段跳/长按 E 反复上下马
+  if (paused) return;
   keys[e.code] = true;
   if (e.code === 'KeyE') {
     if (dialog.open) advanceDialog();
@@ -788,6 +920,8 @@ renderer.domElement.addEventListener('mousedown', (e) => {
 });
 document.addEventListener('pointerlockchange', () => {
   locked = document.pointerLockElement === renderer.domElement;
+  // ESC 解锁鼠标 → 弹出暂停菜单(GTA 式)
+  if (!locked && started && !player.dead && !dialog.open) setPaused(true);
 });
 document.addEventListener('mousemove', (e) => {
   if (!locked) return;
@@ -1057,12 +1191,12 @@ function tryInteract() {
     npcTalk(n);
     return;
   }
-  // 村民对话
+  // 村民对话(优先 65 万字对话库,按情境选行)
   for (const v of villagers) {
     if (v.downT > 0 || v.sleeping) continue;
     if (dist2(player.pos.x, player.pos.z, v.pos.x, v.pos.z) > 5.5) continue;
-    const l1 = v.id.lines[v.lineIdx++ % v.id.lines.length];
-    const l2 = v.id.lines[v.lineIdx++ % v.id.lines.length];
+    const l1 = dbLine(v.dbKey) || v.id.lines[v.lineIdx++ % v.id.lines.length];
+    const l2 = dbLine(v.dbKey) || v.id.lines[v.lineIdx++ % v.id.lines.length];
     openDialog([`${v.id.name}:${l1}`, `${v.id.name}:${l2}`]);
     return;
   }
@@ -1203,7 +1337,7 @@ function tryAttack() {
     }
   };
   hitOne(guards, (g) => {
-    g.hp -= dmg; sfx.hit();
+    g.hp -= dmg; sfx.hit(); hitFX(g);
     if (!g.wantedHit) { g.wantedHit = true; crime(1, '你袭击了卫兵!'); }
     if (g.hp <= 0) {
       g.downT = 14; g.stunT = 0; g.group.rotation.x = -Math.PI / 2; g.group.rotation.z = 0;
@@ -1212,7 +1346,7 @@ function tryAttack() {
     } else g.state = 'chase';
   });
   hitOne(bandits, (b) => {
-    b.hp -= dmg; sfx.hit();
+    b.hp -= dmg; sfx.hit(); hitFX(b, b.boss ? 0.25 : 0.55);
     if (b.hp <= 0) {
       b.dead = true; b.group.rotation.x = -Math.PI / 2;
       dropCoins(b.pos, b.boss ? 20 : 5);
@@ -1226,7 +1360,7 @@ function tryAttack() {
     }
   });
   hitOne(wolves, (w) => {
-    w.hp -= dmg; sfx.hit();
+    w.hp -= dmg; sfx.hit(); hitFX(w);
     if (w.hp <= 0) killWolf(w);
   });
   hitOne(villagers, (v) => {
@@ -1711,6 +1845,7 @@ function updatePlayer(dt) {
   }
 
   resolveCollisions(player.pos, 0.45, colliders);
+  pushCrowd();
   player.group.position.copy(player.pos);
   player.group.rotation.y = player.yaw;
   player.group.rotation.z = player.lean || 0;
@@ -2015,6 +2150,8 @@ let camShake = 0;
 const _camOff = new THREE.Vector3();
 const _camTarget = new THREE.Vector3();
 const _camDesired = new THREE.Vector3();
+const _camRay = new THREE.Raycaster();
+const _camDir = new THREE.Vector3();
 function updateCamera(dt) {
   const dist = player.mounted ? 9 : 6.2;
   const ty = player.pos.y + (player.mounted ? 2.6 : 1.7);
@@ -2027,6 +2164,18 @@ function updateCamera(dt) {
   const desired = _camDesired.copy(target).add(_camOff);
   desired.y = Math.max(0.6, desired.y);
   camera.position.lerp(desired, 1 - Math.pow(0.0001, dt));
+  // 相机防穿墙:从视点向相机打射线,撞到墙体/建筑就把相机拉近
+  _camDir.copy(camera.position).sub(target);
+  const camLen = _camDir.length();
+  if (camLen > 0.5) {
+    _camDir.divideScalar(camLen);
+    _camRay.set(target, _camDir);
+    _camRay.far = camLen;
+    const hits = _camRay.intersectObjects(world.occluders, false);
+    if (hits.length) {
+      camera.position.copy(target).addScaledVector(_camDir, Math.max(1.1, hits[0].distance * 0.88));
+    }
+  }
   // 受击/落地震屏
   if (camShake > 0) {
     camShake = Math.max(0, camShake - dt);
@@ -2067,7 +2216,8 @@ function updateHUD() {
   missionText += `\n🛡️ 皇家纹章 ${crestsFound.length}/${world.crestSpots.length}`;
   const wIcon = { clear: '☀️', cloudy: '⛅', rain: '🌧️', storm: '⛈️' }[weather.state];
   const phaseIcon = { dawn: '🌅', day: '🌞', dusk: '🌇', night: '🌙' }[dayPhase()];
-  const key = hearts + '|' + player.coins + '|' + stars + '|' + missionText + '|' + timer + '|' + promptText + '|' + wIcon + phaseIcon;
+  const bossHp = questRT.boss && !questRT.boss.dead && quest.active ? questRT.boss.hp : -1;
+  const key = hearts + '|' + player.coins + '|' + stars + '|' + missionText + '|' + timer + '|' + promptText + '|' + wIcon + phaseIcon + '|' + bossHp;
   if (key === hudCache) return;
   hudCache = key;
   document.getElementById('weather').textContent = `${phaseIcon} ${wIcon}`;
@@ -2078,15 +2228,27 @@ function updateHUD() {
   missionEl.textContent = missionText;
   promptEl.textContent = promptText;
   promptEl.style.display = promptText ? 'block' : 'none';
+  // Boss 血条(仅 Boss 战期间)
+  const boss = questRT.boss;
+  const bossEl = document.getElementById('bosshp');
+  if (boss && !boss.dead && quest.active) {
+    bossEl.style.display = 'block';
+    document.getElementById('bosshp-fill').style.width = `${Math.max(0, (boss.hp / 12) * 100)}%`;
+  } else {
+    bossEl.style.display = 'none';
+  }
 }
 
 function computePrompt() {
   promptText = '';
+  promptTargetPos = null;
   if (!started || player.dead) return;
   if (player.mounted) { promptText = '按 E 下马'; return; }
-  if (dialog.open) { promptText = ''; return; }
+  if (dialog.open) return;
+  const mark = (x, z, h) => { promptTargetPos = { x, y: h, z }; };
   for (const n of namedNPCs) {
     if (dist2(player.pos.x, player.pos.z, n.pos.x, n.pos.z) > 7) continue;
+    mark(n.pos.x, n.pos.z, 2.15);
     if (n.key === 'steward' && quest.idx < missions.length) { promptText = '按 E 与管家埃隆交谈(委托)'; return; }
     if (n.key === 'blacksmith' && player.swordLv === 1) { promptText = '按 E 找铁匠格罗姆(升级佩剑 50 金币)'; return; }
     if (n.key === 'trader' && !player.royalHorse) { promptText = '按 E 找马贩瑟尔玛(皇家骏马 80 金币)'; return; }
@@ -2101,15 +2263,21 @@ function computePrompt() {
   for (const v of villagers) {
     if (v.downT > 0 || v.sleeping) continue;
     if (dist2(player.pos.x, player.pos.z, v.pos.x, v.pos.z) <= 5.5) {
+      mark(v.pos.x, v.pos.z, 2.05);
       promptText = `按 E 与${v.id.name}交谈`;
       return;
     }
   }
   for (const c of world.chests) {
-    if (!c.opened && dist2(player.pos.x, player.pos.z, c.x, c.z) < 5) { promptText = '按 E 打开宝箱'; return; }
+    if (!c.opened && dist2(player.pos.x, player.pos.z, c.x, c.z) < 5) {
+      mark(c.group.position.x, c.group.position.z, 1.5);
+      promptText = '按 E 打开宝箱';
+      return;
+    }
   }
   for (const h of horses) {
     if (dist2(player.pos.x, player.pos.z, h.pos.x, h.pos.z) < 7) {
+      mark(h.pos.x, h.pos.z, 2.7);
       promptText = h.owned && !h.stolen ? '按 E 偷马 (会引来通缉!)' : '按 E 骑马';
       return;
     }
@@ -2181,12 +2349,29 @@ function drawMinimap() {
     mm.font = 'bold 14px sans-serif';
     mm.fillText('!', mx - 2, mz + 5);
   }
-  if (beacon.visible && Math.floor(performance.now() / 400) % 2 === 0) {
-    const [mx, mz] = toMap(beacon.position.x, beacon.position.z);
-    mm.fillStyle = '#ffd83d';
-    mm.beginPath();
-    mm.arc(Math.max(6, Math.min(S - 6, mx)), Math.max(6, Math.min(S - 6, mz)), 5, 0, 6.28);
-    mm.fill();
+  if (beacon.visible) {
+    const bdx = beacon.position.x - px, bdz = beacon.position.z - pz;
+    if (Math.hypot(bdx, bdz) > range / 2 - 14) {
+      // 超出小地图:画边缘方向箭头
+      const ang = Math.atan2(bdz, bdx);
+      const ex = S / 2 + Math.cos(ang) * (S / 2 - 12);
+      const ey = S / 2 + Math.sin(ang) * (S / 2 - 12);
+      mm.save();
+      mm.translate(ex, ey);
+      mm.rotate(ang);
+      mm.fillStyle = '#ffd83d';
+      mm.beginPath();
+      mm.moveTo(9, 0); mm.lineTo(-4, -6); mm.lineTo(-4, 6);
+      mm.closePath();
+      mm.fill();
+      mm.restore();
+    } else if (Math.floor(performance.now() / 400) % 2 === 0) {
+      const [mx, mz] = toMap(beacon.position.x, beacon.position.z);
+      mm.fillStyle = '#ffd83d';
+      mm.beginPath();
+      mm.arc(mx, mz, 5, 0, 6.28);
+      mm.fill();
+    }
   }
   // 玩家箭头
   mm.save();
@@ -2202,6 +2387,9 @@ function drawMinimap() {
   mm.strokeStyle = 'rgba(230,180,60,0.9)';
   mm.lineWidth = 3;
   mm.strokeRect(1.5, 1.5, S - 3, S - 3);
+  mm.fillStyle = 'rgba(255,255,255,0.85)';
+  mm.font = 'bold 11px sans-serif';
+  mm.fillText('N', S / 2 - 4, 13);
 }
 
 // ================= 主循环 =================
@@ -2222,9 +2410,22 @@ function loop(now) {
   const dt = Math.min(0.05, (now - last) / 1000);
   last = now;
   if (!started) { composer.render(); return; }
+  if (paused) { composer.render(); return; } // 暂停:世界冻结,仅渲染
 
   updateToast(dt);
   updateHintFade(dt);
+
+  // 交互目标标记
+  if (promptTargetPos && !dialog.open) {
+    interactMarker.visible = true;
+    interactMarker.position.set(
+      promptTargetPos.x,
+      promptTargetPos.y + 0.35 + Math.sin(now * 0.005) * 0.1,
+      promptTargetPos.z);
+    interactMarker.rotation.y += dt * 3;
+  } else {
+    interactMarker.visible = false;
+  }
 
   updatePlayer(dt);
   updateGuards(dt);

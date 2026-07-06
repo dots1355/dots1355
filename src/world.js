@@ -13,6 +13,7 @@ export function buildWorld(scene) {
   const coinSpots = [];  // 金币初始点位
   const clouds = [];
   const waterMats = [];  // 水面材质(法线动画)
+  const occluders = []; // 相机防穿墙用的大型遮挡体
 
   const TX = makeTextures();
   // 带独立 repeat 的 PBR 贴图材质
@@ -90,6 +91,7 @@ export function buildWorld(scene) {
     m.position.set((x1 + x2) / 2, 2.75, (z1 + z2) / 2);
     m.castShadow = m.receiveShadow = true;
     scene.add(m);
+    occluders.push(m);
     // 垛口
     const n = Math.floor(len / 3);
     for (let i = 0; i <= n; i++) {
@@ -116,6 +118,7 @@ export function buildWorld(scene) {
     t.position.set(x, h / 2, z);
     t.castShadow = true;
     scene.add(t);
+    occluders.push(t);
     const roof = new THREE.Mesh(new THREE.ConeGeometry(r * 1.25, r * 1.1, 12),
       lambert(0x30425f, { roughness: 0.55, metalness: 0.25 }));
     roof.position.set(x, h + r * 0.55, z);
@@ -134,6 +137,7 @@ export function buildWorld(scene) {
   keep.position.set(0, 6.5, -40);
   keep.castShadow = keep.receiveShadow = true;
   scene.add(keep);
+  occluders.push(keep);
   box(0, -40, 22, 14);
   feat('keep', 0, -40, 22, 14);
   for (const [tx, tz] of [[-11, -33], [11, -33], [-11, -47], [11, -47]]) tower(tx, tz, 3, 16);
@@ -189,6 +193,7 @@ export function buildWorld(scene) {
     walls.position.y = h / 2;
     walls.castShadow = walls.receiveShadow = true;
     g.add(walls);
+    occluders.push(walls);
     const roof = new THREE.Mesh(
       new THREE.ConeGeometry(Math.SQRT1_2 * Math.max(w, d) * 1.15, h * 0.75, 4),
       roofMats[houseIdx++ % roofMats.length]);
@@ -950,7 +955,7 @@ export function buildWorld(scene) {
   box(-480, 0, 40, 1000); box(480, 0, 40, 1000);
 
   return {
-    colliders, features, windmills, torches, chests, qBlocks, coinSpots, clouds, waterMats,
+    colliders, features, windmills, torches, chests, qBlocks, coinSpots, clouds, waterMats, occluders,
     windmillPos, banditCamp, fortPos,
     questGiverPos: new THREE.Vector3(4, 0, 10),
     playerSpawn: new THREE.Vector3(0, 0, 20),

@@ -86,6 +86,29 @@
     align-items: center; justify-content: center; z-index: 9; background: rgba(60,0,0,0.55); }
   #gameover h1 { font-size: 64px; color: #ff4444; text-shadow: 0 4px 12px #000; letter-spacing: 8px; }
   #gameover p { margin-top: 16px; font-size: 20px; color: #fff; }
+
+  #pause { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+    z-index: 8; background: rgba(8,5,14,0.6); backdrop-filter: blur(3px); }
+  #pause .menu { background: rgba(16,11,6,0.95); border: 2px solid #b08d3e; border-radius: 14px;
+    padding: 28px 40px; min-width: 300px; text-align: center; }
+  #pause h2 { color: #ffd83d; font-size: 26px; letter-spacing: 6px; margin-bottom: 20px; }
+  #pause button { display: block; width: 100%; margin: 8px 0; padding: 10px 0; font-size: 16px;
+    background: rgba(60,44,20,0.6); color: #f5e9cf; border: 1px solid #b08d3e88; border-radius: 8px;
+    cursor: pointer; font-family: inherit; transition: background 0.15s; }
+  #pause button:hover { background: rgba(120,90,40,0.7); color: #ffd83d; }
+  #pause .danger { border-color: #a03a3a88; }
+  #pause .danger:hover { background: rgba(120,40,40,0.6); color: #ff8888; }
+
+  #bosshp { position: absolute; top: 46px; left: 50%; transform: translateX(-50%);
+    width: 340px; display: none; }
+  #bosshp .label { font-size: 13px; color: #ff9a9a; text-align: center; text-shadow: 0 1px 3px #000; }
+  #bosshp .bar { height: 8px; margin-top: 3px; background: rgba(0,0,0,0.55);
+    border: 1px solid #a03a3a; border-radius: 4px; overflow: hidden; }
+  #bosshp .fill { height: 100%; width: 100%; background: linear-gradient(90deg, #c0392b, #ff6b4a);
+    transition: width 0.25s; }
+
+  #save-icon { position: absolute; bottom: 228px; left: 22px; font-size: 18px; opacity: 0;
+    transition: opacity 0.6s; filter: drop-shadow(0 2px 3px #000); }
 </style>
 <script type="importmap">
 { "imports": { "three": "./lib/three.module.js" } }
@@ -144,6 +167,23 @@
     <h1>通缉终结</h1>
     <p id="gameover-text"></p>
   </div>
+
+  <div id="pause">
+    <div class="menu">
+      <h2>暂 停</h2>
+      <button id="btn-resume">▶ 继续冒险</button>
+      <button id="btn-quality">画质:精致</button>
+      <button id="btn-music">音乐:开</button>
+      <button id="btn-help">操作说明 (H)</button>
+      <button id="btn-wipe" class="danger">清除存档并重开</button>
+    </div>
+  </div>
+
+  <div id="bosshp">
+    <div class="label">血斧巴罗克</div>
+    <div class="bar"><div class="fill" id="bosshp-fill"></div></div>
+  </div>
+  <div id="save-icon">💾</div>
 
   <script type="module" src="./src/main.js"></script>
 </body>
