@@ -17,7 +17,7 @@ const pending = [];
 export function initWilderness(s, c, h) {
   scene = s;
   colliders = c;
-  hooks = h; // { spawnWolf(x,z,chunkKey), removeChunkWolves(chunkKey), dropCoin(x,z) }
+  hooks = h; // { spawnWolf/spawnHorse/spawnSheep/spawnBandit(x,z,chunkKey), dropCoin/dropHeart(x,z), removeChunkEntities(chunkKey) }
 }
 
 // ---- 确定性随机 ----
@@ -148,50 +148,133 @@ function genChunk(cx, cz) {
     addRock(g, rng, baseX + rng() * CHUNK, baseZ + rng() * CHUNK, cols);
   }
 
-  // 兴趣点(约 1/4 区块):废弃营地 / 无名石碑 / 狼群
-  const wolves = [];
+  // 兴趣点(约 45% 区块有事可看,按群系分布)
+  const spawned = []; // 交给主系统托管的实体(狼/盗贼/马/羊)
+  const px = centerX + (rng() - 0.5) * 50, pz = centerZ + (rng() - 0.5) * 50;
   const roll = rng();
-  if (roll < 0.09) {
-    // 废弃营地:篝火圈 + 金币
-    const px = centerX + (rng() - 0.5) * 40, pz = centerZ + (rng() - 0.5) * 40;
-    for (let i = 0; i < 5; i++) {
-      const a = (i / 5) * Math.PI * 2;
-      const st = new THREE.Mesh(new THREE.IcosahedronGeometry(0.25, 0), lambert(0x66625c));
-      st.position.set(px + Math.cos(a) * 0.8, 0.15, pz + Math.sin(a) * 0.8);
-      g.add(st);
-    }
-    const tent = new THREE.Mesh(new THREE.ConeGeometry(1.6, 2, 5), lambert(0x6a5540, { roughness: 1 }));
-    tent.position.set(px + 3, 1, pz + 1);
-    tent.castShadow = true;
-    g.add(tent);
-    for (let i = 0; i < 5; i++) hooks.dropCoin(px + (rng() - 0.5) * 5, pz + (rng() - 0.5) * 5);
-  } else if (roll < 0.16) {
-    // 无名石碑 + 金币环
-    const px = centerX, pz = centerZ;
-    const st = new THREE.Mesh(new THREE.BoxGeometry(1, 2.6 + rng(), 0.7), lambert(0x8a857e, { roughness: 0.95 }));
-    st.position.set(px, 1.3, pz);
+  const stone = (x, z, h2, w2 = 1) => {
+    const st = new THREE.Mesh(new THREE.BoxGeometry(w2, h2, w2 * 0.7), lambert(0x8a857e, { roughness: 0.95 }));
+    st.position.set(x, h2 / 2, z);
     st.rotation.y = rng() * 3;
     st.castShadow = true;
     g.add(st);
-    const col = { x: px, z: pz, r: 0.9 };
+    const col = { x, z, r: w2 * 0.7 };
     colliders.circles.push(col);
     cols.push(col);
+  };
+  const campfire = (x, z) => {
+    for (let i = 0; i < 5; i++) {
+      const a = (i / 5) * Math.PI * 2;
+      const st = new THREE.Mesh(new THREE.IcosahedronGeometry(0.25, 0), lambert(0x66625c));
+      st.position.set(x + Math.cos(a) * 0.8, 0.15, z + Math.sin(a) * 0.8);
+      g.add(st);
+    }
+  };
+  const tentAt = (x, z, color = 0x6a5540) => {
+    const tent = new THREE.Mesh(new THREE.ConeGeometry(1.6, 2, 5), lambert(color, { roughness: 1 }));
+    tent.position.set(x, 1, z);
+    tent.castShadow = true;
+    g.add(tent);
+  };
+
+  if (roll < 0.07) {
+    // 废弃营地:篝火 + 帐篷 + 金币
+    campfire(px, pz);
+    tentAt(px + 3, pz + 1);
+    for (let i = 0; i < 5; i++) hooks.dropCoin(px + (rng() - 0.5) * 5, pz + (rng() - 0.5) * 5);
+  } else if (roll < 0.12) {
+    // 无名石碑 + 金币环
+    stone(px, pz, 2.6 + rng());
     for (let i = 0; i < 6; i++) {
       const a = (i / 6) * Math.PI * 2;
       hooks.dropCoin(px + Math.cos(a) * 2.5, pz + Math.sin(a) * 2.5);
     }
-  } else if (roll < 0.24 && biome !== 'desert') {
+  } else if (roll < 0.18 && biome !== 'desert') {
     // 狼群窝
-    const px = centerX + (rng() - 0.5) * 50, pz = centerZ + (rng() - 0.5) * 50;
-    const n = 2 + Math.floor(rng() * 2);
-    for (let i = 0; i < n; i++) {
+    for (let i = 0, n = 2 + Math.floor(rng() * 2); i < n; i++) {
       const w = hooks.spawnWolf(px + (rng() - 0.5) * 8, pz + (rng() - 0.5) * 8, key);
-      if (w) wolves.push(w);
+      if (w) spawned.push(w);
     }
+  } else if (roll < 0.24 && (biome === 'plains' || biome === 'forest')) {
+    // 野马群:荒野中可捉的坐骑!
+    for (let i = 0, n = 1 + Math.floor(rng() * 2); i < n; i++) {
+      const h = hooks.spawnHorse(px + (rng() - 0.5) * 10, pz + (rng() - 0.5) * 10, key);
+      if (h) spawned.push(h);
+    }
+  } else if (roll < 0.29 && biome === 'plains') {
+    // 野羊群
+    for (let i = 0, n = 2 + Math.floor(rng() * 3); i < n; i++) {
+      const s = hooks.spawnSheep(px + (rng() - 0.5) * 10, pz + (rng() - 0.5) * 10, key);
+      if (s) spawned.push(s);
+    }
+  } else if (roll < 0.34 && biome !== 'snow') {
+    // 盗贼窝点:黑帐 + 守财匪 + 金币堆
+    tentAt(px, pz, 0x3a3a42);
+    campfire(px + 2.5, pz + 1);
+    for (let i = 0, n = 2; i < n; i++) {
+      const b = hooks.spawnBandit(px + (rng() - 0.5) * 6, pz + (rng() - 0.5) * 6, key);
+      if (b) spawned.push(b);
+    }
+    for (let i = 0; i < 7; i++) hooks.dropCoin(px + (rng() - 0.5) * 4, pz + (rng() - 0.5) * 4);
+  } else if (roll < 0.38) {
+    // 猎人营地(安全补给):帐篷 + 一颗心
+    tentAt(px, pz, 0x5a6a45);
+    campfire(px + 2.2, pz);
+    hooks.dropHeart(px + 1, pz + 2);
+    hooks.dropCoin(px - 1.5, pz + 1);
+  } else if (roll < 0.42) {
+    // 废弃哨塔:断塔 + 木箱 + 金币
+    const t = new THREE.Mesh(new THREE.CylinderGeometry(1.8, 2.2, 4 + rng() * 3, 8), lambert(0x8d8476, { roughness: 0.95 }));
+    t.position.set(px, 2.2, pz);
+    t.rotation.z = (rng() - 0.5) * 0.12;
+    t.castShadow = true;
+    g.add(t);
+    const col = { x: px, z: pz, r: 2.4 };
+    colliders.circles.push(col);
+    cols.push(col);
+    for (let i = 0; i < 2; i++) {
+      const cr = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.8, 0.8), lambert(0x8a6a45, { roughness: 0.9 }));
+      cr.position.set(px + 2.6 + i, 0.4, pz + 1.5 - i * 2);
+      cr.rotation.y = rng() * 2;
+      cr.castShadow = true;
+      g.add(cr);
+    }
+    for (let i = 0; i < 6; i++) hooks.dropCoin(px + (rng() - 0.5) * 6, pz + (rng() - 0.5) * 6);
+  } else if (roll < 0.46 && biome === 'forest') {
+    // 蘑菇圈:一圈红菇 + 一颗心
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2;
+      const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.1, 0.3, 5), lambert(0xe8e0d0));
+      stem.position.set(px + Math.cos(a) * 2, 0.15, pz + Math.sin(a) * 2);
+      g.add(stem);
+      const cap = new THREE.Mesh(new THREE.SphereGeometry(0.22, 6, 4), lambert(0xc03028, { roughness: 0.7 }));
+      cap.scale.y = 0.6;
+      cap.position.set(px + Math.cos(a) * 2, 0.34, pz + Math.sin(a) * 2);
+      g.add(cap);
+    }
+    hooks.dropHeart(px, pz);
+  } else if (roll < 0.5) {
+    // 群系水晶/仙人掌花:装饰 + 两枚金币
+    const c = new THREE.Mesh(new THREE.ConeGeometry(0.5, 1.8, 5),
+      lambert(biome === 'snow' ? 0xbfe4f2 : biome === 'desert' ? 0xe8b84a : 0x9adcc8,
+        { roughness: 0.25, metalness: 0.3 }));
+    c.position.set(px, 0.9, pz);
+    c.rotation.z = (rng() - 0.5) * 0.4;
+    c.castShadow = true;
+    g.add(c);
+    hooks.dropCoin(px + 1, pz);
+    hooks.dropCoin(px - 1, pz + 0.5);
+  } else if (roll < 0.54) {
+    // 迷你石阵
+    for (let i = 0; i < 4; i++) {
+      const a = (i / 4) * Math.PI * 2 + rng();
+      stone(px + Math.cos(a) * 3, pz + Math.sin(a) * 3, 1.6 + rng() * 1.2, 0.8);
+    }
+    for (let i = 0; i < 4; i++) hooks.dropCoin(px + (rng() - 0.5) * 3, pz + (rng() - 0.5) * 3);
   }
 
   scene.add(g);
-  chunks.set(key, { group: g, cols, wolves, key });
+  chunks.set(key, { group: g, cols, spawned, key });
 }
 
 function unloadChunk(key) {
@@ -203,7 +286,7 @@ function unloadChunk(key) {
     const i = colliders.circles.indexOf(col);
     if (i >= 0) colliders.circles.splice(i, 1);
   }
-  hooks.removeChunkWolves(key);
+  hooks.removeChunkEntities(key);
   chunks.delete(key);
 }
 

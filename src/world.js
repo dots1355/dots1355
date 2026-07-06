@@ -1171,6 +1171,7 @@ export function buildWorld(scene) {
     }
     grass.count = placed;
     scene.add(grass);
+    var grassMesh = grass; // 供季节换色
   }
 
   // 世界边界:±50000,总幅面 100000×100000(核心之外由荒野系统程序化生成)
@@ -1178,7 +1179,7 @@ export function buildWorld(scene) {
   box(-50020, 0, 40, 100100); box(50020, 0, 40, 100100);
 
   return {
-    ground,
+    ground, grassMesh,
     colliders, features, windmills, torches, chests, qBlocks, coinSpots, clouds, waterMats, occluders,
     windmillPos, banditCamp, fortPos,
     questGiverPos: new THREE.Vector3(4, 0, 10),

@@ -366,7 +366,7 @@ function addWolf(x, z) {
 }
 for (const [wx, wz] of world.wolfSpawns) addWolf(wx, wz);
 
-// ---- 无尽荒野接入:狼群/金币由主系统托管 ----
+// ---- 无尽荒野接入:狼群/野马/野羊/匪帮/掉落由主系统托管 ----
 initWilderness(scene, colliders, {
   spawnWolf(x, z, chunkKey) {
     if (wolves.filter((w) => !w.dead).length > 42) return null;
@@ -374,20 +374,58 @@ initWilderness(scene, colliders, {
     w.chunk = chunkKey;
     return w;
   },
-  removeChunkWolves(chunkKey) {
+  spawnHorse(x, z, chunkKey) {
+    if (horses.filter((h) => h.chunk && !h.sheep).length > 8) return null;
+    const wildColors = [0x8b5a2b, 0x4a3a30, 0xc4a35a, 0x9b7653, 0x6e5240, 0x3a3a3a];
+    const h = addHorse(x, z, wildColors[Math.floor(Math.random() * wildColors.length)], false);
+    h.chunk = chunkKey;
+    return h;
+  },
+  spawnSheep(x, z, chunkKey) {
+    if (horses.filter((h) => h.chunk && h.sheep).length > 10) return null;
+    const s = addSheep(x, z);
+    s.chunk = chunkKey;
+    return s;
+  },
+  spawnBandit(x, z, chunkKey) {
+    if (bandits.filter((b) => b.chunk && !b.dead).length > 10) return null;
+    const b = addBandit(x, z, { hp: 3 });
+    b.ambient = true; // 不计入主线任务,死后在窝点重生
+    b.chunk = chunkKey;
+    return b;
+  },
+  dropCoin(x, z) {
+    addPickup('coin', x, z, 600);
+  },
+  dropHeart(x, z) {
+    addPickup('heart', x, z, 600);
+  },
+  removeChunkEntities(chunkKey) {
     for (let i = wolves.length - 1; i >= 0; i--) {
       if (wolves[i].chunk === chunkKey) {
         scene.remove(wolves[i].group);
         wolves.splice(i, 1);
       }
     }
-  },
-  dropCoin(x, z) {
-    addPickup('coin', x, z, 600);
+    for (let i = bandits.length - 1; i >= 0; i--) {
+      if (bandits[i].chunk === chunkKey) {
+        scene.remove(bandits[i].group);
+        bandits.splice(i, 1);
+      }
+    }
+    for (let i = horses.length - 1; i >= 0; i--) {
+      const h = horses[i];
+      if (h.chunk !== chunkKey) continue;
+      if (h === player.mounted) { h.chunk = null; continue; } // 骑走的坐骑归玩家
+      scene.remove(h.group);
+      horses.splice(i, 1);
+    }
   },
 });
 
 function updateWolves(dt) {
+  // 狼月之夜:入夜后狼群更快更狠
+  const wolfBuff = todaySpecial()?.key === 'wolfmoon' && dayPhase() === 'night' ? 1.3 : 1;
   for (const w of wolves) {
     if (w.dead) {
       w.respawnT -= dt;
@@ -417,7 +455,7 @@ function updateWolves(dt) {
         resolveCollisions(w.pos, 0.4, colliders);
         if (!w.lungeHit && Math.hypot(player.pos.x - w.pos.x, player.pos.z - w.pos.z) < 1.2) {
           w.lungeHit = true;
-          damagePlayer(1);
+          damagePlayer(wolfBuff > 1 ? 2 : 1);
         }
       }
       if (w.lunging <= 0) w.group.scale.y = 1;
@@ -460,7 +498,7 @@ function updateWolves(dt) {
         telegraphFlash(w);
         continue;
       }
-      if (pd > 1.3) { moveEntity(w, player.pos.x, player.pos.z, w.speed, dt); moving = true; }
+      if (pd > 1.3) { moveEntity(w, player.pos.x, player.pos.z, w.speed * wolfBuff, dt); moving = true; }
       else if (w.attackCd <= 0) { w.attackCd = 1.1; damagePlayer(1); }
     } else {
       const a = performance.now() * 0.0004 + w.home.x;
@@ -479,7 +517,7 @@ function updateWolves(dt) {
 
 function killWolf(w) {
   w.dead = true;
-  w.respawnT = w.arena ? 99999 : 45;
+  w.respawnT = w.arena ? 99999 : (todaySpecial()?.key === 'wolfmoon' ? 22 : 45);
   startFall(w);
   registerKill();
   setTimeout(() => { if (w.dead) w.group.visible = false; }, 2500);
@@ -979,11 +1017,12 @@ function fishingReel() {
     let roll = Math.random() * total;
     let got = CATCHES[0];
     for (const c of CATCHES) { roll -= c.w; if (roll <= 0) { got = c; break; } }
-    player.coins += got.coins;
+    const moonX2 = todaySpecial()?.key === 'fullmoon' && got.coins > 0;
+    player.coins += moonX2 ? got.coins * 2 : got.coins;
     if (got.coins > 0) sfx.coin();
     sfx.splash();
     if (got.ach) unlockAch(got.ach);
-    openDialog([`(收杆!)${got.text}`]);
+    openDialog([`(收杆!)${got.text}` + (moonX2 ? '(🌕 满月夜,鱼获双倍!)' : '')]);
   } else {
     sfx.splash();
     toast('收早了,鱼吐着泡跑了。', 2);
@@ -1005,7 +1044,7 @@ function updateFishing(dt) {
 }
 
 // ================= 街头随机事件(GTA 式) =================
-const streetEvent = { type: null, t: 0, villager: null, bandit: null, horse: null, cooldown: 70 };
+const streetEvent = { type: null, t: 0, villager: null, bandit: null, horse: null, cooldown: 130 };
 function endStreetEvent() {
   if (streetEvent.bandit && !streetEvent.bandit.dead) {
     scene.remove(streetEvent.bandit.group);
@@ -1016,16 +1055,18 @@ function endStreetEvent() {
   streetEvent.type = null;
   streetEvent.bandit = null;
   streetEvent.horse = null;
-  streetEvent.cooldown = 80 + Math.random() * 60;
+  streetEvent.cooldown = 150 + Math.random() * 90;
 }
 function trySpawnStreetEvent() {
   if (arenaRT.active) return;
+  if (dailyEvents <= 0) { streetEvent.cooldown = 60; return; } // 今日热闹够了
+  dailyEvents--;
   if (Math.random() < 0.5) {
     // 抢劫:挑一个不太远的清醒村民
     const v = villagers.find((x) => !x.sleeping && x.downT <= 0 &&
       dist2(player.pos.x, player.pos.z, x.pos.x, x.pos.z) < 3600 &&
       dist2(player.pos.x, player.pos.z, x.pos.x, x.pos.z) > 100);
-    if (!v) return;
+    if (!v) { dailyEvents++; streetEvent.cooldown = 25; return; }
     streetEvent.type = 'robbery';
     streetEvent.villager = v;
     streetEvent.t = 40;
@@ -1243,7 +1284,7 @@ function updateArena(dt) {
 
 // ================= 事件导演:永无止境的随机事件 =================
 // 每 45~105 秒按权重与条件(时辰/位置/进度)抽取一个事件在玩家附近上演
-const director = { handle: null, cd: 40 };
+const director = { handle: null, cd: 90 };
 
 function spawnNearPlayer(minR, maxR) {
   const a = Math.random() * Math.PI * 2;
@@ -1563,18 +1604,22 @@ function updateDirector(dt) {
     if (h.t <= 0) {
       if (h.end) h.end();
       director.handle = null;
-      director.cd = 45 + Math.random() * 60;
+      director.cd = 90 + Math.random() * 70;
     }
     return;
   }
   director.cd -= dt;
   if (director.cd > 0) return;
+  if (dailyEvents <= 0) { director.cd = 45; return; } // 今日限额已满,明天再说
   const pool = DIRECTOR_EVENTS.filter((e) => e.cond());
-  if (!pool.length) { director.cd = 15; return; }
-  let total = pool.reduce((s, e) => s + e.w, 0);
+  if (!pool.length) { director.cd = 30; return; }
+  // 满月夜里亡魂更容易现身
+  const wOf = (e) => (e.key === 'ghost' && todaySpecial()?.key === 'fullmoon' && dayPhase() === 'night') ? e.w * 4 : e.w;
+  let total = pool.reduce((s, e) => s + wOf(e), 0);
   let roll = Math.random() * total;
   let ev = pool[0];
-  for (const e of pool) { roll -= e.w; if (roll <= 0) { ev = e; break; } }
+  for (const e of pool) { roll -= wOf(e); if (roll <= 0) { ev = e; break; } }
+  dailyEvents--;
   director.handle = ev.start();
 }
 
@@ -2125,6 +2170,92 @@ function updateRegion(dt) {
   }
 }
 
+// ================= 历法:季节与日子 =================
+const SEASONS = ['春', '夏', '秋', '冬'];
+const SEASON_ICON = ['🌸', '☀️', '🍂', '❄️'];
+const SEASON_DAYS = 6; // 一日 240 秒,六日为一季
+const calendar = { day: 1, lastPhase: 'dawn' };
+let dailyEvents = 4; // 每日事件限额:导演事件与街头事件共享,免得此起彼伏乱成一锅粥
+
+function seasonIdx() { return Math.floor((calendar.day - 1) / SEASON_DAYS) % 4; }
+function seasonDay() { return ((calendar.day - 1) % SEASON_DAYS) + 1; }
+function isWinter() { return seasonIdx() === 3; }
+
+// 定日事件:村庄的日子按历法过,而不是随机砸下来
+function todaySpecial() {
+  const s = seasonIdx(), d = seasonDay();
+  if (s === 2 && d === 1) return { key: 'harvest', name: '丰收节', desc: '田里落满了金币!' };
+  if (d === 2) return { key: 'market', name: '集市日', desc: '喷泉广场满地是赶集人掉的金币' };
+  if (d === 3) return { key: 'fullmoon', name: '满月夜', desc: '今日鱼获双倍,入夜亡魂徘徊' };
+  if (d === 5) return { key: 'wolfmoon', name: '狼月', desc: '入夜后狼群嗜血,荒野勿独行' };
+  return null;
+}
+
+// 季节换装:地表与草皮随季节改色,冬季积雪盖地
+const SEASON_GROUND = [0xffffff, 0xeef8d2, 0xdca55c, 0xdfe6ec];
+function applySeason() {
+  const s = seasonIdx();
+  const gm = world.ground.material;
+  if (!gm.userData.baseMap) { gm.userData.baseMap = gm.map; gm.userData.baseNormal = gm.normalMap; }
+  gm.map = s === 3 ? null : gm.userData.baseMap; // 冬:雪盖住草地纹理
+  gm.normalMap = s === 3 ? null : gm.userData.baseNormal;
+  gm.needsUpdate = true;
+  gm.color.setHex(SEASON_GROUND[s]);
+  const grass = world.grassMesh;
+  if (!grass) return;
+  const c = new THREE.Color();
+  for (let i = 0; i < grass.count; i++) {
+    const r = Math.abs(Math.sin(i * 12.9898) * 43758.5453) % 1; // 每株草稳定的伪随机
+    if (s === 0) c.setHSL(0.25 + r * 0.06, 0.48, 0.4 + r * 0.16);       // 春:嫩绿
+    else if (s === 1) c.setHSL(0.29 + r * 0.05, 0.55, 0.36 + r * 0.14); // 夏:浓绿
+    else if (s === 2) c.setHSL(0.07 + r * 0.05, 0.55, 0.42 + r * 0.14); // 秋:金黄
+    else c.setHSL(0.56 + r * 0.04, 0.08, 0.6 + r * 0.15);               // 冬:霜白
+    grass.setColorAt(i, c);
+  }
+  grass.instanceColor.needsUpdate = true;
+}
+
+function startSpecialDay(key) {
+  if (key === 'market') {
+    for (let i = 0; i < 14; i++) {
+      const a = Math.random() * 6.28, r = 4 + Math.random() * 9;
+      addPickup('coin', Math.cos(a) * r, 5 + Math.sin(a) * r, 220);
+    }
+  } else if (key === 'harvest') {
+    for (const [fx, fz, w, d] of [[24, 88, 24, 14], [-18, 92, 20, 12], [52, 96, 18, 10]]) {
+      for (let i = 0; i < 8; i++) {
+        addPickup('coin', fx + (Math.random() - 0.5) * (w - 2), fz + (Math.random() - 0.5) * (d - 2), 220);
+      }
+    }
+  }
+}
+
+// 天亮换日:昼夜相位从 night 跨入 dawn 时 day++
+function updateCalendar() {
+  const phase = dayPhase();
+  if (phase === calendar.lastPhase) return;
+  const from = calendar.lastPhase;
+  calendar.lastPhase = phase;
+  if (phase === 'dawn' && from === 'night') {
+    calendar.day++;
+    dailyEvents = 4;
+    applySeason();
+    const sp = todaySpecial();
+    if (started) {
+      const sd = seasonDay();
+      toast(`🌅 ${SEASON_ICON[seasonIdx()]} ${SEASONS[seasonIdx()]}·第 ${sd} 日` +
+        (sd === 1 ? `,${SEASONS[seasonIdx()]}天来了` : '') +
+        (sp ? ` — 今日${sp.name}:${sp.desc}` : ''), sp ? 5.5 : 3.2);
+      if (sp) startSpecialDay(sp.key);
+      saveGame();
+    }
+  } else if (phase === 'dusk' && started && todaySpecial()?.key === 'wolfmoon') {
+    toast('🌕 狼月将升……天黑后狼群会变得凶猛,备好武器', 4);
+  } else if (phase === 'night' && started && todaySpecial()?.key === 'fullmoon') {
+    toast('🌕 满月高悬,湖面泛着银光……', 3.5);
+  }
+}
+
 // ================= 存档 =================
 const SAVE_KEY = 'gth-save-v1';
 let crestsFound = [];
@@ -2139,7 +2270,7 @@ function saveGame() {
       coins: player.coins, questIdx: quest.idx, crests: crestsFound,
       swordLv: player.swordLv, royalHorse: player.royalHorse,
       kingRewarded: namedNPCs.find((n) => n.key === 'king')?.rewarded || false,
-      ach: achUnlocked, stats,
+      ach: achUnlocked, stats, day: calendar.day,
       weapon: player.weapon, weaponsOwned: player.weaponsOwned, armor: player.armor,
     }));
   } catch { /* 隐私模式等 */ }
@@ -2159,6 +2290,7 @@ function loadGame() {
     }
     if (Array.isArray(s.ach)) achUnlocked = s.ach;
     if (s.stats) Object.assign(stats, s.stats);
+    calendar.day = Math.max(1, s.day || 1);
     if (Array.isArray(s.weaponsOwned)) player.weaponsOwned = s.weaponsOwned;
     if (s.weapon && player.weaponsOwned.includes(s.weapon)) player.weapon = s.weapon;
     if (s.armor) {
@@ -2258,6 +2390,7 @@ if (hasSave) {
 // 读档后应用升级效果
 setWeaponVisual(player.weapon);
 setArmorVisual(player.armor);
+applySeason();
 if (player.royalHorse) {
   const rh = addHorse(world.stablePos.x - 3, world.stablePos.z - 3, 0xe8d9b0, false);
   rh.fast = true;
@@ -2335,7 +2468,10 @@ function setWeather(s) {
   weather.targetRain = def.rain;
   weather.targetCover = def.cover;
   weather.timer = def.dur[0] + Math.random() * (def.dur[1] - def.dur[0]);
-  if (started && (s === 'rain' || s === 'storm')) toast(s === 'storm' ? '⛈️ 雷暴来袭!' : '🌧️ 下雨了…', 2.5);
+  if (started && (s === 'rain' || s === 'storm')) {
+    if (isWinter()) toast(s === 'storm' ? '🌨️ 暴风雪来了!' : '🌨️ 下雪了……', 2.5);
+    else toast(s === 'storm' ? '⛈️ 雷暴来袭!' : '🌧️ 下雨了…', 2.5);
+  }
 }
 
 function lightning() {
@@ -2361,8 +2497,8 @@ function updateWeather(dt) {
   const step = (cur, tgt, rate) => cur + Math.max(-rate * dt, Math.min(rate * dt, tgt - cur));
   weather.rain = step(weather.rain, weather.targetRain, 0.12);
   weather.cover = step(weather.cover, weather.targetCover, 0.1);
-  weatherAudio.setRain(started ? weather.rain : 0);
-  if (weather.state === 'storm' && weather.rain > 0.7) {
+  weatherAudio.setRain(started && !isWinter() ? weather.rain : 0); // 雪落无声
+  if (weather.state === 'storm' && weather.rain > 0.7 && !isWinter()) {
     weather.boltT -= dt;
     if (weather.boltT <= 0) {
       weather.boltT = 3 + Math.random() * 8;
@@ -2389,15 +2525,20 @@ for (let i = 0; i < RAIN_N; i++) {
 }
 
 function updateRain(dt) {
-  rainMat.opacity = weather.rain * 0.38;
+  const snow = isWinter(); // 冬季降水变成雪:白色、慢落、随风打旋
+  rainMat.color.setHex(snow ? 0xf0f5ff : 0x9fb8d0);
+  rainMat.opacity = weather.rain * (snow ? 0.6 : 0.38);
   rainLines.visible = weather.rain > 0.03;
   if (!rainLines.visible) return;
   const cx = player.pos.x, cz = player.pos.z;
-  const wind = 4.5;
+  const wind = snow ? 1.4 : 4.5;
+  const fall = snow ? 6.5 : 30;
+  const t = performance.now() * 0.001;
   for (let i = 0; i < RAIN_N; i++) {
     let x = drops[i * 3], y = drops[i * 3 + 1], z = drops[i * 3 + 2];
-    y -= 30 * dt;
+    y -= fall * dt;
     x += wind * dt;
+    if (snow) { x += Math.sin(t * 1.7 + i) * 0.8 * dt; z += Math.cos(t * 1.3 + i * 0.7) * 0.8 * dt; }
     if (y < 0) {
       y = 20 + Math.random() * 6;
       x = cx + (Math.random() - 0.5) * 56;
@@ -2407,7 +2548,7 @@ function updateRain(dt) {
     if (z < cz - 28) z += 56; else if (z > cz + 28) z -= 56;
     drops[i * 3] = x; drops[i * 3 + 1] = y; drops[i * 3 + 2] = z;
     rainPos[i * 6] = x; rainPos[i * 6 + 1] = y; rainPos[i * 6 + 2] = z;
-    rainPos[i * 6 + 3] = x + 0.08; rainPos[i * 6 + 4] = y + 0.55; rainPos[i * 6 + 5] = z;
+    rainPos[i * 6 + 3] = x + (snow ? 0.1 : 0.08); rainPos[i * 6 + 4] = y + (snow ? 0.12 : 0.55); rainPos[i * 6 + 5] = z;
   }
   rainGeo.attributes.position.needsUpdate = true;
 }
@@ -3962,13 +4103,16 @@ function updateHUD() {
   const timer = timerType ? `⏱ ${Math.ceil(quest.timer)} 秒` : '';
   if (timer) missionText = `${timer}${quest.timer < 12 ? ' ⚠️' : ''}\n${missionText}`;
   missionText += `\n🛡️ 皇家纹章 ${crestsFound.length}/${world.crestSpots.length}`;
-  const wIcon = { clear: '☀️', cloudy: '⛅', rain: '🌧️', storm: '⛈️' }[weather.state];
+  const raining = weather.state === 'rain' || weather.state === 'storm';
+  const wIcon = isWinter() && raining ? '🌨️' : { clear: '☀️', cloudy: '⛅', rain: '🌧️', storm: '⛈️' }[weather.state];
   const phaseIcon = { dawn: '🌅', day: '🌞', dusk: '🌇', night: '🌙' }[dayPhase()];
+  const sp = todaySpecial();
+  const calText = `${SEASON_ICON[seasonIdx()]}${SEASONS[seasonIdx()]}·${seasonDay()}日${sp ? '·' + sp.name : ''}`;
   const bossHp = questRT.boss && !questRT.boss.dead && quest.active ? questRT.boss.hp : -1;
-  const key = hearts + '|' + player.coins + '|' + player.weapon + player.armor + '|' + stars + '|' + missionText + '|' + timer + '|' + promptText + '|' + wIcon + phaseIcon + '|' + bossHp;
+  const key = hearts + '|' + player.coins + '|' + player.weapon + player.armor + '|' + stars + '|' + missionText + '|' + timer + '|' + promptText + '|' + wIcon + phaseIcon + calText + '|' + bossHp;
   if (key === hudCache) return;
   hudCache = key;
-  document.getElementById('weather').textContent = `${phaseIcon} ${wIcon}`;
+  document.getElementById('weather').textContent = `${calText} ${phaseIcon} ${wIcon}`;
   heartsEl.textContent = hearts;
   coinsEl.textContent = `🪙 ${player.coins}`;
   wantedEl.textContent = stars;
@@ -4208,6 +4352,10 @@ window.__gtm = {
   crime, weather, setWeather, talkQuestGiver, completeMission, missions, advanceDialog,
   getWanted: () => wanted,
   setTime: (t) => { dayTime = t; },
+  calendar, seasonIdx, seasonDay, todaySpecial, applySeason, world,
+  setDay: (d) => { calendar.day = Math.max(1, d); applySeason(); },
+  getDailyEvents: () => dailyEvents,
+  wilderness: { CORE },
   getCrests: () => crestsFound.length,
   dialogOpen: () => dialog.open,
   getRevenge: () => revengeT,
@@ -4318,6 +4466,12 @@ function loop(now) {
   updateRain(dt);
   updateDust(dt);
   updateDayNight(dt);
+  updateCalendar();
+  updateWilderness(player.pos.x, player.pos.z); // 无尽荒野区块流式加载
+  // 地表随玩家延伸:按草皮贴图周期吸附,肉眼看不出接缝
+  const GP = 1600 / 90;
+  world.ground.position.x = Math.round(player.pos.x / GP) * GP;
+  world.ground.position.z = Math.round(player.pos.z / GP) * GP;
   updateCamera(dt);
 
   // 风车与砖块动画
