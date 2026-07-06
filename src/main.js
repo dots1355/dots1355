@@ -446,7 +446,11 @@ function updateWolves(dt) {
       }
       continue;
     }
-    if (!w.raidTarget && !w.arena && entFar(w)) continue; // 远处的狼睡觉去
+    if (!w.raidTarget && !w.arena && entFar(w)) {
+      // 远处休眠:别把扑咬姿势冻在半空
+      if (w.lunging > 0) { w.lunging = 0; w.group.scale.y = 1; }
+      continue;
+    }
     if (w.stunT > 0) { w.stunT -= dt; continue; }
     w.attackCd = Math.max(0, w.attackCd - dt);
     w.lungeCd = Math.max(0, (w.lungeCd || 0) - dt);
@@ -899,7 +903,8 @@ function updateChickens(dt) {
       chickenAnger = 0;
       toast('鸡群消气了……这次就算了。', 2.5);
       for (let i = chickens.length - 1; i >= 0; i--) {
-        if (chickens[i].extra && chickens[i] !== player.carrying) { scene.remove(chickens[i].group); chickens.splice(i, 1); }
+        // eventKeep 的鸡(金鸡/越狱鸡)由各自事件的 end() 负责回收,这里不动
+        if (chickens[i].extra && !chickens[i].eventKeep && chickens[i] !== player.carrying) { scene.remove(chickens[i].group); chickens.splice(i, 1); }
         else chickens[i].state = chickens[i] === player.carrying ? 'carried' : 'idle';
       }
     }
@@ -1751,6 +1756,7 @@ const DIRECTOR_EVENTS = [
       const c = addChicken(p.x, p.z);
       c.golden = true;
       c.extra = true;
+      c.eventKeep = true;
       c.group.traverse((o) => {
         if (o.material && o.material.color) {
           o.material = o.material.clone();
@@ -2009,6 +2015,7 @@ async function bardSong() {
   const ai = await aiLine(
     `你是中世纪吟游诗人皮波。用中文写一首恰好4行的幽默打油诗,歌颂绿帽游侠林恩:` +
     `${deedsForAI.join(',')}。要押韵、要俏皮。只输出四行诗,不要任何解释。`, null);
+  if (dialog.open) return; // 等歌期间玩家已在别的对话里,别打断
   if (ai) {
     const lines = ai.split('\n').map((l) => l.trim()).filter(Boolean).slice(0, 4);
     openDialog([
@@ -2060,6 +2067,7 @@ async function tellStory() {
     `你是中世纪王国旅店里的盲眼说书人苟叔。现在是${SEASONS[seasonIdx()]}季${sp ? '·' + sp.name : ''}。` +
     '用中文讲一个三句话的小故事,关于艾尔德里亚王国(可用素材:龙骨之地的老龙、银月湖底神殿、先祖石环、迷途丘陵、狼月、许愿池湖神、会开门的驴)。' +
     '要有起承转合和一个妙尾,三分怪谈七分人味。只输出故事正文,不要引号。', null, 8000);
+  if (dialog.open) return; // 等故事期间玩家已在别的对话里,别打断
   const text = ai || TALES[taleIdx++ % TALES.length];
   const parts = text.split(/(?<=[。!?])/).filter((p) => p.trim());
   const pages = ['苟叔:(压低嗓子)听好了——'];
@@ -2574,6 +2582,7 @@ function loadGame() {
     }
     if (Array.isArray(s.ach)) achUnlocked = s.ach;
     if (s.stats) Object.assign(stats, s.stats);
+    stats.lastStomp = -99; // 时间戳不跨会话:performance.now 重置会误发"弹簧靴"成就
     calendar.day = Math.max(1, s.day || 1);
     player.herbs = s.herbs || 0;
     player.venison = s.venison || 0;
@@ -2666,7 +2675,7 @@ document.getElementById('lore').textContent = INTRO;
 if (hasSave) {
   document.getElementById('save-info').textContent =
     `💾 检测到存档:委托 ${Math.min(quest.idx + 1, missions.length)}/${missions.length} · ` +
-    `${player.coins} 金币 · 纹章 ${crestsFound.length}/10(按 Delete 键清除存档重新开始)`;
+    `${player.coins} 金币 · 纹章 ${crestsFound.length}/${world.crestSpots.length}(按 Delete 键清除存档重新开始)`;
   window.addEventListener('keydown', (e) => {
     if (e.code === 'Delete' && !started) {
       localStorage.removeItem(SAVE_KEY);
@@ -2737,6 +2746,11 @@ titleEl.addEventListener('click', () => {
   titleEl.style.display = 'none';
   started = true;
   refreshProclaim(); // 今日公告(联网时由 AI 现写)
+  const sp0 = todaySpecial();
+  if (sp0) {
+    startSpecialDay(sp0.key); // 读档正逢节庆:补上当日的节庆效果
+    toast(`${SEASON_ICON[seasonIdx()]} 今日${sp0.name}:${sp0.desc}`, 5);
+  }
   renderer.domElement.requestPointerLock();
   toast('欢迎来到艾尔德里亚!去喷泉广场找管家埃隆接取委托吧(按 E 互动)', 5);
 });
@@ -3119,9 +3133,9 @@ function tryInteract() {
     if (n.key === 'prophet') {
       const fb = n.def.idle[n.lineIdx++ % n.def.idle.length];
       aiLine(
-        '你是中世纪疯predict预言家老糊涂,总说些打破第四面墙的怪话(比如怀疑世界是个游戏)。' +
+        '你是中世纪疯预言家老糊涂,总说些打破第四面墙的怪话(比如怀疑世界是个游戏)。' +
         '用中文说一句50字以内的疯预言。只输出预言本身。', fb, 5000)
-        .then((line) => openDialog([`疯子老糊涂:${line}`]));
+        .then((line) => { if (!dialog.open) openDialog([`疯子老糊涂:${line}`]); });
       return;
     }
     openDialog([`${n.def.name}:${n.def.idle[n.lineIdx++ % n.def.idle.length]}`]);
@@ -3151,9 +3165,9 @@ function tryInteract() {
     else takeBounty();
     return;
   }
-  // 王国公告牌(每日 AI 撰写)
+  // 王国公告牌(每日 AI 撰写;日期对不上就重写,防陈旧)
   if (dist2(player.pos.x, player.pos.z, NOTICE_POS.x, NOTICE_POS.z) < 6) {
-    if (!proclaimText) refreshProclaim();
+    if (!proclaimText || !proclaimText.includes(`第 ${seasonDay()} 日`)) refreshProclaim();
     openDialog([proclaimText || composeProclaimOffline()]);
     return;
   }
@@ -3228,16 +3242,16 @@ function tryInteract() {
       return;
     }
   }
-  // 墓园漫步:读一块墓志铭
-  if (dist2(player.pos.x, player.pos.z, -40, -120) < 400) {
-    openDialog(['(你拂去一块墓碑上的落叶)', `「${EPITAPHS[epitaphIdx++ % EPITAPHS.length]}」`]);
-    return;
-  }
   // 上马
   let best = null, bd = 7;
   for (const h of horses) {
     const d = dist2(player.pos.x, player.pos.z, h.pos.x, h.pos.z);
     if (d < bd) { bd = d; best = h; }
+  }
+  // 墓园漫步:读一块墓志铭(最低优先级,别挡着上马)
+  if (!best && dist2(player.pos.x, player.pos.z, -40, -120) < 400) {
+    openDialog(['(你拂去一块墓碑上的落叶)', `「${EPITAPHS[epitaphIdx++ % EPITAPHS.length]}」`]);
+    return;
   }
   if (best) {
     if (player.carrying) { player.carrying.state = 'idle'; player.carrying = null; }
@@ -3709,7 +3723,19 @@ function updateVillagers(dt) {
       if (v.downT <= 0) v.group.rotation.x = 0;
       continue;
     }
-    if (v.fleeT <= 0 && entFar(v)) continue; // 远处村民不演日程
+    if (v.fleeT <= 0 && entFar(v)) {
+      // 远处村民不演日程,但入夜/天亮的状态切换要补上,免得远景里站着一排"雕像"
+      if (phase === 'night' && !v.sleeping) {
+        v.sleeping = true;
+        v.group.visible = false;
+        v.pos.copy(v.home);
+        v.group.position.copy(v.pos);
+      } else if (phase !== 'night' && v.sleeping) {
+        v.sleeping = false;
+        v.group.visible = true;
+      }
+      continue;
+    }
     // 夜里睡觉:走到家,消失在屋里
     if (phase === 'night' && v.fleeT <= 0) {
       if (v.sleeping) continue;
@@ -4551,6 +4577,17 @@ function computePrompt() {
     if (dist2(player.pos.x, player.pos.z, n.pos.x, n.pos.z) > 7) continue;
     mark(n.pos.x, n.pos.z, 2.15);
     if (n.key === 'steward' && quest.idx < missions.length) { promptText = '按 E 与管家埃隆交谈(委托)'; return; }
+    {
+      // 与 tryInteract 对齐:有未读的故事章节时,E 打开的是故事而不是商店
+      const dlg = DIALOGS[n.key];
+      if (dlg) {
+        const arcIdx = dlg.arcs.reduce((b2, a, i) => (quest.idx >= a.min ? i : b2), -1);
+        if (arcIdx >= 0 && !(n.readArcs && n.readArcs.has(arcIdx))) {
+          promptText = `按 E 听${n.def.name}说说心里话`;
+          return;
+        }
+      }
+    }
     if (n.key === 'blacksmith') { promptText = '按 E 打开铁匠铺(武器/护甲)'; return; }
     if (n.key === 'trader' && !player.royalHorse) { promptText = '按 E 找马贩瑟尔玛(皇家骏马 80 金币)'; return; }
     if (n.key === 'innkeep' && player.venison > 0) { promptText = `按 E 卖鹿肉 ×${player.venison}(每块 5 金币)`; return; }
@@ -4663,10 +4700,6 @@ function computePrompt() {
       return;
     }
   }
-  if (dist2(player.pos.x, player.pos.z, -40, -120) < 400) {
-    promptText = '按 E 读一块墓志铭';
-    return;
-  }
   for (const h of horses) {
     if (dist2(player.pos.x, player.pos.z, h.pos.x, h.pos.z) < 7) {
       mark(h.pos.x, h.pos.z, h.sheep ? 1.4 : 2.7);
@@ -4674,6 +4707,10 @@ function computePrompt() {
         : h.owned && !h.stolen ? '按 E 偷马 (会引来通缉!)' : '按 E 骑马';
       return;
     }
+  }
+  if (dist2(player.pos.x, player.pos.z, -40, -120) < 400) {
+    promptText = '按 E 读一块墓志铭';
+    return;
   }
   // 兜底:视角未锁定时提示
   if (!locked) promptText = '点击画面锁定视角 · H 查看操作';
@@ -5039,6 +5076,7 @@ DIRECTOR_EVENTS.push({
   start() {
     const c = addChicken(12, 70);
     c.extra = true;
+    c.eventKeep = true;
     c.state = 'flee';
     c.timer = 4;
     toast('🐔💨 旅店后厨的鸡越狱了!伙计小马在后面喊:抓住它!!', 4);
@@ -5112,7 +5150,7 @@ window.__gtm = {
   getWanted: () => wanted,
   setTime: (t) => { dayTime = t; },
   calendar, seasonIdx, seasonDay, todaySpecial, applySeason, world,
-  setDay: (d) => { calendar.day = Math.max(1, d); applySeason(); },
+  setDay: (d) => { calendar.day = Math.max(1, d); applySeason(); respawnMushrooms(); refreshProclaim(); },
   getDailyEvents: () => dailyEvents,
   wilderness: { CORE },
   deers, mushrooms, loreStones, LORE, tellStory, sleepToMorning, newDay,
