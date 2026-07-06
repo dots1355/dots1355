@@ -252,11 +252,27 @@ const heartsEl = $('hearts'), coinsEl = $('coins'), wantedEl = $('wanted'),
   gameoverEl = $('gameover'), gameoverText = $('gameover-text'),
   minimap = $('minimap'), mm = minimap.getContext('2d');
 
-let toastTimer = 0;
-function toast(msg, dur = 3) {
-  toastEl.textContent = msg;
-  toastEl.style.opacity = 1;
-  toastTimer = dur;
+// 顶部细条通知:队列化,一次一条,不遮挡视野
+let toastTimer = 0; // >0 显示中,<0 淡出间隔
+const toastQueue = [];
+function toast(msg, dur = 2.6) {
+  toastQueue.push([msg, Math.min(dur, 4)]);
+}
+function updateToast(dt) {
+  if (toastTimer > 0) {
+    toastTimer -= dt;
+    if (toastTimer <= 0) {
+      toastEl.style.opacity = 0;
+      toastTimer = -0.45;
+    }
+  } else if (toastTimer < 0) {
+    toastTimer = Math.min(0, toastTimer + dt);
+  } else if (toastQueue.length) {
+    const [msg, dur] = toastQueue.shift();
+    toastEl.textContent = msg;
+    toastEl.style.opacity = 1;
+    toastTimer = dur;
+  }
 }
 
 // ================= 玩家 =================
@@ -456,18 +472,34 @@ const dialogNameEl = document.getElementById('dialog-name');
 const dialogTextEl = document.getElementById('dialog-text');
 const dialog = { open: false, pages: [], idx: 0, onDone: null };
 
+let typeTimer = null;
 function renderDialogPage() {
   const page = dialog.pages[dialog.idx];
   const ci = page.indexOf(':');
+  let text;
   if (ci > 0 && ci < 8) {
     dialogNameEl.textContent = page.slice(0, ci);
-    dialogTextEl.textContent = page.slice(ci + 1);
+    text = page.slice(ci + 1);
   } else {
     dialogNameEl.textContent = '';
-    dialogTextEl.textContent = page;
+    text = page;
   }
+  // 打字机效果:E 先跳字,再翻页
+  dialog.fullText = text;
+  dialog.typing = true;
+  dialogTextEl.textContent = '';
+  clearInterval(typeTimer);
+  let i = 0;
+  typeTimer = setInterval(() => {
+    i += 2;
+    dialogTextEl.textContent = text.slice(0, i);
+    if (i >= text.length) {
+      clearInterval(typeTimer);
+      dialog.typing = false;
+    }
+  }, 22);
   document.getElementById('dialog-hint').textContent =
-    dialog.idx < dialog.pages.length - 1 ? `▼ 按 E 继续 (${dialog.idx + 1}/${dialog.pages.length})` : '▼ 按 E 结束对话';
+    dialog.idx < dialog.pages.length - 1 ? `▼ E (${dialog.idx + 1}/${dialog.pages.length})` : '▼ E 结束';
 }
 
 function openDialog(pages, onDone = null) {
@@ -476,11 +508,19 @@ function openDialog(pages, onDone = null) {
   dialog.pages = pages;
   dialog.idx = 0;
   dialog.onDone = onDone;
+  bubble.timer = 0; // 对话时收起闲聊气泡
   dialogEl.style.display = 'block';
   renderDialogPage();
 }
 
 function advanceDialog() {
+  if (dialog.typing) {
+    // 第一次按键:直接显示整页
+    clearInterval(typeTimer);
+    dialog.typing = false;
+    dialogTextEl.textContent = dialog.fullText;
+    return;
+  }
   dialog.idx++;
   if (dialog.idx >= dialog.pages.length) {
     dialog.open = false;
@@ -523,6 +563,12 @@ const _bubbleV = new THREE.Vector3();
 function updateBubble(dt) {
   if (bubble.timer <= 0) { bubbleEl.style.display = 'none'; return; }
   bubble.timer -= dt;
+  // 走远了自动收起
+  if (dist2(player.pos.x, player.pos.z, bubble.anchor.pos.x, bubble.anchor.pos.z) > 240) {
+    bubble.timer = 0;
+    bubbleEl.style.display = 'none';
+    return;
+  }
   _bubbleV.copy(bubble.anchor.pos).y += 2.1;
   _bubbleV.project(camera);
   if (_bubbleV.z > 1) { bubbleEl.style.display = 'none'; return; }
@@ -552,6 +598,24 @@ function villagerChatter() {
     showBubble(g, null, GUARD_LINES[Math.floor(Math.random() * GUARD_LINES.length)]);
     return;
   }
+}
+
+// ================= 操作说明:20 秒后淡出,按 H 呼出 =================
+const hintEl = document.getElementById('controls-hint');
+let hintFadeT = 20;
+let hintVisible = true;
+function updateHintFade(dt) {
+  if (!started || !hintVisible || hintFadeT <= 0) return;
+  hintFadeT -= dt;
+  if (hintFadeT <= 0) {
+    hintVisible = false;
+    hintEl.style.opacity = 0;
+  }
+}
+function toggleHint() {
+  hintVisible = !hintVisible;
+  hintEl.style.opacity = hintVisible ? 1 : 0;
+  hintFadeT = hintVisible ? 20 : 0;
 }
 
 // ================= 区域浮现(GTA 式) =================
@@ -713,6 +777,7 @@ window.addEventListener('keydown', (e) => {
   }
   if (e.code === 'KeyF' && !dialog.open) tryAttack();
   if (e.code === 'KeyM') toast(toggleMusic() ? '♪ 音乐开' : '♪ 音乐关', 1.5);
+  if (e.code === 'KeyH') toggleHint();
 });
 window.addEventListener('keyup', (e) => (keys[e.code] = false));
 renderer.domElement.addEventListener('mousedown', (e) => {
@@ -1996,9 +2061,10 @@ function updateHUD() {
     if (m.type === 'escort' && questRT.merchant) prog = ` (商人 ❤×${Math.max(0, questRT.merchant.hp)})`;
     missionText = `📜 ${m.title}:${m.desc}${prog}`;
   }
-  missionText += `\n🛡️ 皇家纹章 ${crestsFound.length}/${world.crestSpots.length}`;
   const timerType = quest.active && (missions[quest.idx].type === 'deliver' || missions[quest.idx].type === 'race');
-  const timer = timerType ? `⏱ ${Math.ceil(quest.timer)}s` : '';
+  const timer = timerType ? `⏱ ${Math.ceil(quest.timer)} 秒` : '';
+  if (timer) missionText = `${timer}${quest.timer < 12 ? ' ⚠️' : ''}\n${missionText}`;
+  missionText += `\n🛡️ 皇家纹章 ${crestsFound.length}/${world.crestSpots.length}`;
   const wIcon = { clear: '☀️', cloudy: '⛅', rain: '🌧️', storm: '⛈️' }[weather.state];
   const phaseIcon = { dawn: '🌅', day: '🌞', dusk: '🌇', night: '🌙' }[dayPhase()];
   const key = hearts + '|' + player.coins + '|' + stars + '|' + missionText + '|' + timer + '|' + promptText + '|' + wIcon + phaseIcon;
@@ -2010,8 +2076,6 @@ function updateHUD() {
   wantedEl.textContent = stars;
   wantedEl.style.display = wanted > 0 ? 'block' : 'none';
   missionEl.textContent = missionText;
-  timerEl.textContent = timer;
-  timerEl.style.color = quest.timer < 12 ? '#ff5555' : '#fff';
   promptEl.textContent = promptText;
   promptEl.style.display = promptText ? 'block' : 'none';
 }
@@ -2050,6 +2114,8 @@ function computePrompt() {
       return;
     }
   }
+  // 兜底:视角未锁定时提示
+  if (!locked) promptText = '点击画面锁定视角 · H 查看操作';
 }
 
 // ================= 小地图 =================
@@ -2157,10 +2223,8 @@ function loop(now) {
   last = now;
   if (!started) { composer.render(); return; }
 
-  if (toastTimer > 0) {
-    toastTimer -= dt;
-    if (toastTimer <= 0) toastEl.style.opacity = 0;
-  }
+  updateToast(dt);
+  updateHintFade(dt);
 
   updatePlayer(dt);
   updateGuards(dt);
