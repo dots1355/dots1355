@@ -5,6 +5,7 @@ import { makeHumanoid, makeHorse, makeWolf, makeChicken, makeSheep, resolveColli
 import { INTRO, REGIONS, GUARD_LINES, NPCS, MISSIONS, VILLAGERS, DIALOGS, TIME_GREETINGS } from './story.js';
 import { initAudio, sfx, startMusic, toggleMusic, weatherAudio } from './audio.js';
 import { preloadAIAssets, generateRemoteAITextures } from './textures.js';
+import { initWilderness, updateWilderness, wildRegionName, CORE } from './wilderness.js';
 import { ShaderPass } from '../lib/jsm/postprocessing/ShaderPass.js';
 import { EffectComposer } from '../lib/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from '../lib/jsm/postprocessing/RenderPass.js';
@@ -365,6 +366,27 @@ function addWolf(x, z) {
 }
 for (const [wx, wz] of world.wolfSpawns) addWolf(wx, wz);
 
+// ---- 无尽荒野接入:狼群/金币由主系统托管 ----
+initWilderness(scene, colliders, {
+  spawnWolf(x, z, chunkKey) {
+    if (wolves.filter((w) => !w.dead).length > 42) return null;
+    const w = addWolf(x, z);
+    w.chunk = chunkKey;
+    return w;
+  },
+  removeChunkWolves(chunkKey) {
+    for (let i = wolves.length - 1; i >= 0; i--) {
+      if (wolves[i].chunk === chunkKey) {
+        scene.remove(wolves[i].group);
+        wolves.splice(i, 1);
+      }
+    }
+  },
+  dropCoin(x, z) {
+    addPickup('coin', x, z, 600);
+  },
+});
+
 function updateWolves(dt) {
   for (const w of wolves) {
     if (w.dead) {
@@ -583,7 +605,7 @@ function arrowHitEntities(a) {
     if (b.hp <= 0) {
       b.dead = true; startFall(b); registerKill();
       dropCoins(b.pos, b.boss ? 20 : 5);
-      if (quest.active && missions[quest.idx].type === 'bandits' && !b.boss && !b.escort && !b.bountyHead && !b.robber && !b.arena) {
+      if (quest.active && missions[quest.idx].type === 'bandits' && !b.boss && !b.escort && !b.bountyHead && !b.robber && !b.arena && !b.ambient) {
         quest.progress++;
         toast(`击败盗贼 ${quest.progress}/3`, 2);
         if (quest.progress >= 3) completeMission();
@@ -883,6 +905,12 @@ function addSheep(x, z) {
 }
 [[-38, 63], [-42, 67], [-36, 68], [-44, 62], [-40, 71], [-34, 64]].forEach(([x, z]) => addSheep(x, z));
 
+// 灰烬荒地的常驻匪帮(死后一分钟重生)
+for (const [ax, az] of [[-368, -30], [-390, -52], [-372, -60]]) {
+  const b = addBandit(ax, az, { hp: 3 });
+  b.ambient = true;
+}
+
 // ================= 任务系统 =================
 const missions = MISSIONS;
 const quest = { idx: 0, active: false, progress: 0, timer: 0 };
@@ -1039,6 +1067,7 @@ function updateStreetEvent(dt) {
 const BOUNTY_NAMES = ['独眼汉斯', '瘸腿约里克', '大鼻子威利', '无声的多特', '斑脸巴克', '铁牙戈登'];
 const BOUNTY_SPOTS = [
   ['幽暗森林', -150, -20], ['哨塔遗迹', 80, -118], ['先祖石环', 168, -58], ['静眠墓园', -42, -118],
+  ['琥珀荒漠', 300, 188], ['灰烬荒地', -378, -42], ['龙骨之地', 298, -150], ['雾语沼泽', -288, 244],
 ];
 const bountyRT = { target: null, name: '', cooldown: 0 };
 {
@@ -1192,6 +1221,7 @@ function updateArena(dt) {
 
 // ================= 具名 NPC =================
 const npcStyles = {
+  witch: { shirt: 0x3a2a4a, pants: 0x261a30, hood: true, hair: 0x888888 },
   king: { shirt: 0x7a1f8a, pants: 0x3a2a4a, hair: 0xd8d8d8 },
   blacksmith: { shirt: 0x5a4632, pants: 0x33261a, hair: 0x2a1a10 },
   trader: { shirt: 0x2a6a5a, pants: 0x4a3a26, hair: 0x6a4a2a },
@@ -1199,8 +1229,15 @@ const npcStyles = {
   fisher: { shirt: 0x3a5a7a, pants: 0x33301c, hair: 0xbababa },
 };
 const namedNPCs = [];
+const EXTRA_NPCS = {
+  witch: { name: '沼泽女巫玛尔戈', lines: [
+    '汤锅里炖的?蘑菇、蛙腿、还有一点点秘密。',
+    '乌拉那丫头又来讨药方了。告诉她,桦树皮我收着呢。',
+    '沼泽认得善人的脚印。你的脚印……还行。',
+  ] },
+};
 for (const [key, [nx, nz, nyaw]] of Object.entries(world.npcSpots)) {
-  const n = { ...makeHumanoid(npcStyles[key]), key, def: NPCS[key],
+  const n = { ...makeHumanoid(npcStyles[key]), key, def: NPCS[key] || EXTRA_NPCS[key],
     pos: new THREE.Vector3(nx, 0, nz), yaw: nyaw, lineIdx: 0, rewarded: false, walkT: 0 };
   n.group.position.copy(n.pos);
   n.group.rotation.y = nyaw;
@@ -1674,6 +1711,11 @@ function updateRegion(dt) {
     if (r.band !== undefined) { if (player.pos.z < r.band) { name = r.name; break; } continue; }
     if (dist2(player.pos.x, player.pos.z, r.x, r.z) < r.r * r.r) { name = r.name; break; }
   }
+  // 核心之外:程序化荒野群系命名
+  if ((name === '艾尔德里亚原野' || name === '北境群山') &&
+      (Math.abs(player.pos.x) > CORE || Math.abs(player.pos.z) > CORE)) {
+    name = wildRegionName(player.pos.x, player.pos.z);
+  }
   if (name !== curRegion) {
     curRegion = name;
     regionEl.textContent = name;
@@ -2145,6 +2187,21 @@ function tryInteract() {
       }
       return;
     }
+    if (n.key === 'witch') {
+      if (player.hp < player.maxHp) {
+        if (player.coins >= 8) {
+          player.coins -= 8;
+          player.hp = player.maxHp;
+          sfx.heart();
+          openDialog(['玛尔戈:(舀了一勺冒泡的绿汤)喝。别问是什么,问了就不灵了。……看,好全了吧?']);
+        } else {
+          openDialog(['玛尔戈:一勺回魂汤,8 个金币。穷?那就去湖里洗把脸,精神精神。']);
+        }
+      } else {
+        openDialog([`玛尔戈:${EXTRA_NPCS.witch.lines[n.lineIdx++ % EXTRA_NPCS.witch.lines.length]}`]);
+      }
+      return;
+    }
     // 闲聊
     npcTalk(n);
     return;
@@ -2384,7 +2441,7 @@ function tryAttack() {
       dropCoins(b.pos, b.boss ? 20 : 5);
       addPickup('heart', b.pos.x, b.pos.z + 1, 30);
       if (b.boss) toast('⚔️ 血斧巴罗克倒下了!黑石兄弟会土崩瓦解!', 5);
-      if (quest.active && missions[quest.idx].type === 'bandits' && !b.boss && !b.escort && !b.bountyHead && !b.robber && !b.arena) {
+      if (quest.active && missions[quest.idx].type === 'bandits' && !b.boss && !b.escort && !b.bountyHead && !b.robber && !b.arena && !b.ambient) {
         quest.progress++;
         toast(`击败盗贼 ${quest.progress}/3`, 2);
         if (quest.progress >= 3) completeMission();
@@ -2607,7 +2664,19 @@ function updateRobber(b, dt) {
 
 function updateBandits(dt) {
   for (const b of bandits) {
-    if (b.dead) continue;
+    if (b.dead) {
+      if (b.ambient) {
+        b.respawnT = (b.respawnT ?? 60) - dt;
+        if (b.respawnT <= 0) {
+          b.dead = false;
+          b.hp = 3;
+          b.pos.copy(b.home);
+          b.group.rotation.x = 0;
+          b.respawnT = 60;
+        }
+      }
+      continue;
+    }
     if (b.robber) { updateRobber(b, dt); continue; }
     if (b.stunT > 0) { b.stunT -= dt; continue; }
     b.attackCd = Math.max(0, b.attackCd - dt);
@@ -3510,6 +3579,7 @@ function computePrompt() {
     if (n.key === 'blacksmith') { promptText = '按 E 打开铁匠铺(武器/护甲)'; return; }
     if (n.key === 'trader' && !player.royalHorse) { promptText = '按 E 找马贩瑟尔玛(皇家骏马 80 金币)'; return; }
     if (n.key === 'innkeep' && player.hp < player.maxHp) { promptText = '按 E 住店休息,回满生命(10 金币)'; return; }
+    if (n.key === 'witch' && player.hp < player.maxHp) { promptText = '按 E 买回魂汤(8 金币)'; return; }
     if (n.key === 'king') {
       promptText = quest.idx >= missions.length && !n.rewarded ? '按 E 领取领主的重赏' : '按 E 谒见领主';
       return;
@@ -3588,6 +3658,8 @@ const MM_COLS = {
   wall: '#9d9486', tower: '#8d8476', keep: '#7d7466', house: '#a3703f',
   tree: '#295c33', water: '#3f8fc4', field: '#9a7444', plaza: '#cdb891',
   stall: '#c05a3a', windmill: '#e8dcc0', tent: '#5d4a33',
+  sand: '#d9c48f', snow: '#e8edf2', swamp: '#44523a', ash: '#57524c',
+  bone: '#e8e4da', dome: '#3f7a45', cactus: '#3f8a4f',
 };
 function drawMinimap() {
   const S = 200, range = 240, k = S / range;
