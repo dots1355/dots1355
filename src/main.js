@@ -551,6 +551,7 @@ function killWolf(w) {
   setTimeout(() => { if (w.dead) w.group.visible = false; }, 2500);
   dropCoins(w.pos, 2);
   wolfKills++;
+  choreProgress('wolves');
   // 竞技场里的狼不算狼灾任务(和盗贼任务的排除规则对齐)
   if (!w.arena && quest.active && missions[quest.idx].type === 'wolves') {
     quest.progress++;
@@ -1462,6 +1463,88 @@ function takeRelic() {
   ], () => saveGame());
 }
 
+// ================= 村务委托(无限支线:AI 写求助告示,离线用模板) =================
+const CHORE_POS = { x: -9, z: 18 };
+{
+  const post = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.09, 2.4, 6), lambert(0x6b4a2f));
+  post.position.set(CHORE_POS.x, 1.2, CHORE_POS.z);
+  scene.add(post);
+  const plank = new THREE.Mesh(new THREE.BoxGeometry(1.6, 1.0, 0.08), lambert(0x9a7a4f, { roughness: 0.9 }));
+  plank.position.set(CHORE_POS.x, 1.7, CHORE_POS.z);
+  plank.rotation.y = 0.4;
+  plank.castShadow = true;
+  scene.add(plank);
+}
+const sideQuest = { active: false, type: null, goal: 0, progress: 0, reward: 0, text: '', giver: '' };
+const CHORE_TYPES = [
+  { key: 'wolves', label: '猎狼', goalMin: 2, goalMax: 4, reward: 14,
+    tpl: (g, who) => `${who}求助:狼群夜里扒我家羊圈,好汉行行好,猎 ${g} 头恶狼,赏钱在村务板下。` },
+  { key: 'herbs', label: '采蘑菇', goalMin: 3, goalMax: 5, reward: 11, consume: true,
+    tpl: (g, who) => `${who}求助:家里病人等药引,求 ${g} 朵林间伞菇,采到放板下即可,谢过!` },
+  { key: 'venison', label: '送鹿肉', goalMin: 2, goalMax: 3, reward: 13, consume: true,
+    tpl: (g, who) => `${who}求助:办席短了硬菜,求 ${g} 块鲜鹿肉,价钱好说,板下自取。` },
+  { key: 'fish', label: '钓鱼', goalMin: 2, goalMax: 3, reward: 10,
+    tpl: (g, who) => `${who}求助:馋鱼了,腿脚又不便。替我钓 ${g} 条上来,赏钱压在石头底下。` },
+];
+function rollChore() {
+  const t = CHORE_TYPES[Math.floor(Math.random() * CHORE_TYPES.length)];
+  const goal = t.goalMin + Math.floor(Math.random() * (t.goalMax - t.goalMin + 1));
+  const giver = VILLAGERS[Math.floor(Math.random() * VILLAGERS.length)].name;
+  sideQuest.active = true;
+  sideQuest.type = t.key;
+  sideQuest.goal = goal;
+  sideQuest.progress = 0;
+  sideQuest.reward = t.reward + goal * 2;
+  sideQuest.giver = giver;
+  sideQuest.text = t.tpl(goal, giver);
+  // AI 把告示重写得更有生活气(异步替换,离线保持模板)
+  aiLine(
+    `你是中世纪村民「${giver}」。你在村务板贴一则求助告示:需要${goal}份「${t.label}」相关的东西` +
+    `(${t.key === 'wolves' ? '猎除恶狼' : t.key === 'herbs' ? '林间伞菇' : t.key === 'venison' ? '鲜鹿肉' : '鲜鱼'})。` +
+    '用中文写这则告示,40~70字,原因要具体、生活化、带点小情绪。只输出告示正文。', null, 9000,
+  ).then((t2) => { if (t2 && sideQuest.active && sideQuest.giver === giver) sideQuest.text = `${giver}求助:${t2}`; });
+}
+function choreProgress(kind) {
+  if (!sideQuest.active || sideQuest.type !== kind) return;
+  sideQuest.progress++;
+  if (sideQuest.progress <= sideQuest.goal) {
+    toast(`📋 村务【${sideQuest.giver}】:${sideQuest.progress}/${sideQuest.goal}`, 2);
+  }
+}
+function choreReady() {
+  if (!sideQuest.active) return false;
+  if (sideQuest.type === 'herbs') return player.herbs >= sideQuest.goal;
+  if (sideQuest.type === 'venison') return player.venison >= sideQuest.goal;
+  return sideQuest.progress >= sideQuest.goal;
+}
+function choreBoard() {
+  if (!sideQuest.active) {
+    rollChore();
+    sfx.accept();
+    openDialog([`(村务板贴着一张新告示)`, sideQuest.text,
+      `(接下了。完成后回到村务板交差,赏钱 ${sideQuest.reward} 金币。)`]);
+    return;
+  }
+  if (choreReady()) {
+    if (sideQuest.type === 'herbs') player.herbs -= sideQuest.goal;
+    if (sideQuest.type === 'venison') player.venison -= sideQuest.goal;
+    player.coins += sideQuest.reward;
+    sfx.fanfare();
+    stats.chores = (stats.chores || 0) + 1;
+    if (stats.chores >= 5) unlockAch('villagehero');
+    remember(`替${sideQuest.giver}办妥了一桩村务`);
+    openDialog([`(你把东西放在板下,拿走了压着的 ${sideQuest.reward} 枚金币。)`,
+      `(${sideQuest.giver}不知何时在告示边添了一行小字:谢过恩公。)`]);
+    sideQuest.active = false;
+    saveGame();
+    return;
+  }
+  const need = sideQuest.type === 'herbs' ? `${player.herbs}/${sideQuest.goal} 朵伞菇`
+    : sideQuest.type === 'venison' ? `${player.venison}/${sideQuest.goal} 块鹿肉`
+    : `${sideQuest.progress}/${sideQuest.goal}`;
+  openDialog([sideQuest.text, `(进度:${need}。办妥了回来交差。)`]);
+}
+
 // ================= 世界观铭文(可阅读的石碑,集齐 12 处) =================
 let loreRead = [];
 const loreStones = [];
@@ -1614,6 +1697,7 @@ function fishingReel() {
     for (const c of table) { roll -= c.w; if (roll <= 0) { got = c; break; } }
     const moonX2 = todaySpecial()?.key === 'fullmoon' && got.coins > 0;
     if (got.coins > 0) stats.fishCaught = (stats.fishCaught || 0) + 1;
+    if (got.coins > 0) choreProgress('fish');
     player.coins += moonX2 ? got.coins * 2 : got.coins;
     if (got.coins > 0) sfx.coin();
     sfx.splash();
@@ -2292,6 +2376,7 @@ const ACH_DEFS = {
   soak:     { name: '泡汤客', desc: '在温泉里泡满 30 秒' },
   lakegift: { name: '湖神的恩赐', desc: '触碰湖心岛的月光祭坛(生命上限 +2)' },
   unsealer: { name: '开封者', desc: '走进被封印的王室地窖,请下先王战徽' },
+  villagehero: { name: '村里的自己人', desc: '办妥 5 桩村务委托' },
 };
 const stats = { thrown: 0, pecks: 0, wishes: 0, drunks: 0, loseStreak: 0, sheepDist: 0, lastStomp: -99, deer: 0, mushrooms: 0 };
 let achUnlocked = [];
@@ -2580,7 +2665,7 @@ async function aiLine(prompt, fallback, timeoutMs = 7000) {
   }
 }
 // AI 输出口的忙碌标记:等待期间重复按 E 不再重复请求/重复开对话
-const aiBusy = { mirror: false, tale: false, bard: false, prophet: false, dream: false, deep: false, epitaph: false };
+const aiBusy = { mirror: false, tale: false, bard: false, prophet: false, dream: false, deep: false, epitaph: false, fortune: false };
 let epitaphAI = null; // AI 补写的下一条墓志铭
 
 // ================= 对话面板(RDR2 式多页对话) =================
@@ -2669,6 +2754,36 @@ function setPortrait(speaker) {
   } else if (portraitEl.complete && portraitEl.naturalWidth > 0) {
     portraitEl.style.display = 'block';
   }
+}
+
+// ---- 女巫占卜:5 金币一卦。她算得准——因为明日的历法本来就是定数 ----
+async function witchFortune(n) {
+  aiBusy.fortune = true;
+  player.coins -= 5;
+  sfx.dice();
+  const tday = calendar.day + 1;
+  const ts = (() => {
+    const save = calendar.day;
+    calendar.day = tday;
+    const sp = todaySpecial();
+    calendar.day = save;
+    return sp;
+  })();
+  const truth = ts ? `明日恰逢「${ts.name}」(${ts.desc})` : '明日无节无庆,是寻常的一天';
+  const who = archetype();
+  const fb = ts
+    ? `玛尔戈:(汤勺搅出一个旋)水里翻出字来了……明日${ts.name}。${ts.desc}。信不信由你,反正水不骗人。`
+    : `玛尔戈:(盯着汤面)明日无风无浪。对你这样的「${who}」来说,没消息就是好消息。`;
+  toast('🔮 玛尔戈往锅里撒了一撮灰……', 2);
+  const ai = await aiLine(
+    `你是中世纪沼泽女巫玛尔戈,收了5金币给玩家占卜。已知天机:${truth};玩家在世界眼里是个「${who}」` +
+    `${recallLine() ? `;他做过:${recallLine()}` : ''}。用中文说一段40~70字的卦辞:神叨、准确(必须把明日的天机说进去)、结尾带一句似是而非的忠告。只输出卦辞。`,
+    null, 9000);
+  aiBusy.fortune = false;
+  if (dialog.open || player.dead) return;
+  openDialog([ai ? `玛尔戈:${ai}` : fb], null,
+    { key: null, name: '沼泽女巫玛尔戈', desc: NPC_DESC_EN.witch, ent: n });
+  remember('花五枚金币,听沼泽女巫算了一卦');
 }
 
 // ---- T 键追问:让 AI 顺着刚才的话往深里说(离线回退对话库) ----
@@ -2996,6 +3111,26 @@ function startSpecialDay(key) {
   }
 }
 
+// 来信:隔三差五,城里有人给你写信(AI 执笔,引用你的事迹)
+let letter = null;
+const LETTER_SENDERS = ['管家埃隆', '老板娘罗莎', '渔夫老周', '抄写员薇拉', '铁匠格罗姆', '牧羊女米娅'];
+const LETTER_FALLBACK = [
+  '见字如面。城里近来还算太平,你在外头也照顾好自己。汤永远给你留着。',
+  '听说了你的事迹,写下来给后人看之前,想先谢谢你本人。',
+  '没什么事,就是想起你了。路过时进来坐坐,别客气。',
+];
+function composeLetter() {
+  const from = LETTER_SENDERS[Math.floor(Math.random() * LETTER_SENDERS.length)];
+  letter = { from, text: LETTER_FALLBACK[Math.floor(Math.random() * LETTER_FALLBACK.length)] };
+  const deed = recallLine();
+  aiLine(
+    `你是中世纪王国的「${from}」,给绿衣游侠林恩写一封短信(40~70字)` +
+    `${deed ? `,可以提到他:${deed}` : ''}。语气符合身份,家常、真挚,可带一点小事相托或小牢骚。只输出信的正文。`,
+    null, 9000,
+  ).then((t) => { if (t && letter && letter.from === from) letter.text = t; });
+  toast('📮 罗莎那儿好像有你的一封信。', 3.5);
+}
+
 // 新的一天:换日、刷新每日限额/蘑菇/公告,报时
 function newDay() {
   calendar.day++;
@@ -3010,6 +3145,7 @@ function newDay() {
       (sp ? ` — 今日${sp.name}:${sp.desc}` : ''), sp ? 5.5 : 3.2);
     if (sp) startSpecialDay(sp.key);
     refreshProclaim();
+    if (!letter && Math.random() < 0.35) composeLetter();
     saveGame();
   }
 }
@@ -3288,6 +3424,7 @@ function saveGame() {
       kingRewarded: namedNPCs.find((n) => n.key === 'king')?.rewarded || false,
       ach: achUnlocked, stats, day: calendar.day, chron: chronicle, fday: festGrantedDay,
       wolf: frostfang.tamed, wolfFeed: frostfang.feed, lake: lakeBlessed, relic: player.relic,
+      chore: sideQuest.active ? sideQuest : null,
       herbs: player.herbs, venison: player.venison, lore: loreRead,
       weapon: player.weapon, weaponsOwned: player.weaponsOwned, armor: player.armor,
     }));
@@ -3317,6 +3454,7 @@ function loadGame() {
     festGrantedDay = s.fday || 0;
     frostfang.feed = s.wolfFeed || 0;
     player.relic = !!s.relic;
+    if (s.chore && s.chore.active) Object.assign(sideQuest, s.chore);
     if (s.lake) {
       lakeBlessed = true;
       // 无护甲存档:此处直接补上限;有护甲存档由下方护甲分支统一计算
@@ -3755,6 +3893,16 @@ function tryInteract() {
       }
       return;
     }
+    if (n.key === 'innkeep' && letter) {
+      const L = letter;
+      letter = null;
+      remember(`收到了${L.from}的一封信`);
+      openDialog([
+        '罗莎:(在围裙上擦了擦手,从兜里掏出一封信)喏,有人留给你的。',
+        `(${L.from}的信)${L.text}`,
+      ], null, { key: 'innkeep', name: '老板娘罗莎', desc: NPC_DESC_EN.innkeep, ent: n });
+      return;
+    }
     if (n.key === 'innkeep' && player.venison > 0) {
       const pay = player.venison * 5;
       openDialog([`罗莎:(眼睛一亮)新鲜鹿肉?!今晚炖肉管够了!${player.venison} 块,一共 ${pay} 金币,拿好!`]);
@@ -3805,6 +3953,8 @@ function tryInteract() {
         player.coins += pay;
         player.herbs = 0;
         sfx.coin();
+      } else if (player.coins >= 5 && !aiBusy.fortune) {
+        witchFortune(n);
       } else {
         openDialog([`玛尔戈:${EXTRA_NPCS.witch.lines[n.lineIdx++ % EXTRA_NPCS.witch.lines.length]}`], null,
           { key: null, name: '沼泽女巫玛尔戈', desc: NPC_DESC_EN.witch, ent: n });
@@ -3934,6 +4084,11 @@ function tryInteract() {
   if (dist2(player.pos.x, player.pos.z, NOTICE_POS.x, NOTICE_POS.z) < 6) {
     if (!proclaimText || !proclaimText.includes(`第 ${seasonDay()} 日`)) refreshProclaim();
     openDialog([proclaimText || composeProclaimOffline()]);
+    return;
+  }
+  // 村务板(无限支线)
+  if (dist2(player.pos.x, player.pos.z, CHORE_POS.x, CHORE_POS.z) < 6) {
+    choreBoard();
     return;
   }
   // 世界观铭文
@@ -5535,11 +5690,13 @@ function computePrompt() {
     }
     if (n.key === 'blacksmith') { promptText = '按 E 打开铁匠铺(武器/护甲)'; return; }
     if (n.key === 'trader' && !player.royalHorse) { promptText = '按 E 找马贩瑟尔玛(皇家骏马 80 金币)'; return; }
+    if (n.key === 'innkeep' && letter) { promptText = '按 E 取信(有人写给你的)'; return; }
     if (n.key === 'innkeep' && player.venison > 0) { promptText = `按 E 卖鹿肉 ×${player.venison}(每块 5 金币)`; return; }
     if (n.key === 'innkeep' && player.hp < player.maxHp) { promptText = '按 E 住店休息,回满生命(10 金币)'; return; }
     if (n.key === 'innkeep' && dayPhase() === 'night') { promptText = '按 E 住店过夜,睡到天亮(10 金币)'; return; }
     if (n.key === 'witch' && player.hp < player.maxHp) { promptText = '按 E 买回魂汤(8 金币)'; return; }
     if (n.key === 'witch' && player.herbs > 0) { promptText = `按 E 卖蘑菇 ×${player.herbs}(每朵 3 金币)`; return; }
+    if (n.key === 'witch' && player.coins >= 5) { promptText = '按 E 求一卦(5 金币,她真算得准)'; return; }
     if (n.key === 'innkeep' && player.drunkT <= 0) { promptText = '按 E 来一杯麦酒(2 金币)'; return; }
     if (n.key === 'king') {
       promptText = quest.idx >= missions.length && !n.rewarded ? '按 E 领取领主的重赏' : '按 E 谒见领主';
@@ -5591,6 +5748,12 @@ function computePrompt() {
   if (dist2(player.pos.x, player.pos.z, NOTICE_POS.x, NOTICE_POS.z) < 6) {
     mark(NOTICE_POS.x, NOTICE_POS.z, 2.2);
     promptText = '按 E 看今日王国公告';
+    return;
+  }
+  if (dist2(player.pos.x, player.pos.z, CHORE_POS.x, CHORE_POS.z) < 6) {
+    mark(CHORE_POS.x, CHORE_POS.z, 2.2);
+    promptText = !sideQuest.active ? '按 E 接一桩村务(无限)'
+      : choreReady() ? '按 E 交差领赏!' : `按 E 看村务进度(${sideQuest.giver})`;
     return;
   }
   for (const s of loreStones) {
@@ -6268,6 +6431,8 @@ window.__gtm = {
   frostfang, wildSpots, heavyAttack, togglePhoto, queueDream, damagePlayer, nearestSpot,
   trialRT, startTrial, prayAltar, rowTo, BOAT_PIER, BOAT_ISLE,
   enterDungeon, exitDungeon, takeRelic, inDungeon, DGN, FISH_SPOT_ISLE, openJournal,
+  sideQuest, choreBoard, choreProgress, CHORE_POS,
+  composeLetter, witchFortune, getLetter: () => letter,
   workspace, wsReport, tickWorkspace: () => { workspace.t = 0; updateWorkspace(0); },
   setIdle: (t) => { idleT = t; },
   getIdle: () => ({ idleT, idleCd }),
