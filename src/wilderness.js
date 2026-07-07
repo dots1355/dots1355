@@ -2,6 +2,7 @@
 // 128×128 一块,随玩家加载/卸载;同一坐标永远生成同样的内容(坐标哈希做种子)
 import * as THREE from 'three';
 import { lambert } from './entities.js';
+import { buildTree, buildPine, buildDeadTree, buildCactus, buildRock, buildBush } from './flora.js';
 
 export const CHUNK = 128;
 export const VIEW_R = 2;          // 加载半径(区块数)
@@ -58,59 +59,41 @@ export function wildRegionName(x, z) {
   return `${dir}·${BIOME_NAMES[biomeAt(x, z)]}`;
 }
 
-// ---- 植被/道具 ----
+// ---- 植被/道具(flora 库:共享几何/材质,区块卸载时不释放) ----
 function addTree(g, rng, x, z, biome, cols) {
-  const grp = new THREE.Group();
+  let built;
   if (biome === 'desert') {
-    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.3, 2 + rng(), 6),
-      lambert(0x3f8a4f, { roughness: 0.9 }));
-    trunk.position.y = 1.1;
-    trunk.castShadow = true;
-    grp.add(trunk);
+    built = rng() < 0.15 ? buildDeadTree(rng, { bark: 0x8a6f4d }) : buildCactus(rng);
   } else if (biome === 'snow') {
-    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.3, 1.4, 5), lambert(0x5a4632));
-    trunk.position.y = 0.7;
-    grp.add(trunk);
-    for (let k = 0; k < 3; k++) {
-      const c = new THREE.Mesh(new THREE.ConeGeometry(1.5 - k * 0.4, 1.4, 7),
-        lambert(k === 0 ? 0x2d6b3f : 0xdfe8ee, { roughness: 0.95 }));
-      c.position.y = 1.6 + k * 0.95;
-      c.castShadow = true;
-      grp.add(c);
-    }
-  } else {
-    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.34, 1.4, 5), lambert(0x6b4a2f));
-    trunk.position.y = 0.7;
-    grp.add(trunk);
-    if (rng() < 0.5) {
-      const s = new THREE.Mesh(new THREE.IcosahedronGeometry(1.5, 0), lambert(0x3f8a4f, { roughness: 0.95 }));
-      s.position.y = 2.3;
-      s.castShadow = true;
-      grp.add(s);
-    } else {
-      for (let k = 0; k < 2; k++) {
-        const c = new THREE.Mesh(new THREE.ConeGeometry(1.5 - k * 0.5, 1.6, 7), lambert(0x2d6b3f, { roughness: 0.95 }));
-        c.position.y = 1.7 + k * 1.1;
-        c.castShadow = true;
-        grp.add(c);
-      }
-    }
+    built = rng() < 0.85 ? buildPine(rng, { snow: true }) : buildDeadTree(rng, { bark: 0x5a5048 });
+  } else if (biome === 'forest') {
+    const roll = rng();
+    built = roll < 0.6 ? buildTree(rng, { leaf: 0x3d7a47 })
+      : roll < 0.9 ? buildPine(rng)
+      : buildBush(rng, { leaf: 0x3d7a47 });
+  } else { // plains
+    const roll = rng();
+    built = roll < 0.55 ? buildTree(rng, { leaf: 0x5a9a52 })
+      : roll < 0.8 ? buildBush(rng, { leaf: 0x6aa055 })
+      : buildPine(rng);
   }
+  const grp = built.group;
+  const sc = 0.85 + rng() * 0.5;
+  grp.scale.setScalar(sc);
+  grp.rotation.y = rng() * 6.28;
   grp.position.set(x, 0, z);
   g.add(grp);
-  const col = { x, z, r: 0.55 };
+  const col = { x, z, r: built.r * sc };
   colliders.circles.push(col);
   cols.push(col);
 }
 
 function addRock(g, rng, x, z, cols) {
-  const rock = new THREE.Mesh(new THREE.IcosahedronGeometry(0.6 + rng() * 1.1, 0),
-    lambert(0x77726c, { roughness: 0.95 }));
-  rock.position.set(x, 0.4, z);
-  rock.rotation.y = rng() * 3;
-  rock.castShadow = true;
-  g.add(rock);
-  const col = { x, z, r: 0.8 };
+  const built = buildRock(rng, { noMoss: false });
+  built.group.position.set(x, 0, z);
+  built.group.rotation.y = rng() * 3;
+  g.add(built.group);
+  const col = { x, z, r: built.r };
   colliders.circles.push(col);
   cols.push(col);
 }
@@ -288,8 +271,9 @@ function unloadChunk(key) {
   if (!c) return;
   scene.remove(c.group);
   c.group.traverse((o) => {
-    if (o.geometry) o.geometry.dispose();
-    if (o.material) o.material.dispose(); // lambert() 每次都是新材质,不释放会漏显存
+    // flora 库的几何/材质全场共享(userData.shared),不能释放;其余独占资源照常释放
+    if (o.geometry && !o.geometry.userData.shared) o.geometry.dispose();
+    if (o.material && !o.material.userData.shared) o.material.dispose();
   });
   for (const col of c.cols) {
     const i = colliders.circles.indexOf(col);

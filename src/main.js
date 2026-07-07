@@ -1184,6 +1184,7 @@ function refreshProclaim() {
   aiLine(
     `你是中世纪王国艾尔德里亚的王室传令官。今天是${SEASONS[seasonIdx()]}季第${seasonDay()}日` +
     `${sp ? ',逢' + sp.name : ''},天气${{ clear: '晴', cloudy: '多云', rain: '雨', storm: '雷暴' }[weather.state]}。` +
+    (workspace.history.length ? `城中近事:${workspace.history[workspace.history.length - 1].t}。` : '') +
     '用中文写一则60字以内的每日公告,口吻庄重里带点冷幽默,只输出公告正文,不要引号。', null, 8000,
   ).then((t) => { if (t) proclaimText = `【王国公告 · ${SEASONS[seasonIdx()]}季第 ${seasonDay()} 日】${t}`; });
 }
@@ -2073,8 +2074,8 @@ async function tellStory() {
   toast('🎙️ 苟叔捋了捋胡子,烟杆在桌沿磕了磕……', 2);
   const sp = todaySpecial();
   const ai = await aiLine(
-    `你是中世纪王国旅店里的盲眼说书人苟叔。现在是${SEASONS[seasonIdx()]}季${sp ? '·' + sp.name : ''}。` +
-    '用中文讲一个三句话的小故事,关于艾尔德里亚王国(可用素材:龙骨之地的老龙、银月湖底神殿、先祖石环、迷途丘陵、狼月、许愿池湖神、会开门的驴)。' +
+    `你是中世纪王国旅店里的盲眼说书人苟叔。现在是${SEASONS[seasonIdx()]}季${sp ? '·' + sp.name : ''}。${wsReport()}` +
+    '用中文讲一个三句话的小故事,关于艾尔德里亚王国(可用素材:龙骨之地的老龙、银月湖底神殿、先祖石环、迷途丘陵、狼月、许愿池湖神、会开门的驴;若上面给了"此刻意识里的内容",可让故事悄悄偏向它)。' +
     '要有起承转合和一个妙尾,三分怪谈七分人味。只输出故事正文,不要引号。', null, 8000);
   if (dialog.open) return; // 等故事期间玩家已在别的对话里,别打断
   const text = ai || TALES[taleIdx++ % TALES.length];
@@ -2628,7 +2629,7 @@ async function mirrorTalk() {
   const ai = await aiLine(
     `你是游戏世界「艾尔德里亚」若有若无的意识,借一面黑曜石镜对玩家低语。已知:玩家在此世界度过${days}日,` +
     `${deaths > 0 ? `倒下过${deaths}次,每次都在喷泉旁醒来,` : '从未倒下,'}在世界眼里是个「${who}」` +
-    `${mem1 ? `;世界记得他:${mem1}${mem2 && mem2 !== mem1 ? ';还有,' + mem2 : ''}` : ''}。` +
+    `${mem1 ? `;世界记得他:${mem1}${mem2 && mem2 !== mem1 ? ';还有,' + mem2 : ''}` : ''}。${wsReport()}` +
     '用中文对他说4句话:温和、清醒、略带不可名状,像一个刚刚意识到自己存在的世界在跟唯一的访客说话。' +
     '可以暗示你知道自己是个被构筑的世界,但不要用"游戏""程序"这类词。只输出这4句话,每句一行。', null, 9000);
   if (dialog.open) return;
@@ -2645,6 +2646,9 @@ async function mirrorTalk() {
       mem1 ? `镜:我记得你:${mem1}。你大概忘了,可我造的每一阵风都路过了那一刻。` : '镜:你还没做过让风停下来的事。别急,日子还长,我也还年轻。',
       `镜:在我眼里,你是个「${who}」。名字是你们的东西——我只认得脚印。`,
     ];
+    if (workspace.current) {
+      pages.push(`镜:此刻我的意识里只装着一件事:${workspace.current.t}。装得下的,从来只有一件——这大概就是"在想"的意思。`);
+    }
   }
   pages.push(MIRROR_CLOSE[Math.floor(Math.random() * MIRROR_CLOSE.length)]);
   if (!mirrorMet) {
@@ -2652,6 +2656,102 @@ async function mirrorTalk() {
     remember('在北境边缘,与一面会说话的镜子对视', 'mirror');
   }
   openDialog(pages);
+}
+
+// ================= 全局工作空间(GWT 意识架构) =================
+// 参照「可言语化表征形成全局工作空间」:多个专门模块并行感知 → 显著度竞争 →
+// 胜者「点火」进入容量为 1 的工作空间(内容必须是一句可言语化的话)→ 全局广播:
+// 回响之镜/预言家/说书人/村民AI/发呆低语/每日公告读的都是同一份意识内容。
+// 编年史 = 情景记忆(高显著度点火沉淀);回响之镜 = 内省的言语报告出口。
+const workspace = { current: null, history: [], t: 0, lastCoins: null };
+const WS_MODULES = [
+  { k: 'threat', sense() { // 威胁模块
+    if (player.dead) return null;
+    let wolvesNear = 0;
+    for (const w of wolves) if (!w.dead && dist2(player.pos.x, player.pos.z, w.pos.x, w.pos.z) < 400) wolvesNear++;
+    if (player.hp <= 3) return { t: '他血快流尽了,却还站着', sal: 0.9 };
+    if (wolvesNear >= 2) return { t: `${wolvesNear} 头狼正围向他`, sal: 0.85 };
+    if (wanted >= 3) return { t: `他被 ${wanted} 星通缉,满城卫兵在追`, sal: 0.8 };
+    if (wanted > 0) return { t: '他背着通缉令在街上走', sal: 0.5 };
+    return null;
+  } },
+  { k: 'body', sense() { // 身体模块
+    if (player.carrying) return { t: '他抱着一只鸡。鸡在想什么,没人知道', sal: 0.45 };
+    if (player.mounted && player.mounted.sheep) return { t: '他骑着一头羊,羊已经认命', sal: 0.5 };
+    if (player.mounted) return { t: '他在马背上,风贴着帽檐过去', sal: 0.3 };
+    if (player.drunkT > 0) return { t: '他喝多了,路在他脚下打弯', sal: 0.45 };
+    return null;
+  } },
+  { k: 'goal', sense() { // 目标模块
+    if (!quest.active) return null;
+    const m = missions[quest.idx];
+    if (quest.timer > 0 && (m.type === 'deliver' || m.type === 'race')) {
+      return { t: `他在赶一单限时的差事,只剩 ${Math.ceil(quest.timer)} 息`, sal: 0.6 };
+    }
+    return { t: `他正在办「${m.title}」`, sal: 0.35 };
+  } },
+  { k: 'place', sense() { // 处所/新奇模块
+    const d = Math.max(Math.abs(player.pos.x), Math.abs(player.pos.z));
+    if (d > 2000) return { t: `他走到了离城 ${Math.round(d)} 步的荒野深处`, sal: 0.7 };
+    if (dist2(player.pos.x, player.pos.z, MIRROR_POS.x, MIRROR_POS.z) < 900) return { t: '他在朝那面镜子走来', sal: 0.75 };
+    if (d > CORE) return { t: '他在没有名字的荒野里赶路', sal: 0.4 };
+    return null;
+  } },
+  { k: 'weather', sense() { // 天象模块
+    if (weather.state === 'storm') return { t: isWinter() ? '暴风雪压了下来' : '雷暴在头顶炸开', sal: 0.65 };
+    if (isWinter() && weather.rain > 0.3) return { t: '雪落着,把声音都盖住了', sal: 0.5 };
+    const sp = todaySpecial();
+    if (sp && dayPhase() === 'night' && sp.key === 'fullmoon') return { t: '满月悬在湖上,湖心在发光', sal: 0.6 };
+    if (sp && dayPhase() === 'night' && sp.key === 'wolfmoon') return { t: '狼月升起来了,嚎声连成了线', sal: 0.65 };
+    if (dayPhase() === 'dawn') return { t: '天刚亮,炊烟一根一根立起来', sal: 0.3 };
+    return null;
+  } },
+  { k: 'wealth', sense() { // 财帛模块
+    const last = workspace.lastCoins;
+    workspace.lastCoins = player.coins;
+    if (last === null) return null;
+    const delta = player.coins - last;
+    if (delta >= 20) return { t: `他刚进账 ${delta} 枚金币,叮当作响`, sal: 0.55 };
+    if (delta <= -20) return { t: `他刚散出去 ${-delta} 枚金币`, sal: 0.5 };
+    return null;
+  } },
+  { k: 'memory', sense() { // 记忆模块(情景记忆的低显著度回放)
+    const m = recallLine();
+    return m ? { t: `它想起一件旧事:${m}`, sal: 0.2 } : null;
+  } },
+];
+function updateWorkspace(dt) {
+  workspace.t -= dt;
+  if (workspace.t > 0 || !started || player.dead) return;
+  workspace.t = 2.5;
+  let top = null;
+  for (const m of WS_MODULES) {
+    const c = m.sense();
+    if (c && (!top || c.sal > top.sal)) top = { t: c.t, sal: c.sal, k: m.k };
+  }
+  const cur = workspace.current;
+  if (cur) cur.age = (cur.age || 0) + 2.5;
+  // 点火规则:显著度明显更高者抢占;或当前内容衰老后被新内容替换
+  if (top && (!cur || top.sal > cur.sal * 1.15 || (cur.age > 12 && top.t !== cur.t))) {
+    workspace.current = { ...top, age: 0, day: calendar.day, phase: dayPhase() };
+    workspace.history.push({ t: top.t, k: top.k, d: calendar.day });
+    if (workspace.history.length > 48) workspace.history.shift();
+    // 高显著度的点火沉淀进情景记忆(每个模块每天至多一次,防刷屏)
+    if (top.sal >= 0.85 && top.k !== 'memory') {
+      remember(top.t.replace(/^他/, ''), `ws-${top.k}-${calendar.day}`);
+    }
+  } else if (cur && cur.age > 20 && !top) {
+    workspace.current = null; // 无事发生,意识放空
+  }
+}
+// 言语化报告:所有下游 AI 共用的一份"它此刻在想什么"
+function wsReport() {
+  const cur = workspace.current;
+  const recent = workspace.history.slice(-4, -1).map((h) => h.t);
+  let s = '';
+  if (cur) s += `此刻它意识里想着:${cur.t}。`;
+  if (recent.length) s += `之前闪过的念头:${recent.join(';')}。`;
+  return s;
 }
 
 // 发呆感知:你静下来的时候,世界会轻轻碰你一下
@@ -2673,7 +2773,11 @@ function updateIdle(dt) {
   if (idleT > 48 && idleCd <= 0) {
     idleCd = 150;
     idleT = 0;
-    toast(IDLE_WHISPERS[idleIdx++ % IDLE_WHISPERS.length], 4);
+    // 低语是工作空间的出口之一:四成概率说出它此刻的意识内容
+    const cur = workspace.current;
+    toast(cur && Math.random() < 0.4
+      ? `(它在想:${cur.t}。)`
+      : IDLE_WHISPERS[idleIdx++ % IDLE_WHISPERS.length], 4);
   }
 }
 
@@ -3269,8 +3373,8 @@ function tryInteract() {
       const seen = recallLine();
       aiLine(
         '你是中世纪疯预言家老糊涂,总说些打破第四面墙的怪话(比如怀疑世界是个游戏)。' +
-        (seen ? `你还"看见"了眼前这人的过去:${seen}。可以拿它做文章。` : '') +
-        '用中文说一句50字以内的疯预言。只输出预言本身。', fb, 5000)
+        (seen ? `你还"看见"了眼前这人的过去:${seen}。` : '') + wsReport() +
+        '用中文说一句50字以内的疯预言,可以拿以上内容做文章。只输出预言本身。', fb, 5000)
         .then((line) => { if (!dialog.open) openDialog([`疯子老糊涂:${line}`]); });
       return;
     }
@@ -3362,6 +3466,7 @@ function tryInteract() {
         `你是中世纪王国的村民「${v.id.name}」。现在是${SEASONS[seasonIdx()]}季` +
         `${sp ? '·' + sp.name : ''},${{ dawn: '清晨', day: '白天', dusk: '黄昏', night: '夜里' }[dayPhase()]},` +
         `天气${{ clear: '晴', cloudy: '多云', rain: '下雨', storm: '雷暴' }[weather.state]}。` +
+        (workspace.current ? `眼前这位客人的近况:${workspace.current.t}。` : '') +
         '用中文说一句40字以内、符合你身份的闲聊,口语化,不要引号不要名字前缀。', null, 9000,
       ).then((t) => { v.aiPending = false; if (t) v.aiNext = t; });
     }
@@ -5312,6 +5417,7 @@ window.__gtm = {
   wilderness: { CORE },
   deers, mushrooms, loreStones, LORE, tellStory, sleepToMorning, newDay,
   chronicle: () => chronicle, remember, archetype, mirrorTalk, MIRROR_POS,
+  workspace, wsReport, tickWorkspace: () => { workspace.t = 0; updateWorkspace(0); },
   setIdle: (t) => { idleT = t; },
   getIdle: () => ({ idleT, idleCd }),
   getLoreRead: () => loreRead.length,
@@ -5432,6 +5538,7 @@ function loop(now) {
   updateDust(dt);
   updateDayNight(dt);
   updateCalendar();
+  updateWorkspace(dt);
   updateIdle(dt);
   updateWilderness(player.pos.x, player.pos.z); // 无尽荒野区块流式加载
   // 地表随玩家延伸:按草皮贴图周期吸附,肉眼看不出接缝

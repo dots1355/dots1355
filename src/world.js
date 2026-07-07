@@ -1,5 +1,6 @@
 // 中世纪开放世界构建:城墙王国、城堡主堡、村庄、集市、风车、农田、森林、湖泊、盗贼营地
 import * as THREE from 'three';
+import { buildTree, buildPine, buildDeadTree, buildCactus, buildRock, buildBush } from './flora.js';
 import { lambert } from './entities.js';
 import { makeTextures } from './textures.js';
 
@@ -296,39 +297,14 @@ export function buildWorld(scene) {
     return geo;
   }
   function tree(x, z, pine = false) {
-    const g = new THREE.Group();
     const scale = 0.85 + Math.random() * 0.5;
-    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.38, pine ? 1.7 : 1.4, 7), woodMat);
-    trunk.position.y = 0.7;
-    trunk.castShadow = true;
-    g.add(trunk);
-    if (pine) {
-      const shade = 0.85 + Math.random() * 0.3;
-      for (let i = 0; i < 3; i++) {
-        const c = new THREE.Mesh(jitterGeo(new THREE.ConeGeometry(1.7 - i * 0.42, 1.7, 9), 0.16),
-          lambert(new THREE.Color(0x2d6b3f).multiplyScalar(shade), { roughness: 0.95 }));
-        c.position.y = 1.8 + i * 1.05;
-        c.castShadow = true;
-        g.add(c);
-      }
-    } else {
-      const shade = 0.85 + Math.random() * 0.35;
-      const s = new THREE.Mesh(jitterGeo(new THREE.IcosahedronGeometry(1.6, 1), 0.34),
-        lambert(new THREE.Color(0x3f8a4f).multiplyScalar(shade), { roughness: 0.95 }));
-      s.position.y = 2.4;
-      s.castShadow = true;
-      g.add(s);
-      const s2 = new THREE.Mesh(jitterGeo(new THREE.IcosahedronGeometry(1.05, 1), 0.26),
-        lambert(new THREE.Color(0x357a44).multiplyScalar(shade), { roughness: 0.95 }));
-      s2.position.set(0.85, 1.9, 0.4);
-      s2.castShadow = true;
-      g.add(s2);
-    }
+    const built = pine ? buildPine(Math.random) : (Math.random() < 0.12 ? buildBush(Math.random) : buildTree(Math.random));
+    const g = built.group;
     g.scale.setScalar(scale);
     g.position.set(x, 0, z);
     g.rotation.y = Math.random() * Math.PI * 2;
     scene.add(g);
-    circle(x, z, 0.6 * scale);
+    circle(x, z, built.r * scale);
     feat('tree', x, z, 1.5, 1.5);
   }
   // 西部森林
@@ -748,10 +724,10 @@ export function buildWorld(scene) {
     // 断口碎石
     for (let i = 0; i < 7; i++) {
       const a = Math.random() * Math.PI * 2;
-      const rock = new THREE.Mesh(new THREE.IcosahedronGeometry(0.5 + Math.random() * 0.7, 0), rockMat);
-      rock.position.set(80 + Math.cos(a) * (4.5 + Math.random() * 3), 0.4, -120 + Math.sin(a) * (4.5 + Math.random() * 3));
-      rock.castShadow = true;
-      scene.add(rock);
+      const rk = buildRock(Math.random);
+      rk.group.scale.setScalar(0.7);
+      rk.group.position.set(80 + Math.cos(a) * (4.5 + Math.random() * 3), 0, -120 + Math.sin(a) * (4.5 + Math.random() * 3));
+      scene.add(rk.group);
     }
     circle(80, -120, 4.2);
     feat('tower', 80, -120, 7, 7);
@@ -770,16 +746,10 @@ export function buildWorld(scene) {
       scene.add(stone);
     }
     // 枯树
-    const deadTrunk = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.32, 3.4, 6), lambert(0x4a4038, { roughness: 1 }));
-    deadTrunk.position.set(-34, 1.7, -112);
-    deadTrunk.castShadow = true;
-    scene.add(deadTrunk);
-    for (const [bx, by, bz, rot] of [[0.7, 2.9, 0, 0.8], [-0.6, 2.4, 0.2, -0.9], [0.2, 3.3, -0.4, 0.4]]) {
-      const branch = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.09, 1.4, 5), lambert(0x4a4038, { roughness: 1 }));
-      branch.position.set(-34 + bx, by, -112 + bz);
-      branch.rotation.z = rot;
-      scene.add(branch);
-    }
+    const dead = buildDeadTree(Math.random);
+    dead.group.scale.setScalar(1.4);
+    dead.group.position.set(-34, 0, -112);
+    scene.add(dead.group);
     circle(-34, -112, 0.5);
     feat('tent', -40, -120, 18, 14);
   }
@@ -936,22 +906,11 @@ export function buildWorld(scene) {
   // ---- 琥珀荒漠(东南) ----
   zoneDisc(300, 190, 92, 0xd9c48f, 'sand');
   function cactus(x, z) {
-    const g = new THREE.Group();
-    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.32, 2.2, 7), lambert(0x3f8a4f, { roughness: 0.9 }));
-    trunk.position.y = 1.1;
-    trunk.castShadow = true;
-    g.add(trunk);
-    for (const s of [-1, 1]) {
-      if (Math.random() < 0.7) {
-        const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.18, 1, 6), lambert(0x357a44, { roughness: 0.9 }));
-        arm.position.set(0.45 * s, 1.3 + Math.random() * 0.5, 0);
-        arm.rotation.z = -s * 0.5;
-        g.add(arm);
-      }
-    }
-    g.position.set(x, 0, z);
-    scene.add(g);
-    circle(x, z, 0.5);
+    const built = buildCactus(Math.random);
+    built.group.position.set(x, 0, z);
+    built.group.rotation.y = Math.random() * 6.28;
+    scene.add(built.group);
+    circle(x, z, built.r);
     feat('cactus', x, z, 1, 1);
   }
   for (let i = 0; i < 14; i++) {
@@ -1006,12 +965,11 @@ export function buildWorld(scene) {
   for (let i = 0; i < 14; i++) {
     const a = Math.random() * 6.28, rr = 10 + Math.random() * 60;
     const bx = -380 + Math.cos(a) * rr, bz = -40 + Math.sin(a) * rr;
-    const burnt = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.28, 2.4 + Math.random(), 5),
-      lambert(0x211d1a, { roughness: 1 }));
-    burnt.position.set(bx, 1.2, bz);
-    burnt.rotation.z = (Math.random() - 0.5) * 0.4;
-    burnt.castShadow = true;
-    scene.add(burnt);
+    const burnt = buildDeadTree(Math.random, { bark: 0x211d1a });
+    burnt.group.scale.setScalar(0.8 + Math.random() * 0.5);
+    burnt.group.position.set(bx, 0, bz);
+    burnt.group.rotation.y = Math.random() * 6.28;
+    scene.add(burnt.group);
     circle(bx, bz, 0.35);
     feat('tree', bx, bz, 1, 1);
   }
@@ -1090,18 +1048,10 @@ export function buildWorld(scene) {
   for (let i = 0; i < 10; i++) {
     const a = Math.random() * 6.28, rr = 10 + Math.random() * 45;
     const sx = -260 + Math.cos(a) * rr, sz = -150 + Math.sin(a) * rr;
-    const g2 = new THREE.Group();
-    const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.3, 1.4, 6), woodMat);
-    trunk.position.y = 0.7;
-    g2.add(trunk);
-    for (let k = 0; k < 3; k++) {
-      const c2 = new THREE.Mesh(new THREE.ConeGeometry(1.5 - k * 0.4, 1.5, 8),
-        lambert(k === 0 ? 0x2d6b3f : 0xdfe8ee, { roughness: 0.95 }));
-      c2.position.y = 1.7 + k * 1.0;
-      c2.castShadow = true;
-      g2.add(c2);
-    }
+    const g2 = buildPine(Math.random, { snow: true }).group;
+    g2.scale.setScalar(0.9 + Math.random() * 0.4);
     g2.position.set(sx, 0, sz);
+    g2.rotation.y = Math.random() * 6.28;
     scene.add(g2);
     circle(sx, sz, 0.55);
     feat('tree', sx, sz, 1.5, 1.5);
