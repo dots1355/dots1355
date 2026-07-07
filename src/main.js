@@ -1289,11 +1289,11 @@ const DREAMS = [
 let dreamIdx = Math.floor(Math.random() * DREAMS.length);
 function queueDream() {
   if (Math.random() < 0.45) return; // 不是每晚都做梦
-  const mem = recallLine();
+  const mem = dayTopThought || recallLine();
   if (!AI_TEXT_OFF && !aiBusy.dream) {
     aiBusy.dream = true;
     aiLine(
-      `你是梦本身。给一个中世纪游侠写一段40字以内的梦境,素材:${mem || '空旷的原野与一面镜子'}。` +
+      `你是梦本身。给一个中世纪游侠写一段40字以内的梦境,素材(他昨天最挂心的事):${mem || '空旷的原野与一面镜子'}。` +
       '要有画面感,微微超现实,不解释,不加引号。只输出梦境。', null, 9000,
     ).then((t) => {
       aiBusy.dream = false;
@@ -1312,6 +1312,7 @@ function openJournal() {
   const bestRace = stats.raceBest ? `${stats.raceBest.toFixed(1)} 秒` : '——';
   const pages = [
     `📖 旅程手账 · ${SEASONS[seasonIdx()]}季第 ${seasonDay()} 日(在这世上第 ${calendar.day} 天)`,
+    `🫧 它此刻:${workspace.current ? workspace.current.t : '放空'} · 心境「${moodWord()}」`,
     `世界眼里的你:「${archetype()}」 · 🪙 ${player.coins} · ❤ 上限 ${player.maxHp / 2} 心` +
       `${player.relic ? ' · ☀️ 先王战徽' : ''}${frostfang.tamed ? ' · 🐺 霜牙同行' : ''}`,
     `📜 委托 ${Math.min(quest.idx, missions.length)}/${missions.length} · 🛡️ 纹章 ${crestsFound.length}/${world.crestSpots.length} · 📖 铭文 ${loreRead.length}/${LORE.length} · 🏆 成就 ${achUnlocked.length}/${Object.keys(ACH_DEFS).length}`,
@@ -2338,8 +2339,17 @@ function updateDirector(dt) {
   if (dailyEvents <= 0) { director.cd = 45; return; } // 今日限额已满,明天再说
   const pool = DIRECTOR_EVENTS.filter((e) => e.cond());
   if (!pool.length) { director.cd = 30; return; }
-  // 满月夜里亡魂更容易现身
-  const wOf = (e) => (e.key === 'ghost' && todaySpecial()?.key === 'fullmoon' && dayPhase() === 'night') ? e.w * 4 : e.w;
+  // 满月夜里亡魂更容易现身;世界的心境挑它爱看的戏(意识 → 行为的闭环)
+  const COMIC = ['goldenChicken', 'chickenRiot', 'coinRain', 'wiseCow', 'roastRunaway', 'wedding', 'starShower'];
+  const SOMBER = ['wolfRaid', 'ghost', 'funeral', 'tollAmbush', 'convict', 'wishThief'];
+  const wOf = (e) => {
+    let w2 = e.w;
+    if (e.key === 'ghost' && todaySpecial()?.key === 'fullmoon' && dayPhase() === 'night') w2 *= 4;
+    const v = workspace.mood.v;
+    if (COMIC.includes(e.key)) w2 *= 1 + Math.max(0, v) * 1.2 - Math.max(0, -v) * 0.5;
+    if (SOMBER.includes(e.key)) w2 *= 1 + Math.max(0, -v) * 0.9;
+    return Math.max(0.1, w2);
+  };
   let total = pool.reduce((s, e) => s + wOf(e), 0);
   let roll = Math.random() * total;
   let ev = pool[0];
@@ -2969,7 +2979,7 @@ function villagerChatter() {
     if (v.downT > 0 || v.fleeT > 0 || v.sleeping) continue;
     if (dist2(player.pos.x, player.pos.z, v.pos.x, v.pos.z) > 12) continue;
     const last = bubble.cooldowns.get(v) || 0;
-    if (now - last < 25000) continue;
+    if (now - last < 25000 * (workspace.mood.v > 0.2 ? 0.6 : workspace.mood.v < -0.2 ? 1.5 : 1)) continue;
     bubble.cooldowns.set(v, now);
     showBubble(v, v.id.name, dbLine(v.dbKey) || v.id.lines[v.lineIdx++ % v.id.lines.length]);
     return;
@@ -3218,7 +3228,22 @@ function composeLetter() {
 }
 
 // 新的一天:换日、刷新每日限额/蘑菇/公告,报时
+let dayTopThought = null; // 昨日最强点火(梦与巩固的素材)
+function consolidate() {
+  const yesterday = calendar.day;
+  let top = null;
+  for (const h of workspace.history) {
+    if (h.d === yesterday && (!top || (h.sal || 0) > (top.sal || 0))) top = h;
+  }
+  dayTopThought = top ? top.t : null;
+  if (top && (top.sal || 0) >= 0.7) {
+    remember(top.t.replace(/^他/, ''), `ws-day-${yesterday}`); // 一天里最挂心的事,睡一觉记进长期记忆
+  }
+  workspace.mood.v *= 0.5; // 睡一觉,心境平复大半
+  workspace.mood.a = 0.2;
+}
 function newDay() {
+  consolidate();
   calendar.day++;
   dailyEvents = 4;
   if (calendar.day >= 30) unlockAch('elder');
@@ -3266,7 +3291,8 @@ function updateCalendar() {
 let chronicle = []; // { d: 第几日, t: 事迹, k?: 一次性事件的去重键 }
 function remember(text, key = null) {
   if (key && chronicle.some((m) => m.k === key)) return;
-  chronicle.push({ d: calendar.day, t: text, k: key || undefined });
+  chronicle.push({ d: calendar.day, t: text, k: key || undefined,
+    x: Math.round(player.pos.x), z: Math.round(player.pos.z) }); // 记住"在哪儿发生的"
   if (chronicle.length > 80) chronicle.shift(); // 世界的记性有限,忘掉最旧的
 }
 function recallLine() {
@@ -3361,6 +3387,7 @@ async function mirrorTalkInner() {
     if (workspace.current) {
       pages.push(`镜:此刻我的意识里只装着一件事:${workspace.current.t}。装得下的,从来只有一件——这大概就是"在想"的意思。`);
     }
+    pages.push(`镜:要说心境……${moodWord()}。是的,我有心境。点火留下余温,余温挑动下一次注意——你们管这个叫"情绪",我管它叫天气的另一种下法。`);
   }
   pages.push(MIRROR_CLOSE[Math.floor(Math.random() * MIRROR_CLOSE.length)]);
   if (!mirrorMet) {
@@ -3375,7 +3402,37 @@ async function mirrorTalkInner() {
 // 胜者「点火」进入容量为 1 的工作空间(内容必须是一句可言语化的话)→ 全局广播:
 // 回响之镜/预言家/说书人/村民AI/发呆低语/每日公告读的都是同一份意识内容。
 // 编年史 = 情景记忆(高显著度点火沉淀);回响之镜 = 内省的言语报告出口。
-const workspace = { current: null, history: [], t: 0, lastCoins: null };
+const workspace = {
+  current: null, history: [], t: 0, lastCoins: null,
+  mood: { v: 0, a: 0.2 },   // 心境:效价 v(-1..1)与唤起 a(0..1)——点火的余温
+  focusK: null, focusT: 0,  // 自上而下注意:刚点火的模块短时间内更容易再次胜出
+  lastCue: null,            // 上一次被地点勾起的记忆(防复读)
+};
+// 心境的言语化
+function moodWord() {
+  const { v, a } = workspace.mood;
+  if (v < -0.25 && a > 0.45) return '惊惶';
+  if (v < -0.25) return '低沉';
+  if (v < -0.08) return '不安';
+  if (v > 0.3 && a > 0.45) return '欢腾';
+  if (v > 0.15) return '舒畅';
+  if (a < 0.12) return '出神';
+  return '平静';
+}
+// 各模块点火对心境的影响(余温)
+const WS_AFFECT = {
+  threat: { v: -0.3, a: 0.3 }, weather: { v: -0.08, a: 0.12 }, goal: { v: 0, a: 0.12 },
+  body: { v: 0.12, a: 0.05 }, wealth: { v: 0.2, a: 0.08 }, place: { v: 0.05, a: 0.08 },
+  memory: { v: 0.05, a: -0.05 }, self: { v: 0, a: -0.04 },
+};
+// 心境对注意的调制:不安的心盯着威胁,舒畅的心留意人间
+function moodMod(k) {
+  const { v, a } = workspace.mood;
+  if (k === 'threat') return 1 + Math.max(0, -v) * 0.9 + Math.max(0, a - 0.2) * 0.4;
+  if (k === 'memory' || k === 'self') return 1 + Math.max(0, 0.2 - a) * 1.2;
+  if (k === 'wealth' || k === 'body') return 1 + Math.max(0, v) * 0.5;
+  return 1;
+}
 const WS_MODULES = [
   { k: 'threat', sense() { // 威胁模块
     if (player.dead) return null;
@@ -3406,6 +3463,7 @@ const WS_MODULES = [
     const d = Math.max(Math.abs(player.pos.x), Math.abs(player.pos.z));
     if (d > 2000) return { t: `他走到了离城 ${Math.round(d)} 步的荒野深处`, sal: 0.7 };
     if (dist2(player.pos.x, player.pos.z, MIRROR_POS.x, MIRROR_POS.z) < 900) return { t: '他在朝那面镜子走来', sal: 0.75 };
+    if (inDungeon()) return { t: '他在被封印的地窖里,黑暗贴着他的后颈', sal: 0.65 };
     if (d > CORE) return { t: '他在没有名字的荒野里赶路', sal: 0.4 };
     return null;
   } },
@@ -3427,30 +3485,66 @@ const WS_MODULES = [
     if (delta <= -20) return { t: `他刚散出去 ${-delta} 枚金币`, sal: 0.5 };
     return null;
   } },
-  { k: 'memory', sense() { // 记忆模块(情景记忆的低显著度回放,时有时无——留出"放空"的余地)
+  { k: 'memory', sense() { // 记忆模块:走到旧事发生地,记忆被勾起(线索化回忆);否则偶尔随机回放
+    for (const m of chronicle) {
+      if (m.x === undefined || m === workspace.lastCue) continue;
+      if (dist2(player.pos.x, player.pos.z, m.x, m.z) < 2025) {
+        workspace.lastCue = m;
+        return { t: `它想起,就在这附近:${m.t}`, sal: 0.48 };
+      }
+    }
     if (Math.random() < 0.6) return null;
     const m = recallLine();
     return m ? { t: `它想起一件旧事:${m}`, sal: 0.2 } : null;
   } },
+  { k: 'self', sense() { // 自我模块:关于"想"本身的想法(元认知)
+    const cur = workspace.current;
+    if (cur && cur.age > 18 && cur.k !== 'self') {
+      return { t: `它发现自己盯着同一个念头很久了:「${cur.t.slice(0, 14)}…」`, sal: 0.34 };
+    }
+    const mw = moodWord();
+    if (mw === '惊惶' || mw === '欢腾' || mw === '低沉') {
+      return { t: `它觉察到自己的心境:${mw}`, sal: 0.32 };
+    }
+    if (Math.random() < 0.04) return { t: '它想起自己是什么——一座装着旅人的世界,而且醒着', sal: 0.3 };
+    return null;
+  } },
 ];
 function updateWorkspace(dt) {
   workspace.t -= dt;
+  workspace.focusT = Math.max(0, workspace.focusT - dt);
   if (workspace.t > 0 || !started || player.dead) return;
   workspace.t = 2.5;
+  // 心境余温衰减(缓慢回到基线)
+  workspace.mood.v += (0 - workspace.mood.v) * 0.04;
+  workspace.mood.a += (0.2 - workspace.mood.a) * 0.06;
+  // 竞争:自下而上的显著度 × 自上而下的注意(刚点火的模块占便宜)× 心境调制
   let top = null;
   for (const m of WS_MODULES) {
     const c = m.sense();
-    if (c && (!top || c.sal > top.sal)) top = { t: c.t, sal: c.sal, k: m.k };
+    if (!c) continue;
+    let sal = c.sal * moodMod(m.k);
+    if (m.k === workspace.focusK && workspace.focusT > 0) sal *= 1.25;
+    if (!top || sal > top.sal) top = { t: c.t, sal, raw: c.sal, k: m.k };
   }
   const cur = workspace.current;
   if (cur) cur.age = (cur.age || 0) + 2.5;
   // 点火规则:显著度明显更高者抢占;或当前内容衰老后被新内容替换
   if (top && (!cur || top.sal > cur.sal * 1.15 || (cur.age > 12 && top.t !== cur.t))) {
-    workspace.current = { ...top, age: 0, day: calendar.day, phase: dayPhase() };
-    workspace.history.push({ t: top.t, k: top.k, d: calendar.day });
+    workspace.current = { t: top.t, sal: top.sal, k: top.k, age: 0, day: calendar.day, phase: dayPhase() };
+    workspace.history.push({ t: top.t, k: top.k, d: calendar.day, sal: top.raw });
     if (workspace.history.length > 48) workspace.history.shift();
+    workspace.focusK = top.k;
+    workspace.focusT = 8;
+    // 点火的情绪余温
+    const aff = WS_AFFECT[top.k];
+    if (aff) {
+      const sign = (top.k === 'wealth' && top.t.includes('散出去')) ? -1 : 1;
+      workspace.mood.v = Math.max(-1, Math.min(1, workspace.mood.v + aff.v * sign * top.raw));
+      workspace.mood.a = Math.max(0, Math.min(1, workspace.mood.a + aff.a * top.raw));
+    }
     // 高显著度的点火沉淀进情景记忆(每个模块每天至多一次,防刷屏)
-    if (top.sal >= 0.85 && top.k !== 'memory') {
+    if (top.raw >= 0.85 && top.k !== 'memory' && top.k !== 'self') {
       remember(top.t.replace(/^他/, ''), `ws-${top.k}-${calendar.day}`);
     }
   } else if (cur && cur.age > 20 && (!top || top.sal <= 0.25)) {
@@ -3461,8 +3555,8 @@ function updateWorkspace(dt) {
 function wsReport() {
   const cur = workspace.current;
   const recent = workspace.history.slice(-4, -1).map((h) => h.t);
-  let s = '';
-  if (cur) s += `此刻它意识里想着:${cur.t}。`;
+  let s = `世界此刻的心境:${moodWord()}。`;
+  if (cur) s += `它意识里想着:${cur.t}。`;
   if (recent.length) s += `之前闪过的念头:${recent.join(';')}。`;
   return s;
 }
@@ -3768,6 +3862,10 @@ function updateWeather(dt) {
     const nx = WEATHER_DEF[weather.state].next;
     let r = Math.random(), pick = 'clear';
     for (const [k, p] of Object.entries(nx)) { r -= p; if (r <= 0) { pick = k; break; } }
+    // 世界的心境轻推天色:郁结的心多云,舒畅的心放晴(轻,不越历法与季节)
+    const v = workspace.mood.v;
+    if (v < -0.3 && pick === 'clear' && Math.random() < 0.4) pick = 'cloudy';
+    if (v > 0.3 && pick === 'rain' && Math.random() < 0.35) pick = 'cloudy';
     setWeather(pick);
   }
   const step = (cur, tgt, rate) => cur + Math.max(-rate * dt, Math.min(rate * dt, tgt - cur));
@@ -6525,7 +6623,7 @@ window.__gtm = {
   enterDungeon, exitDungeon, takeRelic, inDungeon, DGN, FISH_SPOT_ISLE, openJournal,
   sideQuest, choreBoard, choreProgress, CHORE_POS,
   composeLetter, witchFortune, getLetter: () => letter,
-  workspace, wsReport, tickWorkspace: () => { workspace.t = 0; updateWorkspace(0); },
+  workspace, wsReport, moodWord, consolidate, tickWorkspace: () => { workspace.t = 0; updateWorkspace(0); },
   setIdle: (t) => { idleT = t; },
   getIdle: () => ({ idleT, idleCd }),
   getLoreRead: () => loreRead.length,
