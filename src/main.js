@@ -695,6 +695,7 @@ function arrowHitEntities(a) {
     b.hp -= dmg; sfx.hit(); hitFX(b, 0.4); showDamage(b.pos, dmg);
     if (b.hp <= 0) {
       b.dead = true; startFall(b); registerKill(); choreProgress('bandits');
+      if (b.boss) dismissMinions();
       dropCoins(b.pos, b.boss ? 20 : 5);
       if (quest.active && missions[quest.idx].type === 'bandits' && !b.boss && !b.escort && !b.bountyHead && !b.robber && !b.arena && !b.ambient && !b.duel && !b.convict && !b.eventFoe) {
         quest.progress++;
@@ -1383,6 +1384,10 @@ const TRIAL_FLAG = { x: 57, z: 13 };
 }
 const trialRT = { active: false, idx: 0, t: 0, rings: [] };
 function startTrial() {
+  if (quest.active && missions[quest.idx].type === 'race') {
+    toast('🏁 正赛进行中——先跑完领主的委托,再来刷纪录!', 3);
+    return;
+  }
   trialRT.active = true;
   trialRT.idx = 0;
   trialRT.t = 0;
@@ -1512,7 +1517,9 @@ const CHORE_TYPES = [
   { key: 'throw', label: '扔鸡', goalMin: 2, goalMax: 3, reward: 9,
     tpl: (g, who) => `${who}求助:别问原因。把鸡扔出去 ${g} 次,要抛物线漂亮的。真的别问。` },
 ];
+let choreSeq = 0;
 function rollChore() {
+  const myId = ++choreSeq;
   const t = CHORE_TYPES[Math.floor(Math.random() * CHORE_TYPES.length)];
   const goal = t.goalMin + Math.floor(Math.random() * (t.goalMax - t.goalMin + 1));
   const giver = VILLAGERS[Math.floor(Math.random() * VILLAGERS.length)].name;
@@ -1521,7 +1528,7 @@ function rollChore() {
   sideQuest.goal = goal;
   sideQuest.progress = 0;
   sideQuest._rideDone = false;
-  sideQuest.reward = t.reward + goal * 2;
+  sideQuest.reward = t.reward + (t.key === 'ride' ? Math.round(goal / 50) : goal * 2); // 骑行按里程折算,别按步数发钱
   sideQuest.giver = giver;
   sideQuest.text = t.tpl(goal, giver);
   // AI 把告示重写得更有生活气(异步替换,离线保持模板)
@@ -1529,7 +1536,7 @@ function rollChore() {
     `你是中世纪村民「${giver}」。你在村务板贴一则求助告示:需要${goal}份「${t.label}」相关的东西` +
     `(${t.key === 'wolves' ? '猎除恶狼' : t.key === 'herbs' ? '林间伞菇' : t.key === 'venison' ? '鲜鹿肉' : '鲜鱼'})。` +
     '用中文写这则告示,40~70字,原因要具体、生活化、带点小情绪。只输出告示正文。', null, 9000,
-  ).then((t2) => { if (t2 && sideQuest.active && sideQuest.giver === giver) sideQuest.text = `${giver}求助:${t2}`; });
+  ).then((t2) => { if (t2 && sideQuest.active && choreSeq === myId) sideQuest.text = `${giver}求助:${t2}`; });
 }
 function choreProgress(kind) {
   if (!sideQuest.active || sideQuest.type !== kind) return;
@@ -1548,6 +1555,7 @@ function choreBoard() {
   if (!sideQuest.active) {
     rollChore();
     sfx.accept();
+    saveGame();
     openDialog([`(村务板贴着一张新告示)`, sideQuest.text,
       `(接下了。完成后回到村务板交差,赏钱 ${sideQuest.reward} 金币。)`]);
     return;
@@ -2672,6 +2680,7 @@ function dbLine(key) {
   const tail = () => (rnd() < 0.5 ? pick(V.tails) : '');
   const mood = () => (rnd() < 0.3 ? pick(V.mood) : '');
   const opener = (ctx) => (rnd() < 0.6 && BANKS.OPENERS[ctx] ? pick(BANKS.OPENERS[ctx]) : '');
+  const clean = (t) => t.replace(/[。!?…]+$/, ''); // 语料自带句号时避免"。。"
   const cats = [
     ['job', 3], ['weather', w !== 'clear' ? 3 : 1], ['season', 2],
     ['festival', sp ? 3 : 0], ['gossip', 2.2], ['rumor', 2.2], ['place', 1.4],
@@ -2689,15 +2698,15 @@ function dbLine(key) {
         const vi = +key.slice(1);
         if (VILLAGERS[vi]) jobs.push(...VILLAGERS[vi].lines.map((l) => l.replace(/[。!?]$/, '')));
       }
-      if (jobs.length) text = `${opener(phase)}${mood()}${pick(jobs)}。${tail()}`;
+      if (jobs.length) text = `${opener(phase)}${mood()}${clean(pick(jobs))}。${tail()}`;
     } else if (cat === 'weather') {
       const bank = BANKS.WEATHER_TALK[w];
-      if (bank) text = `${opener(w)}${mood()}${pick(bank)}。${tail()}`;
+      if (bank) text = `${opener(w)}${mood()}${clean(pick(bank))}。${tail()}`;
     } else if (cat === 'season') {
-      text = `${opener(phase)}${mood()}${pick(BANKS.SEASON_TALK[seasonKey])}。${tail()}`;
+      text = `${opener(phase)}${mood()}${clean(pick(BANKS.SEASON_TALK[seasonKey]))}。${tail()}`;
     } else if (cat === 'festival') {
       const bank = BANKS.FESTIVAL_TALK[sp.key];
-      if (bank) text = `${mood()}${pick(bank)}。${tail()}`;
+      if (bank) text = `${mood()}${clean(pick(bank))}。${tail()}`;
     } else if (cat === 'gossip') {
       const others = Object.keys(BANKS.FACTS).filter((k2) => k2 !== key);
       const other = pick(others);
@@ -2715,7 +2724,7 @@ function dbLine(key) {
     } else if (cat === 'memory') {
       const mems = BANKS.MEMORIES[key];
       if (mems && mems.length) {
-        text = `${mood()}${pick(['说起来,{m}……', '有时想起,{m}。', '{m}——一晃这么多年了。', '跟你说件旧事:{m}。']).replace('{m}', pick(mems))}${tail()}`;
+        text = `${mood()}${pick(['说起来,{m}……', '有时想起,{m}。', '{m}——一晃这么多年了。', '跟你说件旧事:{m}。']).replace('{m}', clean(pick(mems)))}${tail()}`;
       }
     } else if (cat === 'smalltalk') {
       if (BANKS.SMALLTALK.length) text = `${rnd() < 0.4 ? opener(phase) : ''}${mood()}${pick(BANKS.SMALLTALK)}${tail()}`;
@@ -2850,9 +2859,6 @@ function setPortrait(speaker) {
 // ---- 女巫占卜:5 金币一卦。她算得准——因为明日的历法本来就是定数 ----
 async function witchFortune(n) {
   aiBusy.fortune = true;
-  player.coins -= 5;
-  stats.fortunes = (stats.fortunes || 0) + 1;
-  if (stats.fortunes >= 3) unlockAch('fortune');
   sfx.dice();
   const tday = calendar.day + 1;
   const ts = (() => {
@@ -2873,7 +2879,10 @@ async function witchFortune(n) {
     `${recallLine() ? `;他做过:${recallLine()}` : ''}。用中文说一段40~70字的卦辞:神叨、准确(必须把明日的天机说进去)、结尾带一句似是而非的忠告。只输出卦辞。`,
     null, 9000);
   aiBusy.fortune = false;
-  if (dialog.open || player.dead) return;
+  if (dialog.open || player.dead) return; // 半路走开:卦不开,钱不收
+  player.coins -= 5;
+  stats.fortunes = (stats.fortunes || 0) + 1;
+  if (stats.fortunes >= 3) unlockAch('fortune');
   openDialog([ai ? `玛尔戈:${ai}` : fb], null,
     { key: null, name: '沼泽女巫玛尔戈', desc: NPC_DESC_EN.witch, ent: n });
   remember('花五枚金币,听沼泽女巫算了一卦');
@@ -3406,7 +3415,7 @@ const workspace = {
   current: null, history: [], t: 0, lastCoins: null,
   mood: { v: 0, a: 0.2 },   // 心境:效价 v(-1..1)与唤起 a(0..1)——点火的余温
   focusK: null, focusT: 0,  // 自上而下注意:刚点火的模块短时间内更容易再次胜出
-  lastCue: null,            // 上一次被地点勾起的记忆(防复读)
+  cueRecent: [],            // 最近被地点勾起的记忆(容量 6,防两条旧事来回鬼打墙)
 };
 // 心境的言语化
 function moodWord() {
@@ -3487,9 +3496,10 @@ const WS_MODULES = [
   } },
   { k: 'memory', sense() { // 记忆模块:走到旧事发生地,记忆被勾起(线索化回忆);否则偶尔随机回放
     for (const m of chronicle) {
-      if (m.x === undefined || m === workspace.lastCue) continue;
+      if (m.x === undefined || workspace.cueRecent.includes(m)) continue;
       if (dist2(player.pos.x, player.pos.z, m.x, m.z) < 2025) {
-        workspace.lastCue = m;
+        workspace.cueRecent.push(m);
+        if (workspace.cueRecent.length > 6) workspace.cueRecent.shift();
         return { t: `它想起,就在这附近:${m.t}`, sal: 0.48 };
       }
     }
@@ -4240,15 +4250,6 @@ function tryInteract() {
       { key: null, name: n.def.name, desc: NPC_DESC_EN[n.key], ent: n });
     return;
   }
-  // 栈桥垂钓 / 湖心岛深水垂钓
-  if (!player.mounted && dist2(player.pos.x, player.pos.z, FISH_SPOT.x, FISH_SPOT.z) < 10) {
-    startFishing();
-    return;
-  }
-  if (!player.mounted && dist2(player.pos.x, player.pos.z, FISH_SPOT_ISLE.x, FISH_SPOT_ISLE.z) < 7) {
-    startFishing(true);
-    return;
-  }
   // 悬赏板
   if (dist2(player.pos.x, player.pos.z, 8, 46) < 8) {
     if (wanted > 0) {
@@ -4312,6 +4313,15 @@ function tryInteract() {
   }
   if (dist2(player.pos.x, player.pos.z, -100, 100.5) < 5) {
     prayAltar();
+    return;
+  }
+  // 栈桥垂钓 / 湖心岛深水垂钓
+  if (!player.mounted && dist2(player.pos.x, player.pos.z, FISH_SPOT.x, FISH_SPOT.z) < 10) {
+    startFishing();
+    return;
+  }
+  if (!player.mounted && dist2(player.pos.x, player.pos.z, FISH_SPOT_ISLE.x, FISH_SPOT_ISLE.z) < 7) {
+    startFishing(true);
     return;
   }
   // 赛马计时赛
@@ -4503,6 +4513,15 @@ function clearRaceRings() {
   questRT.rings = [];
 }
 
+function dismissMinions() {
+  // Boss 一倒,狂暴亲卫作鸟兽散(免得留下两个不被剔除的常驻敌人)
+  for (let i = bandits.length - 1; i >= 0; i--) {
+    if (bandits[i].minion) {
+      scene.remove(bandits[i].group);
+      bandits.splice(i, 1);
+    }
+  }
+}
 function removeEscortBandits() {
   for (let i = bandits.length - 1; i >= 0; i--) {
     if (bandits[i].escort) {
@@ -4544,6 +4563,7 @@ function talkQuestGiver() {
       addBandit(world.banditCamp.x + 4, world.banditCamp.z - 2);
       addBandit(world.banditCamp.x, world.banditCamp.z + 6);
     } else if (m.type === 'race') {
+      if (trialRT.active) endTrial(false); // 接正赛前先收计时赛的环
       questRT.ringIdx = 0;
       clearRaceRings();
       for (const [rx, rz] of world.raceRoute) {
@@ -4628,7 +4648,7 @@ function meleeSweep(dmg, range, arcDot, knock) {
       b.dead = true; startFall(b); registerKill(); choreProgress('bandits');
       dropCoins(b.pos, b.boss ? 20 : 5);
       addPickup('heart', b.pos.x, b.pos.z + 1, 30);
-      if (b.boss) toast('⚔️ 血斧巴罗克倒下了!黑石兄弟会土崩瓦解!', 5);
+      if (b.boss) { toast('⚔️ 血斧巴罗克倒下了!黑石兄弟会土崩瓦解!', 5); dismissMinions(); }
       if (quest.active && missions[quest.idx].type === 'bandits' && !b.boss && !b.escort && !b.bountyHead && !b.robber && !b.arena && !b.ambient && !b.duel && !b.convict && !b.eventFoe) {
         quest.progress++;
         toast(`击败盗贼 ${quest.progress}/3`, 2);
@@ -4728,6 +4748,7 @@ function gameOver() {
   player.drunkT = 0;
   if (player.carrying) { player.carrying.state = 'idle'; player.carrying = null; }
   sfx.gameover();
+  if (trialRT.active) endTrial(false);
   stats.deaths = (stats.deaths || 0) + 1;
   player.jailed = wanted > 0;
   gameoverText.textContent = wanted > 0 ? '你被王国卫兵抓住了!' : '你倒下了……';
@@ -4928,8 +4949,10 @@ function updateBandits(dt) {
       toast('🔥 血斧巴罗克双目赤红——狂暴了!!', 3.5);
       const m1 = addBandit(b.pos.x - 3, b.pos.z, { hp: 2 });
       m1.eventFoe = true;
+      m1.minion = true;
       const m2 = addBandit(b.pos.x + 3, b.pos.z, { hp: 2 });
       m2.eventFoe = true;
+      m2.minion = true;
     }
     if (b.robber) { updateRobber(b, dt); continue; }
     if (b.convict) {
@@ -5705,6 +5728,7 @@ function updateDayNight(dt) {
     scene.fog.far = 55;
   }
   sky.position.copy(camera.position);
+  stars.position.copy(camera.position); // 星空也要跟着走,不然离城即无星
 
   moonBall.position.set(camera.position.x - sx * 1.6, Math.max(-40, -sy * 1.6), camera.position.z - sz * 1.6);
   moonBall.visible = -sy > -20;
@@ -6624,6 +6648,11 @@ window.__gtm = {
   sideQuest, choreBoard, choreProgress, CHORE_POS,
   composeLetter, witchFortune, getLetter: () => letter,
   workspace, wsReport, moodWord, consolidate, tickWorkspace: () => { workspace.t = 0; updateWorkspace(0); },
+  testBlocked: (x, z, r = 0.45) => {
+    const p = { x, z };
+    resolveCollisions(p, r, colliders);
+    return Math.hypot(p.x - x, p.z - z) > 0.05;
+  },
   setIdle: (t) => { idleT = t; },
   getIdle: () => ({ idleT, idleCd }),
   getLoreRead: () => loreRead.length,
@@ -6694,9 +6723,32 @@ function loop(now) {
   }
   player._lastRX = player.pos.x;
   player._lastRZ = player.pos.z;
+  // 深水规则:银月湖面不可徒步——栈桥走廊(|x+100|<2.2 且 z<92)与湖心岛(距岛心<6.8)除外。
+  // 每帧检查,步幅远小于缓冲带宽,冲刺也蹚不过去;上岛只能靠小船。
+  {
+    const ldx = player.pos.x + 100, ldz = player.pos.z - 100;
+    const lakeD = Math.hypot(ldx, ldz);
+    if (lakeD < 28.5 && lakeD > 6.8 &&
+        !(Math.abs(ldx) < 2.2 && player.pos.z < 92)) {
+      const push = 28.5 / (lakeD || 1);
+      player.pos.x = -100 + ldx * push;
+      player.pos.z = 100 + ldz * push;
+      if ((loop._wadeT || 0) < now - 4000) {
+        loop._wadeT = now;
+        toast('湖水一下子深了,你退了回来。(想上岛?栈桥边有小船)', 3);
+      }
+    }
+  }
   updateFrostfang(dt);
   updateSprings(dt);
   updateTrial(dt);
+  {
+    const dIn = inDungeon();
+    if (dIn !== loop._dgnLit) {
+      loop._dgnLit = dIn;
+      for (const pl of world.cryptLights) pl.visible = dIn;
+    }
+  }
   if (world.islandAltarMat) {
     const glow = todaySpecial()?.key === 'fullmoon' && dayPhase() === 'night' ? 2.2 : 0.5;
     if (Math.abs(world.islandAltarMat.emissiveIntensity - glow) > 0.01) {

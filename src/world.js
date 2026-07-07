@@ -348,11 +348,16 @@ export function buildWorld(scene) {
   lake.rotation.x = -Math.PI / 2;
   lake.position.set(-100, 0.04, 100);
   scene.add(lake);
-  // 湖水碰撞改为一圈小圆(中心留空)——湖心岛靠小船摆渡上去
-  for (let i = 0; i < 14; i++) {
-    const a = (i / 14) * Math.PI * 2;
-    circle(-100 + Math.cos(a) * 24, 100 + Math.sin(a) * 24, 8);
+  // 湖水碰撞:一圈小圆(中心留空),朝栈桥方向开口——栈桥能走到头,
+  // 开口再用三枚"浅滩塞"堵住,徒步下不了水,上岛只能靠小船
+  for (let i = 0; i < 18; i++) {
+    const a = (i / 18) * Math.PI * 2;
+    // 栈桥朝南伸进湖(方向角 -90°):±35° 内留开口
+    const deg = ((a * 180 / Math.PI + 90) % 360 + 360) % 360;
+    if (deg < 35 || deg > 325) continue;
+    circle(-100 + Math.cos(a) * 26, 100 + Math.sin(a) * 26, 6);
   }
+  // 深水不可徒步由 main.js 的规则级判定兜底(几何环只挡 NPC/野兽)
   feat('water', -100, 100, 60, 60);
 
   // ---- 湖心岛:沉没神殿的尖顶 ----
@@ -1124,6 +1129,7 @@ export function buildWorld(scene) {
   // ---- 封印的王室地窖(城堡后暗门进入;远处群山下的黑暗迷宫) ----
   // 编年史早说过:"城堡地下有一层是封起来的"。
   const DGN = { x0: 316, z0: -316, w: 72, d: 72 }; // 地窖区域(群山带内,荒野不生成)
+  const cryptLights = [];
   {
     // 入口:城堡后的石阶暗门
     const hatch = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.3, 2.2), lambert(0x3a3630, { roughness: 1 }));
@@ -1155,13 +1161,13 @@ export function buildWorld(scene) {
     dWall(X + 1, Z + 36, 2, 72);
     dWall(X + 71, Z + 36, 2, 72);
     // 迷宫内墙(手排:从入口(X+8,Z+8)绕到圣坛(X+60,Z+60))
-    dWall(X + 20, Z + 24, 2, 44);   // 竖墙1(下开口)
+    dWall(X + 20, Z + 28, 2, 36);   // 竖墙1(南端 Z+2..Z+10 留门洞)
     dWall(X + 34, Z + 48, 2, 44);   // 竖墙2(上开口)
-    dWall(X + 50, Z + 22, 2, 40);   // 竖墙3
+    dWall(X + 50, Z + 26, 2, 32);   // 竖墙3(南端留门洞)
     dWall(X + 12, Z + 46, 20, 2);   // 横墙A
     dWall(X + 28, Z + 14, 14, 2);   // 横墙B
     dWall(X + 44, Z + 60, 16, 2);   // 横墙C
-    dWall(X + 60, Z + 40, 20, 2);   // 横墙D
+    dWall(X + 58, Z + 40, 12, 2);   // 横墙D(东端 X+64..X+70 留绕行口)
     dWall(X + 42, Z + 34, 14, 2);   // 横墙E
     // 石棺装饰
     for (const [sx, sz] of [[X + 12, Z + 30], [X + 28, Z + 58], [X + 44, Z + 10], [X + 58, Z + 26]]) {
@@ -1195,7 +1201,9 @@ export function buildWorld(scene) {
       scene.add(flame);
       const pl = new THREE.PointLight(0xff9a4d, 2.2, 17, 1.6);
       pl.position.set(tx, 2, tz);
+      pl.visible = false; // 入窖才点亮(main 按 inDungeon 开关),免得全场景着色器常年多背 5 盏灯
       scene.add(pl);
+      cryptLights.push(pl);
     }
   }
 
@@ -1262,6 +1270,7 @@ export function buildWorld(scene) {
 
   return {
     ground, grassMesh, islandAltarMat,
+    cryptLights,
     dungeon: { hatch: { x: 10, z: -50 }, inX0: 316, inZ0: -316, inW: 72, inD: 72,
       spawn: { x: 324, z: -308 }, exit: { x: 324, z: -308 }, relic: { x: 378, z: -252 } },
     colliders, features, windmills, torches, chests, qBlocks, coinSpots, clouds, waterMats, occluders,
