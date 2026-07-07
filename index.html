@@ -44,6 +44,9 @@
     width: min(760px, 86vw); background: rgba(16,11,6,0.92); border: 2px solid #b08d3e;
     border-radius: 12px; padding: 16px 24px 12px; box-shadow: 0 8px 30px rgba(0,0,0,0.6); }
   #dialog-name { font-size: 17px; font-weight: bold; color: #ffd83d; margin-bottom: 6px; }
+  #dialog-portrait { position: absolute; left: 18px; top: -34px; width: 64px; height: 64px;
+    border-radius: 10px; border: 2px solid #b08d3e; object-fit: cover; background: #241a10;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.5); display: none; }
   #dialog-text { font-size: 16px; color: #f5e9cf; line-height: 1.8; min-height: 52px; }
   #dialog-hint { font-size: 12px; color: #b08d3e; text-align: right; margin-top: 6px;
     animation: blink 1.2s infinite alternate; }
@@ -147,6 +150,7 @@
     <div id="region"></div>
     <div id="bubble"></div>
     <div id="dialog">
+      <img id="dialog-portrait" alt="">
       <div id="dialog-name"></div>
       <div id="dialog-text"></div>
       <div id="dialog-hint"></div>

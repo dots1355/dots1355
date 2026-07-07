@@ -1768,6 +1768,11 @@ function takeBounty() {
   bountyRT.target = addBandit(bx + (Math.random() * 8 - 4), bz + (Math.random() * 8 - 4),
     { hp: 5, scale: 1.12, dmg: 2 });
   bountyRT.target.bountyHead = true;
+  bountyRT.crime = null;
+  if (!AI_TEXT_OFF) {
+    aiLine(`为中世纪通缉犯「${bountyRT.name}」编一条罪状,12~25字,越具体越好笑越好,只输出罪状本身。`, null, 8000)
+      .then((t) => { if (t) bountyRT.crime = t; });
+  }
   sfx.accept();
   openDialog([`(揭下悬赏令)通缉要犯「${bountyRT.name}」,现身于${place}一带。生死不论,赏金 30 枚。`]);
 }
@@ -2575,7 +2580,8 @@ async function aiLine(prompt, fallback, timeoutMs = 7000) {
   }
 }
 // AI 输出口的忙碌标记:等待期间重复按 E 不再重复请求/重复开对话
-const aiBusy = { mirror: false, tale: false, bard: false, prophet: false, dream: false };
+const aiBusy = { mirror: false, tale: false, bard: false, prophet: false, dream: false, deep: false, epitaph: false };
+let epitaphAI = null; // AI 补写的下一条墓志铭
 
 // ================= 对话面板(RDR2 式多页对话) =================
 const dialogEl = document.getElementById('dialog');
@@ -2609,18 +2615,81 @@ function renderDialogPage() {
       dialog.typing = false;
     }
   }, 22);
+  const deepHint = dialog.speaker ? ' · T 追问' : '';
   document.getElementById('dialog-hint').textContent =
-    dialog.idx < dialog.pages.length - 1 ? `▼ E (${dialog.idx + 1}/${dialog.pages.length})` : '▼ E 结束';
+    (dialog.idx < dialog.pages.length - 1 ? `▼ E (${dialog.idx + 1}/${dialog.pages.length})` : '▼ E 结束') + deepHint;
 }
 
-function openDialog(pages, onDone = null) {
+function openDialog(pages, onDone = null, speaker = null) {
   if (!pages.length) return;
   dialog.open = true;
   dialog.pages = pages;
   dialog.idx = 0;
   dialog.onDone = onDone;
+  dialog.speaker = speaker;
   bubble.timer = 0; // 对话时收起闲聊气泡
   dialogEl.style.display = 'block';
+  setPortrait(speaker);
+  renderDialogPage();
+}
+
+const VILLAGER_DESC_EN = [
+  'baker woman', 'cloth merchant', 'fruit seller woman', 'spice merchant', 'carpenter',
+  'washerwoman gossip', 'farmer', 'farm wife', 'hunter with bow', 'old one-legged soldier',
+  'blacksmith apprentice boy', 'scribe woman with ink', 'shepherd girl', 'inn serving boy', 'old lamplighter',
+  'fisher girl', 'boat builder', 'old miller', 'gravekeeper with shovel', 'stubborn village chief with pipe',
+  'lame scythe grinder', 'old herbalist woman'];
+const NPC_DESC_EN = {
+  steward: 'royal steward with ledger', king: 'melancholy old king', blacksmith: 'scarred master blacksmith',
+  trader: 'horse trader woman', innkeep: 'warm innkeeper woman', fisher: 'old fisherman with straw hat',
+  witch: 'swamp witch stirring a pot', gambler: 'grinning dice gambler', bard: 'flamboyant lute bard',
+  prophet: 'wild-eyed mad prophet', quixote: 'rusty windmill knight', storyteller: 'blind old storyteller with pipe',
+};
+// ---- AI 肖像:每位说话人一张(pollinations 生成,种子固定,浏览器缓存;离线自动隐藏) ----
+const portraitEl = document.getElementById('dialog-portrait');
+function strSeed(str) {
+  let h = 7;
+  for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) >>> 0;
+  return h % 100000;
+}
+function setPortrait(speaker) {
+  if (!portraitEl) return;
+  if (!speaker || !speaker.desc || AI_TEXT_OFF) {
+    portraitEl.style.display = 'none';
+    return;
+  }
+  const prompt = `storybook watercolor bust portrait of a medieval ${speaker.desc}, warm candlelight, parchment background, no text`;
+  const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(prompt)}?width=128&height=128&nologo=true&seed=${strSeed(speaker.name)}`;
+  if (portraitEl.dataset.url !== url) {
+    portraitEl.style.display = 'none';
+    portraitEl.dataset.url = url;
+    portraitEl.onload = () => { if (portraitEl.dataset.url === url) portraitEl.style.display = 'block'; };
+    portraitEl.onerror = () => { portraitEl.style.display = 'none'; };
+    portraitEl.src = url;
+  } else if (portraitEl.complete && portraitEl.naturalWidth > 0) {
+    portraitEl.style.display = 'block';
+  }
+}
+
+// ---- T 键追问:让 AI 顺着刚才的话往深里说(离线回退对话库) ----
+async function deepTalk() {
+  const sp = dialog.speaker;
+  if (!sp || aiBusy.deep || dialog.typing) return;
+  aiBusy.deep = true;
+  const lastLine = (dialog.fullText || '').slice(0, 70);
+  const ent = sp.ent || sp;
+  const hist = ent.deepHist || [];
+  toast('(对方想了想……)', 1.2);
+  const fb = (sp.key && dbLine(sp.key)) || '这话说来就长了……改天,改天一定跟你细说。';
+  const t = await aiLine(
+    `你是中世纪王国艾尔德里亚的${sp.name}${sp.desc ? `(${sp.desc}的身份)` : ''}。你刚对玩家说:"${lastLine}"。` +
+    `${hist.length ? `此前你还提过:${hist.join(';')}。` : ''}${wsReport()}` +
+    '玩家追问了一句,请顺着话头往深里再说一句(60字以内),口语化、符合身份、带点没说完的余味。不要引号,不要名字前缀。', fb, 9000);
+  aiBusy.deep = false;
+  if (!dialog.open || dialog.speaker !== sp) return; // 对话已换场,别插话
+  ent.deepHist = [...hist.slice(-1), t.slice(0, 50)];
+  dialog.pages.push(`${sp.name}:${t}`);
+  dialog.idx = dialog.pages.length - 1;
   renderDialogPage();
 }
 
@@ -2650,19 +2719,20 @@ function npcTalk(n, onDone = null) {
   if (!d) return;
   const arcIdx = d.arcs.reduce((best, a, i) => (quest.idx >= a.min ? i : best), -1);
   n.readArcs = n.readArcs || new Set();
+  const sp = { key: n.key, name: n.def.name, desc: NPC_DESC_EN[n.key], ent: n };
   if (arcIdx >= 0 && !n.readArcs.has(arcIdx)) {
     n.readArcs.add(arcIdx);
     const greet = TIME_GREETINGS[dayPhase()];
     openDialog([
       `${n.def.name}:${greet[Math.floor(Math.random() * greet.length)]}`,
       ...d.arcs[arcIdx].pages,
-    ], onDone);
+    ], onDone, sp);
   } else {
     // 故事读完后:手写闲聊与对话库轮换
     const line = Math.random() < 0.4
       ? d.small[n.lineIdx++ % d.small.length]
       : `${n.def.name}:${dbLine(n.key) || d.small[n.lineIdx++ % d.small.length]}`;
-    openDialog([line], onDone);
+    openDialog([line], onDone, sp);
   }
 }
 
@@ -3383,6 +3453,7 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyM') toast(toggleMusic() ? '♪ 音乐开' : '♪ 音乐关', 1.5);
   if (e.code === 'KeyP' && started) togglePhoto();
   if (e.code === 'KeyJ' && started && !dialog.open) openJournal();
+  if (e.code === 'KeyT' && dialog.open) deepTalk();
   if (e.code === 'KeyH') toggleHint();
   if (e.code === 'KeyQ') cycleWeapon();
   if ((e.code === 'KeyC' || e.code === 'ControlLeft') && !dialog.open) doRoll();
@@ -3735,7 +3806,8 @@ function tryInteract() {
         player.herbs = 0;
         sfx.coin();
       } else {
-        openDialog([`玛尔戈:${EXTRA_NPCS.witch.lines[n.lineIdx++ % EXTRA_NPCS.witch.lines.length]}`]);
+        openDialog([`玛尔戈:${EXTRA_NPCS.witch.lines[n.lineIdx++ % EXTRA_NPCS.witch.lines.length]}`], null,
+          { key: null, name: '沼泽女巫玛尔戈', desc: NPC_DESC_EN.witch, ent: n });
       }
       return;
     }
@@ -3826,7 +3898,8 @@ function tryInteract() {
         });
       return;
     }
-    openDialog([`${n.def.name}:${n.def.idle[n.lineIdx++ % n.def.idle.length]}`]);
+    openDialog([`${n.def.name}:${n.def.idle[n.lineIdx++ % n.def.idle.length]}`], null,
+      { key: null, name: n.def.name, desc: NPC_DESC_EN[n.key], ent: n });
     return;
   }
   // 栈桥垂钓 / 湖心岛深水垂钓
@@ -3852,7 +3925,7 @@ function tryInteract() {
       }
       return;
     }
-    if (bountyRT.target) openDialog([`(告示板)悬赏令仍在追缉中——「${bountyRT.name}」,生死不论。`]);
+    if (bountyRT.target) openDialog([`(告示板)悬赏令仍在追缉中——「${bountyRT.name}」,${bountyRT.crime ? `罪状:${bountyRT.crime}` : '生死不论'}。`]);
     else if (bountyRT.cooldown > 0) openDialog(['(告示板)新的悬赏令还没贴出来,过一会儿再来看看。']);
     else takeBounty();
     return;
@@ -3994,7 +4067,8 @@ function tryInteract() {
         ? ['听说你', '有人瞧见你', '街坊都在传,说你'][Math.floor(Math.random() * 3)] + deed + '。真有你的。'
         : dbLine(v.dbKey) || v.id.lines[v.lineIdx++ % v.id.lines.length];
     }
-    openDialog([`${v.id.name}:${l1}`, `${v.id.name}:${l2}`]);
+    openDialog([`${v.id.name}:${l1}`, `${v.id.name}:${l2}`], null,
+      { key: v.dbKey, name: v.id.name, desc: VILLAGER_DESC_EN[villagers.indexOf(v)] || 'villager', ent: v });
     if (!AI_TEXT_OFF && !v.aiPending && Math.random() < 0.35) {
       v.aiPending = true;
       const sp = todaySpecial();
@@ -4034,9 +4108,16 @@ function tryInteract() {
     const d = dist2(player.pos.x, player.pos.z, h.pos.x, h.pos.z);
     if (d < bd) { bd = d; best = h; }
   }
-  // 墓园漫步:读一块墓志铭(最低优先级,别挡着上马)
+  // 墓园漫步:读一块墓志铭(最低优先级,别挡着上马;AI 后台补写新碑文)
   if (!best && dist2(player.pos.x, player.pos.z, -40, -120) < 400) {
-    openDialog(['(你拂去一块墓碑上的落叶)', `「${EPITAPHS[epitaphIdx++ % EPITAPHS.length]}」`]);
+    const text = epitaphAI || EPITAPHS[epitaphIdx++ % EPITAPHS.length];
+    epitaphAI = null;
+    openDialog(['(你拂去一块墓碑上的落叶)', `「${text}」`]);
+    if (!AI_TEXT_OFF && !aiBusy.epitaph) {
+      aiBusy.epitaph = true;
+      aiLine('为中世纪村庄墓园写一条墓志铭,15~40字,可庄重可幽默可温柔,只输出铭文本身,不要引号。', null, 9000)
+        .then((t) => { aiBusy.epitaph = false; if (t) epitaphAI = t; });
+    }
     return;
   }
   if (best) {
@@ -4044,7 +4125,20 @@ function tryInteract() {
     player.mounted = best;
     player.jumps = 0;
     if (best.sheep) remember('骑上了一头羊。羊没同意', 'firstsheep');
-    else if (best.chunk) remember('在无尽荒野驯服了一匹无主的野马', 'wildhorse');
+    else if (best.chunk) {
+      remember('在无尽荒野驯服了一匹无主的野马', 'wildhorse');
+      if (!best.aiName && !AI_TEXT_OFF) {
+        best.aiName = true;
+        aiLine('给一匹中世纪奇幻世界里刚被驯服的野马起一个两字中文名,只输出名字,不要引号和解释。', null, 6000)
+          .then((t) => {
+            if (t && t.trim().length <= 4) {
+              const nm = t.trim();
+              toast(`🐴 你给它取名「${nm}」。它甩了甩鬃毛,大概是同意了。`, 3.5);
+              remember(`给驯服的野马取名「${nm}」`);
+            }
+          });
+      }
+    }
     else remember('第一次翻身上马', 'firstride');
     if (best.sheep) {
       sfx.baa();
