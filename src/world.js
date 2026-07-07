@@ -1121,6 +1121,84 @@ export function buildWorld(scene) {
   chest(-268, -160, 20);
   coinLine(-215, -95, -255, -140, 9);
 
+  // ---- 封印的王室地窖(城堡后暗门进入;远处群山下的黑暗迷宫) ----
+  // 编年史早说过:"城堡地下有一层是封起来的"。
+  const DGN = { x0: 316, z0: -316, w: 72, d: 72 }; // 地窖区域(群山带内,荒野不生成)
+  {
+    // 入口:城堡后的石阶暗门
+    const hatch = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.3, 2.2), lambert(0x3a3630, { roughness: 1 }));
+    hatch.position.set(10, 0.15, -50);
+    scene.add(hatch);
+    const arch = new THREE.Mesh(new THREE.TorusGeometry(1.1, 0.16, 6, 10, Math.PI), lambert(0x55504a));
+    arch.position.set(10, 0.3, -51);
+    scene.add(arch);
+    feat('tower', 10, -50, 3, 3);
+
+    // 地窖地面与外墙
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(DGN.w, DGN.d), lambert(0x2c2823, { roughness: 1 }));
+    floor.rotation.x = -Math.PI / 2;
+    floor.position.set(DGN.x0 + DGN.w / 2, 0.05, DGN.z0 + DGN.d / 2);
+    floor.receiveShadow = true;
+    scene.add(floor);
+    const wallMat = lambert(0x453f38, { roughness: 1 });
+    const dWall = (cx, cz, w, d) => {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(w, 4.2, d), wallMat);
+      m.position.set(cx, 2.1, cz);
+      m.castShadow = true;
+      scene.add(m);
+      box(cx, cz, w, d);
+    };
+    const X = DGN.x0, Z = DGN.z0;
+    // 外圈
+    dWall(X + 36, Z + 1, 72, 2);
+    dWall(X + 36, Z + 71, 72, 2);
+    dWall(X + 1, Z + 36, 2, 72);
+    dWall(X + 71, Z + 36, 2, 72);
+    // 迷宫内墙(手排:从入口(X+8,Z+8)绕到圣坛(X+60,Z+60))
+    dWall(X + 20, Z + 24, 2, 44);   // 竖墙1(下开口)
+    dWall(X + 34, Z + 48, 2, 44);   // 竖墙2(上开口)
+    dWall(X + 50, Z + 22, 2, 40);   // 竖墙3
+    dWall(X + 12, Z + 46, 20, 2);   // 横墙A
+    dWall(X + 28, Z + 14, 14, 2);   // 横墙B
+    dWall(X + 44, Z + 60, 16, 2);   // 横墙C
+    dWall(X + 60, Z + 40, 20, 2);   // 横墙D
+    dWall(X + 42, Z + 34, 14, 2);   // 横墙E
+    // 石棺装饰
+    for (const [sx, sz] of [[X + 12, Z + 30], [X + 28, Z + 58], [X + 44, Z + 10], [X + 58, Z + 26]]) {
+      const cof = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.9, 2.6), lambert(0x5a5248, { roughness: 0.95 }));
+      cof.position.set(sx, 0.45, sz);
+      cof.castShadow = true;
+      scene.add(cof);
+      box(sx, sz, 1.4, 2.8);
+      const lid = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.15, 2.7), lambert(0x6a6258));
+      lid.position.set(sx + 0.3, 0.95, sz);
+      lid.rotation.z = 0.12;
+      scene.add(lid);
+    }
+    // 圣坛(先王战徽安放处)+ 出口石阶
+    const altar2 = new THREE.Mesh(new THREE.BoxGeometry(1.6, 1.1, 1.1),
+      new THREE.MeshStandardMaterial({ color: 0x8a7a5a, emissive: 0x664a1a, emissiveIntensity: 0.5, roughness: 0.4, metalness: 0.3 }));
+    altar2.position.set(X + 62, 0.55, Z + 64);
+    scene.add(altar2);
+    box(X + 62, Z + 64, 1.8, 1.3);
+    const stair = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.3, 2.2), lambert(0x3a3630));
+    stair.position.set(X + 8, 0.15, Z + 8);
+    scene.add(stair);
+    // 地窖火把(自带光源,黑暗中唯一的照明)
+    for (const [tx, tz] of [[X + 8, Z + 10], [X + 26, Z + 30], [X + 40, Z + 52], [X + 60, Z + 60], [X + 54, Z + 16]]) {
+      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.07, 1.6, 5), lambert(0x4a3a28));
+      pole.position.set(tx, 0.8, tz);
+      scene.add(pole);
+      const flame = new THREE.Mesh(new THREE.ConeGeometry(0.14, 0.4, 6),
+        new THREE.MeshStandardMaterial({ color: 0xffb050, emissive: 0xdd6600, emissiveIntensity: 2 }));
+      flame.position.set(tx, 1.75, tz);
+      scene.add(flame);
+      const pl = new THREE.PointLight(0xff9a4d, 2.2, 17, 1.6);
+      pl.position.set(tx, 2, tz);
+      scene.add(pl);
+    }
+  }
+
   // ---- 实例化草丛(纯视觉,不参与碰撞)----
   {
     // 三丛尖叶交叉,读作草而不是方块
@@ -1184,6 +1262,8 @@ export function buildWorld(scene) {
 
   return {
     ground, grassMesh, islandAltarMat,
+    dungeon: { hatch: { x: 10, z: -50 }, inX0: 316, inZ0: -316, inW: 72, inD: 72,
+      spawn: { x: 324, z: -308 }, exit: { x: 324, z: -308 }, relic: { x: 378, z: -252 } },
     colliders, features, windmills, torches, chests, qBlocks, coinSpots, clouds, waterMats, occluders,
     windmillPos, banditCamp, fortPos,
     questGiverPos: new THREE.Vector3(4, 0, 10),

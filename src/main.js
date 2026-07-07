@@ -1396,6 +1396,47 @@ function updateTrial(dt) {
   if (trialRT.t > 120) endTrial(false); // 两分钟没跑完自动作废
 }
 
+// ================= 封印的王室地窖 =================
+const DGN = world.dungeon;
+function inDungeon() {
+  return player.pos.x > DGN.inX0 && player.pos.x < DGN.inX0 + DGN.inW &&
+    player.pos.z > DGN.inZ0 && player.pos.z < DGN.inZ0 + DGN.inD;
+}
+// 守墓者:地窖常驻,黑暗中巡游(死后重生,不计任务)
+for (const [gx, gz] of [[336, -296], [352, -272], [368, -300], [344, -252], [376, -276]]) {
+  const b = addBandit(gx, gz, { hp: 2, speed: 6.2 });
+  b.ambient = true;
+  b.keeper = true;
+}
+function enterDungeon() {
+  sfx.chest();
+  player.pos.set(DGN.spawn.x, 0, DGN.spawn.z);
+  player.vy = 0;
+  toast('🕯️ 石阶向下,霉味和很久以前的香火味……这就是被封起来的那一层。', 4);
+  remember('掀开了城堡后的暗门,走进被封印的王室地窖', 'crypt');
+}
+function exitDungeon() {
+  sfx.chest();
+  player.pos.set(DGN.hatch.x, 0, DGN.hatch.z + 2);
+  player.vy = 0;
+  toast('你爬回地面。阳光重得像一床棉被。', 3);
+}
+function takeRelic() {
+  if (player.relic) {
+    openDialog(['(圣坛空了。战徽在你身上——它记得回家的路,也认得新的主人。)']);
+    return;
+  }
+  player.relic = true;
+  sfx.fanfare();
+  unlockAch('unsealer');
+  remember('从王室地窖的圣坛上请下了「先王战徽」', 'relic');
+  openDialog([
+    '(圣坛上安放着一枚乌金战徽,八百年的灰尘盖不住它的锋利。)',
+    '(你把它别上胸口。掌心的剑柄忽然顺手了许多——像有位老兵扶了一把。)',
+    '☀️ 获得「先王战徽」:近战伤害 +1(永久)',
+  ], () => saveGame());
+}
+
 // ================= 世界观铭文(可阅读的石碑,集齐 12 处) =================
 let loreRead = [];
 const loreStones = [];
@@ -1515,7 +1556,15 @@ scene.add(exGroup);
 
 // ================= 钓鱼(栈桥尽头) =================
 const FISH_SPOT = { x: -100, z: 82 };
+const FISH_SPOT_ISLE = { x: -103.5, z: 101.5 }; // 湖心岛深水钓点(渔获更肥)
 const fishing = { active: false, phase: 'wait', t: 0 };
+const CATCHES_DEEP = [
+  { w: 34, text: '一条神殿银鱼!鳞片亮得像月光淬过——12 金币。', coins: 12 },
+  { w: 26, text: '月光鲤!尾鳍拖着一道银线,渔村得供起来——20 金币!', coins: 20 },
+  { w: 18, text: '一盏沉底铜灯,灯芯居然是干的。古董贩子给了 8 金币。', coins: 8 },
+  { w: 14, text: '你钓到了湖神的一个呵欠。水面荡了三圈,什么也没留下。', coins: 0 },
+  { w: 8,  text: '深水巨物!!差点把你拽下水——25 金币,够吹一年!', coins: 25, ach: 'bigfish' },
+];
 const CATCHES = [
   { w: 45, text: '一条小鲫鱼!老周按行价收了 3 金币。', coins: 3 },
   { w: 30, text: '一条肥鲤鱼!老周眼睛都亮了,给了 6 金币。', coins: 6 },
@@ -1523,19 +1572,21 @@ const CATCHES = [
   { w: 8,  text: '水草一团。人生就是这样。', coins: 0 },
   { w: 5,  text: '银月湖大鱼!!鱼尾拍得水花四溅——15 金币,今晚渔村有故事讲了!', coins: 15, ach: 'bigfish' },
 ];
-function startFishing() {
+function startFishing(deep = false) {
   fishing.active = true;
+  fishing.deep = deep;
   fishing.phase = 'wait';
   fishing.t = 2.5 + Math.random() * 4;
   player.yaw = Math.PI; // 面向湖心
-  toast('🎣 抛竿……盯紧浮漂,咬钩时按 E!', 3);
+  toast(deep ? '🎣 深水抛竿……岛边的鱼更大,咬钩也更狠!' : '🎣 抛竿……盯紧浮漂,咬钩时按 E!', 3);
 }
 function fishingReel() {
   if (fishing.phase === 'bite') {
-    const total = CATCHES.reduce((s, c) => s + c.w, 0);
+    const table = fishing.deep ? CATCHES_DEEP : CATCHES;
+    const total = table.reduce((s, c) => s + c.w, 0);
     let roll = Math.random() * total;
-    let got = CATCHES[0];
-    for (const c of CATCHES) { roll -= c.w; if (roll <= 0) { got = c; break; } }
+    let got = table[0];
+    for (const c of table) { roll -= c.w; if (roll <= 0) { got = c; break; } }
     const moonX2 = todaySpecial()?.key === 'fullmoon' && got.coins > 0;
     if (got.coins > 0) stats.fishCaught = (stats.fishCaught || 0) + 1;
     player.coins += moonX2 ? got.coins * 2 : got.coins;
@@ -2210,6 +2261,7 @@ const ACH_DEFS = {
   packmate: { name: '孤狼不再', desc: '驯服白狼「霜牙」' },
   soak:     { name: '泡汤客', desc: '在温泉里泡满 30 秒' },
   lakegift: { name: '湖神的恩赐', desc: '触碰湖心岛的月光祭坛(生命上限 +2)' },
+  unsealer: { name: '开封者', desc: '走进被封印的王室地窖,请下先王战徽' },
 };
 const stats = { thrown: 0, pecks: 0, wishes: 0, drunks: 0, loseStreak: 0, sheepDist: 0, lastStomp: -99, deer: 0, mushrooms: 0 };
 let achUnlocked = [];
@@ -3140,7 +3192,7 @@ function saveGame() {
       swordLv: player.swordLv, royalHorse: player.royalHorse,
       kingRewarded: namedNPCs.find((n) => n.key === 'king')?.rewarded || false,
       ach: achUnlocked, stats, day: calendar.day, chron: chronicle, fday: festGrantedDay,
-      wolf: frostfang.tamed, wolfFeed: frostfang.feed, lake: lakeBlessed,
+      wolf: frostfang.tamed, wolfFeed: frostfang.feed, lake: lakeBlessed, relic: player.relic,
       herbs: player.herbs, venison: player.venison, lore: loreRead,
       weapon: player.weapon, weaponsOwned: player.weaponsOwned, armor: player.armor,
     }));
@@ -3169,6 +3221,7 @@ function loadGame() {
     if (Array.isArray(s.chron)) chronicle = s.chron;
     festGrantedDay = s.fday || 0;
     frostfang.feed = s.wolfFeed || 0;
+    player.relic = !!s.relic;
     if (s.lake) {
       lakeBlessed = true;
       // 无护甲存档:此处直接补上限;有护甲存档由下方护甲分支统一计算
@@ -3750,9 +3803,13 @@ function tryInteract() {
     openDialog([`${n.def.name}:${n.def.idle[n.lineIdx++ % n.def.idle.length]}`]);
     return;
   }
-  // 栈桥垂钓
+  // 栈桥垂钓 / 湖心岛深水垂钓
   if (!player.mounted && dist2(player.pos.x, player.pos.z, FISH_SPOT.x, FISH_SPOT.z) < 10) {
     startFishing();
+    return;
+  }
+  if (!player.mounted && dist2(player.pos.x, player.pos.z, FISH_SPOT_ISLE.x, FISH_SPOT_ISLE.z) < 7) {
+    startFishing(true);
     return;
   }
   // 悬赏板
@@ -3784,6 +3841,21 @@ function tryInteract() {
   for (const s of loreStones) {
     if (dist2(player.pos.x, player.pos.z, s.def.x, s.def.z) < 8) {
       readLore(s);
+      return;
+    }
+  }
+  // 王室地窖:暗门进出与圣坛
+  if (dist2(player.pos.x, player.pos.z, DGN.hatch.x, DGN.hatch.z) < 6) {
+    enterDungeon();
+    return;
+  }
+  if (inDungeon()) {
+    if (dist2(player.pos.x, player.pos.z, DGN.exit.x, DGN.exit.z) < 6) {
+      exitDungeon();
+      return;
+    }
+    if (dist2(player.pos.x, player.pos.z, DGN.relic.x, DGN.relic.z) < 6) {
+      takeRelic();
       return;
     }
   }
@@ -4123,7 +4195,7 @@ function tryAttack() {
   if (player.weapon === 'bow') { shootArrow(); return; }
   sfx.sword();
   if (dist2(player.pos.x, player.pos.z, 140, 20) < 80) unlockAch('windmill');
-  meleeSweep(def.dmg + (player.swordLv >= 2 ? 1 : 0), def.range, 0.35, def.knock);
+  meleeSweep(def.dmg + (player.swordLv >= 2 ? 1 : 0) + (player.relic ? 1 : 0), def.range, 0.35, def.knock);
 }
 
 // 蓄力重击:按住 F 约 0.7 秒自动挥出 —— 双倍伤害、超广角横扫、大击退
@@ -4135,7 +4207,7 @@ function heavyAttack() {
   sfx.clank();
   camShake = Math.max(camShake, 0.3);
   hitStopT = Math.max(hitStopT, 0.06);
-  meleeSweep((def.dmg + (player.swordLv >= 2 ? 1 : 0)) * 2, def.range + 0.7, -0.1, def.knock * 1.8);
+  meleeSweep((def.dmg + (player.swordLv >= 2 ? 1 : 0) + (player.relic ? 1 : 0)) * 2, def.range + 0.7, -0.1, def.knock * 1.8);
   stats.heavies = (stats.heavies || 0) + 1;
 }
 
@@ -5118,12 +5190,13 @@ function updateDayNight(dt) {
   sun.position.set(_sunPosV.x + snapDx, _sunPosV.y, _sunPosV.z + snapDz);
   sun.target.position.copy(_snapT);
   const rainDim = 1 - 0.72 * weather.rain;
-  sun.intensity = 3.2 * day * rainDim;
+  const dgnDim = inDungeon() ? 0.1 : 1; // 地窖里只有火把
+  sun.intensity = 3.2 * day * rainDim * dgnDim;
   sun.color.copy(C_SUN_DUSK).lerp(C_SUN_DAY, Math.min(1, Math.max(0, elev * 2.2)));
   moon.position.set(-sx, Math.max(30, -sy), -sz);
   moon.intensity = 0.3 * night;
-  hemi.intensity = (0.12 + 0.38 * day) * (1 - 0.3 * weather.rain);
-  envIntensity = (0.05 + 0.3 * day) * rainDim;
+  hemi.intensity = (0.12 + 0.38 * day) * (1 - 0.3 * weather.rain) * dgnDim;
+  envIntensity = (0.05 + 0.3 * day) * rainDim * (inDungeon() ? 0.25 : 1);
 
   // 天空穹顶
   _sunDir.set(sx, sy, sz).normalize();
@@ -5150,6 +5223,15 @@ function updateDayNight(dt) {
   scene.fog.color.copy(hor).multiplyScalar(rainSkyDim);
   scene.fog.near = 130 - 80 * weather.rain;
   scene.fog.far = 430 - 230 * weather.rain;
+  if (dgnDim < 1) {
+    // 地窖:天穹熄灭,浓雾收拢,只剩火把撑开的一圈光
+    skyUniforms.topColor.value.multiplyScalar(0.05);
+    skyUniforms.horizonColor.value.multiplyScalar(0.05);
+    skyUniforms.sunGlow.value = 0;
+    scene.fog.color.multiplyScalar(0.06);
+    scene.fog.near = 6;
+    scene.fog.far = 55;
+  }
   sky.position.copy(camera.position);
 
   moonBall.position.set(camera.position.x - sx * 1.6, Math.max(-40, -sy * 1.6), camera.position.z - sz * 1.6);
@@ -5271,7 +5353,7 @@ function updateHUD() {
   const sp = todaySpecial();
   const calText = `${SEASON_ICON[seasonIdx()]}${SEASONS[seasonIdx()]}·${seasonDay()}日${sp ? '·' + sp.name : ''}`;
   const bossHp = questRT.boss && !questRT.boss.dead && quest.active ? questRT.boss.hp : -1;
-  const key = hearts + '|' + player.coins + '|' + player.weapon + player.armor + '|' + stars + '|' + missionText + '|' + timer + '|' + promptText + '|' + wIcon + phaseIcon + calText + '|' + bossHp;
+  const key = hearts + '|' + player.coins + '|' + player.weapon + player.armor + (player.relic ? 'R' : '') + '|' + stars + '|' + missionText + '|' + timer + '|' + promptText + '|' + wIcon + phaseIcon + calText + '|' + bossHp;
   if (key === hudCache) return;
   hudCache = key;
   weatherEl.textContent = `${calText} ${phaseIcon} ${wIcon}`;
@@ -5282,7 +5364,7 @@ function updateHUD() {
   missionEl.textContent = missionText;
   const wDef = WEAPONS[player.weapon];
   equipEl.textContent =
-    `${wDef.icon} ${wDef.name}${player.swordLv >= 2 ? '+1' : ''}` +
+    `${wDef.icon} ${wDef.name}${player.swordLv >= 2 ? '+1' : ''}${player.relic ? '·☀️' : ''}` +
     (player.armor ? ` · 🛡️ ${ARMORS[player.armor].name}` : '') +
     (player.weaponsOwned.length > 1 ? '(Q 切换)' : '');
   promptEl.textContent = promptText;
@@ -5392,6 +5474,21 @@ function computePrompt() {
       return;
     }
   }
+  if (dist2(player.pos.x, player.pos.z, DGN.hatch.x, DGN.hatch.z) < 6) {
+    mark(DGN.hatch.x, DGN.hatch.z, 1.2);
+    promptText = '按 E 掀开暗门(被封印的地窖)';
+    return;
+  }
+  if (inDungeon() && dist2(player.pos.x, player.pos.z, DGN.exit.x, DGN.exit.z) < 6) {
+    mark(DGN.exit.x, DGN.exit.z, 1.2);
+    promptText = '按 E 爬回地面';
+    return;
+  }
+  if (inDungeon() && dist2(player.pos.x, player.pos.z, DGN.relic.x, DGN.relic.z) < 6) {
+    mark(DGN.relic.x, DGN.relic.z, 1.6);
+    promptText = player.relic ? '(空了的圣坛)' : '按 E 请下「先王战徽」';
+    return;
+  }
   if (dist2(player.pos.x, player.pos.z, BOAT_PIER.x, BOAT_PIER.z) < 8) {
     mark(BOAT_PIER.x, BOAT_PIER.z, 1.2);
     promptText = '按 E 划船去湖心岛';
@@ -5449,6 +5546,11 @@ function computePrompt() {
   if (!player.mounted && dist2(player.pos.x, player.pos.z, FISH_SPOT.x, FISH_SPOT.z) < 10) {
     mark(FISH_SPOT.x, FISH_SPOT.z, 1.6);
     promptText = '按 E 垂钓';
+    return;
+  }
+  if (!player.mounted && dist2(player.pos.x, player.pos.z, FISH_SPOT_ISLE.x, FISH_SPOT_ISLE.z) < 7) {
+    mark(FISH_SPOT_ISLE.x, FISH_SPOT_ISLE.z, 1.4);
+    promptText = '按 E 深水垂钓(岛边的鱼更肥)';
     return;
   }
   if (dist2(player.pos.x, player.pos.z, 8, 46) < 8) {
@@ -5911,6 +6013,97 @@ DIRECTOR_EVENTS.push({
   },
 });
 
+DIRECTOR_EVENTS.push({
+  key: 'wedding', w: 5,
+  cond: () => dayPhase() === 'day' && quest.idx >= 1 && dist2(player.pos.x, player.pos.z, 0, 5) < 4900,
+  start() {
+    const groom = makeWanderer({ shirt: 0x3a5a8a, pants: 0x2a2a3a, hair: 0x3a2a1a }, 4, 12);
+    const bride = makeWanderer({ shirt: 0xe8dce8, pants: 0xd8ccd8, hair: 0x8a5a2a }, 5.2, 12);
+    toast('💒 有人在喷泉广场成亲!全城都来讨喜糖啦!', 4);
+    sfx.fanfare();
+    let t0 = 0, greeted = false;
+    const h = {
+      t: 40,
+      update(dt2) {
+        t0 += dt2;
+        // 新人绕喷泉慢慢走一圈
+        const a = t0 * 0.25;
+        moveEntity(groom, Math.cos(a) * 8, 5 + Math.sin(a) * 8, 2.2, dt2);
+        moveEntity(bride, Math.cos(a + 0.15) * 8, 5 + Math.sin(a + 0.15) * 8, 2.2, dt2);
+        for (const n of [groom, bride]) {
+          n.group.position.copy(n.pos);
+          n.group.rotation.y = n.yaw;
+          animateLimbs(n.parts, n.walkT, true, n.group, 0.4);
+        }
+        // 沿途撒喜钱
+        if (Math.random() < dt2 * 0.5) {
+          addPickup('coin', groom.pos.x + (Math.random() - 0.5) * 4, groom.pos.z + (Math.random() - 0.5) * 4, 30);
+        }
+        // 玩家凑近道贺(一次)
+        if (!greeted && dist2(player.pos.x, player.pos.z, groom.pos.x, groom.pos.z) < 9) {
+          greeted = true;
+          player.coins += 2;
+          sfx.coin();
+          showBubble(bride, '新娘', '沾沾喜气!喜糖……换成金币啦,拿好!', 4);
+          remember('在喷泉广场赶上一场婚礼,讨到了喜钱');
+        }
+      },
+      end() {
+        scene.remove(groom.group);
+        scene.remove(bride.group);
+      },
+    };
+    return h;
+  },
+});
+DIRECTOR_EVENTS.push({
+  key: 'funeral', w: 4,
+  cond: () => dayPhase() === 'dusk' && quest.idx >= 2,
+  start() {
+    // 四人抬棺,从西门缓缓走向静眠墓园
+    const bearers = [];
+    for (let i = 0; i < 4; i++) {
+      bearers.push(makeWanderer({ shirt: 0x2e2e34, pants: 0x222228, hair: 0x3a3a3a },
+        -66 + (i % 2) * 2, -6 + Math.floor(i / 2) * 2.4));
+    }
+    const coffin = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.6, 2.4), lambert(0x4a3a28, { roughness: 0.95 }));
+    coffin.castShadow = true;
+    scene.add(coffin);
+    toast('🕯️ 一支送葬的队伍朝墓园去了。城里安静了一瞬。', 4);
+    let paid = false;
+    const h = {
+      t: 70,
+      update(dt2) {
+        let arrived = true;
+        bearers.forEach((n, i) => {
+          const done = moveEntity(n, -44 + (i % 2) * 2, -114 + Math.floor(i / 2) * 2.4, 1.6, dt2);
+          if (!done) arrived = false;
+          n.group.position.copy(n.pos);
+          n.group.rotation.y = n.yaw;
+          animateLimbs(n.parts, n.walkT, !done, n.group, 0.3);
+        });
+        coffin.position.set(
+          (bearers[0].pos.x + bearers[3].pos.x) / 2,
+          1.3,
+          (bearers[0].pos.z + bearers[3].pos.z) / 2);
+        coffin.rotation.y = bearers[0].yaw;
+        if (!paid && dist2(player.pos.x, player.pos.z, coffin.position.x, coffin.position.z) < 36 &&
+            !player.mounted && player.weapon !== 'bow') {
+          paid = true;
+          remember('在路边驻足,为一位陌生人送了最后一程');
+          toast('(你摘下帽子,站到了路边。抬棺人朝你微微颔首。)', 3.5);
+        }
+        if (arrived) this.t = Math.min(this.t, 0.01);
+      },
+      end() {
+        for (const n of bearers) scene.remove(n.group);
+        scene.remove(coffin);
+      },
+    };
+    return h;
+  },
+});
+
 // 皮波离线联句
 const BARD_COUPLETS = [
   "好马不骑偏骑羊,咩咩闯过王城广场;绿帽游侠威名扬,吓得琳达丢了果筐。",
@@ -5947,6 +6140,7 @@ window.__gtm = {
   chronicle: () => chronicle, remember, archetype, mirrorTalk, MIRROR_POS,
   frostfang, wildSpots, heavyAttack, togglePhoto, queueDream, damagePlayer, nearestSpot,
   trialRT, startTrial, prayAltar, rowTo, BOAT_PIER, BOAT_ISLE,
+  enterDungeon, exitDungeon, takeRelic, inDungeon, DGN, FISH_SPOT_ISLE,
   workspace, wsReport, tickWorkspace: () => { workspace.t = 0; updateWorkspace(0); },
   setIdle: (t) => { idleT = t; },
   getIdle: () => ({ idleT, idleCd }),
