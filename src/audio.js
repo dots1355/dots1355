@@ -79,6 +79,60 @@ export const weatherAudio = {
   },
 };
 
+// ---- 环境氛围音:鸟鸣(春夏白天)/ 蟋蟀(夏秋夜)/ 寒风(冬) ----
+let ambKind = null, ambTimer = null, windNodes = null;
+function stopWind() {
+  if (!windNodes) return;
+  const n = windNodes;
+  windNodes = null;
+  n.g.gain.setTargetAtTime(0, ctx.currentTime, 0.8);
+  try { n.src.stop(ctx.currentTime + 2.5); } catch { /* 已停止 */ }
+}
+export function setAmbience(kind) {
+  if (!ctx || kind === ambKind) return;
+  ambKind = kind;
+  if (ambTimer) { clearInterval(ambTimer); ambTimer = null; }
+  if (kind !== 'wind') stopWind();
+  if (kind === 'birds') {
+    // 稀疏鸟鸣:随机双音上滑
+    ambTimer = setInterval(() => {
+      if (Math.random() < 0.55) return;
+      const f = 1800 + Math.random() * 1400;
+      tone(f, 0.09, 'sine', 0.035, 0, f * 0.3);
+      tone(f * 1.2, 0.07, 'sine', 0.028, 0.12, -f * 0.2);
+      if (Math.random() < 0.3) tone(f * 0.9, 0.08, 'sine', 0.025, 0.26, f * 0.25);
+    }, 2200);
+  } else if (kind === 'crickets') {
+    // 蟋蟀:高频短脉冲三连
+    ambTimer = setInterval(() => {
+      if (Math.random() < 0.35) return;
+      for (let i = 0; i < 3; i++) tone(4200 + Math.random() * 300, 0.04, 'triangle', 0.02, i * 0.09);
+    }, 1400);
+  } else if (kind === 'wind') {
+    if (!windNodes) {
+      const src = ctx.createBufferSource();
+      src.buffer = getNoise();
+      src.loop = true;
+      const filt = ctx.createBiquadFilter();
+      filt.type = 'bandpass';
+      filt.frequency.value = 320;
+      filt.Q.value = 0.6;
+      const g = ctx.createGain();
+      g.gain.value = 0;
+      const lfo = ctx.createOscillator();
+      const lfoG = ctx.createGain();
+      lfo.frequency.value = 0.13;
+      lfoG.gain.value = 0.012;
+      lfo.connect(lfoG).connect(g.gain);
+      lfo.start();
+      src.connect(filt).connect(g).connect(ctx.destination);
+      src.start();
+      g.gain.setTargetAtTime(0.028, ctx.currentTime, 1.2);
+      windNodes = { src, g, lfo };
+    }
+  }
+}
+
 export const sfx = {
   hoof()    { tone(300 + Math.random() * 80, 0.045, 'triangle', 0.06, 0, -140); },
   cluck()   { const f = 900 + Math.random() * 500; tone(f, 0.05, 'square', 0.07, 0, 300); tone(f * 0.8, 0.06, 'square', 0.06, 0.06, -200); },

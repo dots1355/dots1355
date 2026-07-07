@@ -348,8 +348,62 @@ export function buildWorld(scene) {
   lake.rotation.x = -Math.PI / 2;
   lake.position.set(-100, 0.04, 100);
   scene.add(lake);
-  circle(-100, 100, 29);
+  // 湖水碰撞改为一圈小圆(中心留空)——湖心岛靠小船摆渡上去
+  for (let i = 0; i < 14; i++) {
+    const a = (i / 14) * Math.PI * 2;
+    circle(-100 + Math.cos(a) * 24, 100 + Math.sin(a) * 24, 8);
+  }
   feat('water', -100, 100, 60, 60);
+
+  // ---- 湖心岛:沉没神殿的尖顶 ----
+  let islandAltarMat = null;
+  {
+    const isle = new THREE.Mesh(new THREE.CircleGeometry(5.5, 18), lambert(0xb9ad8f, { roughness: 0.95 }));
+    isle.rotation.x = -Math.PI / 2;
+    isle.position.set(-100, 0.07, 100);
+    isle.receiveShadow = true;
+    scene.add(isle);
+    // 三根断柱
+    for (const [cx, cz, h] of [[-102.5, 98, 2.6], [-97.8, 98.4, 1.8], [-100.2, 103, 3.4]]) {
+      const col = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.5, h, 9), lambert(0xd8d2c0, { roughness: 0.9 }));
+      col.position.set(cx, h / 2, cz);
+      col.rotation.z = (Math.random() - 0.5) * 0.1;
+      col.castShadow = true;
+      scene.add(col);
+      circle(cx, cz, 0.6);
+      const cap = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.3, 1.1), lambert(0xd8d2c0));
+      cap.position.set(cx, h + 0.15, cz);
+      cap.rotation.y = Math.random();
+      scene.add(cap);
+    }
+    // 月光祭坛:满月夜会亮
+    islandAltarMat = new THREE.MeshStandardMaterial({
+      color: 0xcfe0e8, emissive: 0x2a5a78, emissiveIntensity: 0.5, roughness: 0.3, metalness: 0.2 });
+    const altar = new THREE.Mesh(new THREE.BoxGeometry(1.4, 1.0, 1.0), islandAltarMat);
+    altar.position.set(-100, 0.5, 100.5);
+    altar.castShadow = true;
+    scene.add(altar);
+    circle(-100, 100.5, 0.9);
+    feat('tower', -100, 100, 6, 6);
+  }
+  // 摆渡小船 ×2(栈桥边 / 岛边)
+  function rowboat(x, z, rot) {
+    const b = new THREE.Group();
+    const hull = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.4, 2.6), lambert(0x7a5a38, { roughness: 0.9 }));
+    hull.position.y = 0.25;
+    b.add(hull);
+    const rim = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.12, 2.8), lambert(0x5f4429));
+    rim.position.y = 0.46;
+    b.add(rim);
+    const seat = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.08, 0.4), lambert(0x9a7a4f));
+    seat.position.y = 0.4;
+    b.add(seat);
+    b.position.set(x, 0, z);
+    b.rotation.y = rot;
+    scene.add(b);
+  }
+  rowboat(-96.5, 86, 0.5);
+  rowboat(-100, 106.2, 2.6);
 
   // ---- 农田 ----
   function field(x, z, w, d) {
@@ -1129,7 +1183,7 @@ export function buildWorld(scene) {
   box(-50020, 0, 40, 100100); box(50020, 0, 40, 100100);
 
   return {
-    ground, grassMesh,
+    ground, grassMesh, islandAltarMat,
     colliders, features, windmills, torches, chests, qBlocks, coinSpots, clouds, waterMats, occluders,
     windmillPos, banditCamp, fortPos,
     questGiverPos: new THREE.Vector3(4, 0, 10),

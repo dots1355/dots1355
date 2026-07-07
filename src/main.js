@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { buildWorld } from './world.js';
 import { makeHumanoid, makeHorse, makeWolf, makeChicken, makeSheep, resolveCollisions, angleLerp, dist2, lambert } from './entities.js';
 import { INTRO, REGIONS, GUARD_LINES, NPCS, MISSIONS, VILLAGERS, DIALOGS, TIME_GREETINGS, LORE } from './story.js';
-import { initAudio, sfx, startMusic, toggleMusic, weatherAudio } from './audio.js';
+import { initAudio, sfx, startMusic, toggleMusic, weatherAudio, setAmbience } from './audio.js';
 import { preloadAIAssets, generateRemoteAITextures } from './textures.js';
 import { initWilderness, updateWilderness, wildRegionName, CORE } from './wilderness.js';
 import { ShaderPass } from '../lib/jsm/postprocessing/ShaderPass.js';
@@ -627,7 +627,7 @@ function setArmorVisual(level) {
 }
 function applyArmor(level) {
   player.armor = level;
-  player.maxHp = 10 + ARMORS[level].bonus;
+  player.maxHp = 10 + ARMORS[level].bonus + (lakeBlessed ? 2 : 0);
   player.hp = Math.min(player.hp + ARMORS[level].bonus, player.maxHp);
   setArmorVisual(level);
 }
@@ -1304,6 +1304,96 @@ function togglePhoto() {
     if (el) el.style.visibility = photoMode ? 'hidden' : '';
   }
   if (!photoMode) toast('📷 已退出拍照模式', 1.5);
+}
+
+// ================= 银月湖心岛:摆渡小船与月光祭坛 =================
+const BOAT_PIER = { x: -96.5, z: 86 };
+const BOAT_ISLE = { x: -100, z: 106.2 };
+let lakeBlessed = false;
+function rowTo(dst, msg) {
+  sfx.splash();
+  toast('🚣 你摇着小船,桨声把湖面剪开一道纹……', 2.5);
+  player.pos.set(dst.x, 0, dst.z);
+  player.vy = 0;
+  if (msg) setTimeout(() => toast(msg, 3), 900);
+}
+function prayAltar() {
+  if (lakeBlessed) {
+    openDialog(['(祭坛安静地泛着微光。湖神的恩赐一生只有一次——它记得你来过。)']);
+    return;
+  }
+  lakeBlessed = true;
+  player.maxHp += 2;
+  player.hp = player.maxHp;
+  sfx.fanfare();
+  remember('在湖心沉没神殿的祭坛前,得到了湖神的恩赐', 'lakegift');
+  unlockAch('lakegift');
+  openDialog([
+    '(你把手放上月光祭坛。水下极深处,有什么东西缓缓睁开了眼,又缓缓阖上。)',
+    '(一股凉意顺着掌心漫上来,像月光灌进了骨头——却并不冷。)',
+    '💙 湖神的恩赐:生命上限 +2!',
+  ], () => saveGame());
+}
+
+// ================= 赛马计时赛(马厩旁的赛旗,无限重复) =================
+const TRIAL_FLAG = { x: 57, z: 13 };
+{
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 3.2, 6), lambert(0x6b4a2f));
+  pole.position.set(TRIAL_FLAG.x, 1.6, TRIAL_FLAG.z);
+  scene.add(pole);
+  const flag = new THREE.Mesh(new THREE.PlaneGeometry(1.1, 0.7),
+    new THREE.MeshStandardMaterial({ color: 0xffd83d, emissive: 0x885500, emissiveIntensity: 0.3, side: THREE.DoubleSide }));
+  flag.position.set(TRIAL_FLAG.x + 0.58, 2.7, TRIAL_FLAG.z);
+  scene.add(flag);
+}
+const trialRT = { active: false, idx: 0, t: 0, rings: [] };
+function startTrial() {
+  trialRT.active = true;
+  trialRT.idx = 0;
+  trialRT.t = 0;
+  for (const [rx, rz] of world.raceRoute) {
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(2.4, 0.22, 8, 20),
+      new THREE.MeshStandardMaterial({ color: 0x7ad4ff, emissive: 0x1a5588, emissiveIntensity: 0.6, metalness: 0.6, roughness: 0.3 }));
+    ring.position.set(rx, 2.4, rz);
+    scene.add(ring);
+    trialRT.rings.push(ring);
+  }
+  sfx.accept();
+  toast(`🏁 计时赛开始!穿过全部 ${world.raceRoute.length} 个蓝环${stats.raceBest ? `(纪录 ${stats.raceBest.toFixed(1)} 秒)` : ''}`, 3.5);
+}
+function endTrial(finished) {
+  for (const r of trialRT.rings) scene.remove(r);
+  trialRT.rings = [];
+  trialRT.active = false;
+  if (!finished) { toast('🏁 计时赛作废。旗子下再来!', 2.5); return; }
+  const t = trialRT.t;
+  const best = stats.raceBest || 0;
+  if (!best || t < best) {
+    stats.raceBest = t;
+    player.coins += 10;
+    sfx.fanfare();
+    remember(`赛马计时赛跑出 ${t.toFixed(1)} 秒的新纪录`);
+    toast(`🏁 新纪录 ${t.toFixed(1)} 秒!赏金 10 枚!`, 4);
+    saveGame();
+  } else {
+    toast(`🏁 用时 ${t.toFixed(1)} 秒(纪录 ${best.toFixed(1)} 秒)。再练练!`, 3.5);
+  }
+}
+function updateTrial(dt) {
+  if (!trialRT.active) return;
+  trialRT.t += dt;
+  const [rx, rz] = world.raceRoute[trialRT.idx];
+  for (let i = 0; i < trialRT.rings.length; i++) {
+    trialRT.rings[i].rotation.y += dt * (i === trialRT.idx ? 3 : 0.6);
+    trialRT.rings[i].material.emissiveIntensity = i < trialRT.idx ? 0.1 : i === trialRT.idx ? 1.2 : 0.4;
+  }
+  if (dist2(player.pos.x, player.pos.z, rx, rz) < 9) {
+    trialRT.idx++;
+    sfx.coin();
+    if (trialRT.idx >= world.raceRoute.length) endTrial(true);
+    else toast(`蓝环 ${trialRT.idx}/${world.raceRoute.length} · ${trialRT.t.toFixed(1)}s`, 1);
+  }
+  if (trialRT.t > 120) endTrial(false); // 两分钟没跑完自动作废
 }
 
 // ================= 世界观铭文(可阅读的石碑,集齐 12 处) =================
@@ -2119,6 +2209,7 @@ const ACH_DEFS = {
   chef:     { name: '野炊大师', desc: '在篝火上烤 5 块鹿肉' },
   packmate: { name: '孤狼不再', desc: '驯服白狼「霜牙」' },
   soak:     { name: '泡汤客', desc: '在温泉里泡满 30 秒' },
+  lakegift: { name: '湖神的恩赐', desc: '触碰湖心岛的月光祭坛(生命上限 +2)' },
 };
 const stats = { thrown: 0, pecks: 0, wishes: 0, drunks: 0, loseStreak: 0, sheepDist: 0, lastStomp: -99, deer: 0, mushrooms: 0 };
 let achUnlocked = [];
@@ -3018,6 +3109,7 @@ const IDLE_WHISPERS = [
   '(石头也在发呆。你们俩谁先赢,还不好说。)',
 ];
 let idleT = 0, idleCd = 0, idleIdx = Math.floor(Math.random() * IDLE_WHISPERS.length);
+let ambienceT = 2; // 环境氛围音判定计时
 function updateIdle(dt) {
   if (!started || player.dead || dialog.open || paused || shopOpen) { idleT = 0; return; }
   idleT += dt;
@@ -3048,7 +3140,7 @@ function saveGame() {
       swordLv: player.swordLv, royalHorse: player.royalHorse,
       kingRewarded: namedNPCs.find((n) => n.key === 'king')?.rewarded || false,
       ach: achUnlocked, stats, day: calendar.day, chron: chronicle, fday: festGrantedDay,
-      wolf: frostfang.tamed, wolfFeed: frostfang.feed,
+      wolf: frostfang.tamed, wolfFeed: frostfang.feed, lake: lakeBlessed,
       herbs: player.herbs, venison: player.venison, lore: loreRead,
       weapon: player.weapon, weaponsOwned: player.weaponsOwned, armor: player.armor,
     }));
@@ -3077,6 +3169,14 @@ function loadGame() {
     if (Array.isArray(s.chron)) chronicle = s.chron;
     festGrantedDay = s.fday || 0;
     frostfang.feed = s.wolfFeed || 0;
+    if (s.lake) {
+      lakeBlessed = true;
+      // 无护甲存档:此处直接补上限;有护甲存档由下方护甲分支统一计算
+      if (!s.armor || !ARMORS[s.armor]) {
+        player.maxHp = 10 + 2;
+        player.hp = player.maxHp;
+      }
+    }
     if (s.wolf && !frostfang.tamed) {
       frostfang.tamed = true;
       frostfang.ent = frostfang.wary;
@@ -3087,7 +3187,7 @@ function loadGame() {
     if (s.weapon && player.weaponsOwned.includes(s.weapon)) player.weapon = s.weapon;
     if (s.armor && ARMORS[s.armor]) {
       player.armor = s.armor;
-      player.maxHp = 10 + ARMORS[s.armor].bonus;
+      player.maxHp = 10 + ARMORS[s.armor].bonus + (lakeBlessed ? 2 : 0);
       player.hp = player.maxHp;
     }
     return true;
@@ -3687,6 +3787,25 @@ function tryInteract() {
       return;
     }
   }
+  // 湖上摆渡与月光祭坛
+  if (dist2(player.pos.x, player.pos.z, BOAT_PIER.x, BOAT_PIER.z) < 8) {
+    rowTo({ x: -100, z: 102.5 }, '🏝️ 湖心岛。断柱与祭坛都在水声里等你。');
+    return;
+  }
+  if (dist2(player.pos.x, player.pos.z, BOAT_ISLE.x, BOAT_ISLE.z) < 6) {
+    rowTo({ x: -98, z: 83 });
+    return;
+  }
+  if (dist2(player.pos.x, player.pos.z, -100, 100.5) < 5) {
+    prayAltar();
+    return;
+  }
+  // 赛马计时赛
+  if (dist2(player.pos.x, player.pos.z, TRIAL_FLAG.x, TRIAL_FLAG.z) < 8) {
+    if (trialRT.active) endTrial(false);
+    else startTrial();
+    return;
+  }
   // 白狼霜牙:喂鹿肉驯服
   if (!frostfang.tamed && frostfang.wary &&
       dist2(player.pos.x, player.pos.z, frostfang.wary.pos.x, frostfang.wary.pos.z) < 26) {
@@ -4254,6 +4373,20 @@ function updateBandits(dt) {
     }
     if (!b.boss && !b.escort && !b.robber && !b.convict && !b.bountyHead &&
         !b.duel && !b.arena && !b.eventFoe && entFar(b)) continue; // 远处匪徒待机
+    // Boss 二阶段:血量过半即狂暴——提速、加伤、召两名亲卫
+    if (b.boss && !b.enraged && b.hp <= 6) {
+      b.enraged = true;
+      b.speed += 2.2;
+      b.dmg = 3;
+      telegraphFlash(b);
+      hitStopT = Math.max(hitStopT, 0.1);
+      sfx.wanted();
+      toast('🔥 血斧巴罗克双目赤红——狂暴了!!', 3.5);
+      const m1 = addBandit(b.pos.x - 3, b.pos.z, { hp: 2 });
+      m1.eventFoe = true;
+      const m2 = addBandit(b.pos.x + 3, b.pos.z, { hp: 2 });
+      m2.eventFoe = true;
+    }
     if (b.robber) { updateRobber(b, dt); continue; }
     if (b.convict) {
       if (b.stunT > 0) { b.stunT -= dt; continue; }
@@ -5259,6 +5392,27 @@ function computePrompt() {
       return;
     }
   }
+  if (dist2(player.pos.x, player.pos.z, BOAT_PIER.x, BOAT_PIER.z) < 8) {
+    mark(BOAT_PIER.x, BOAT_PIER.z, 1.2);
+    promptText = '按 E 划船去湖心岛';
+    return;
+  }
+  if (dist2(player.pos.x, player.pos.z, BOAT_ISLE.x, BOAT_ISLE.z) < 6) {
+    mark(BOAT_ISLE.x, BOAT_ISLE.z, 1.2);
+    promptText = '按 E 划船回栈桥';
+    return;
+  }
+  if (dist2(player.pos.x, player.pos.z, -100, 100.5) < 5) {
+    mark(-100, 100.5, 1.6);
+    promptText = lakeBlessed ? '(祭坛记得你)' : '按 E 触碰月光祭坛';
+    return;
+  }
+  if (dist2(player.pos.x, player.pos.z, TRIAL_FLAG.x, TRIAL_FLAG.z) < 8) {
+    mark(TRIAL_FLAG.x, TRIAL_FLAG.z, 3.0);
+    promptText = trialRT.active ? '按 E 放弃计时赛'
+      : `按 E 开始赛马计时赛${stats.raceBest ? `(纪录 ${stats.raceBest.toFixed(1)}s)` : ''}`;
+    return;
+  }
   if (!frostfang.tamed && frostfang.wary &&
       dist2(player.pos.x, player.pos.z, frostfang.wary.pos.x, frostfang.wary.pos.z) < 26) {
     mark(frostfang.wary.pos.x, frostfang.wary.pos.z, 1.3);
@@ -5792,6 +5946,7 @@ window.__gtm = {
   deers, mushrooms, loreStones, LORE, tellStory, sleepToMorning, newDay,
   chronicle: () => chronicle, remember, archetype, mirrorTalk, MIRROR_POS,
   frostfang, wildSpots, heavyAttack, togglePhoto, queueDream, damagePlayer, nearestSpot,
+  trialRT, startTrial, prayAltar, rowTo, BOAT_PIER, BOAT_ISLE,
   workspace, wsReport, tickWorkspace: () => { workspace.t = 0; updateWorkspace(0); },
   setIdle: (t) => { idleT = t; },
   getIdle: () => ({ idleT, idleCd }),
@@ -5848,6 +6003,13 @@ function loop(now) {
   if (player.blessT > 0) player.blessT -= dt;
   updateFrostfang(dt);
   updateSprings(dt);
+  updateTrial(dt);
+  if (world.islandAltarMat) {
+    const glow = todaySpecial()?.key === 'fullmoon' && dayPhase() === 'night' ? 2.2 : 0.5;
+    if (Math.abs(world.islandAltarMat.emissiveIntensity - glow) > 0.01) {
+      world.islandAltarMat.emissiveIntensity += (glow - world.islandAltarMat.emissiveIntensity) * dt;
+    }
+  }
   updateGuards(dt);
   updateBandits(dt);
   updateWolves(dt);
@@ -5868,6 +6030,18 @@ function loop(now) {
   updateStreetEvent(dt);
   updateBounty(dt);
   updateWeather(dt);
+  // 环境氛围音:按季节 × 时辰 × 天气切换(4 秒判一次)
+  ambienceT -= dt;
+  if (ambienceT <= 0) {
+    ambienceT = 4;
+    const ph = dayPhase();
+    let kind = null;
+    if (weather.rain > 0.25) kind = null; // 雨雪声自己就是氛围
+    else if (isWinter()) kind = 'wind';
+    else if (ph === 'night' && seasonIdx() >= 1) kind = 'crickets'; // 夏秋夜
+    else if ((ph === 'day' || ph === 'dawn') && seasonIdx() <= 1) kind = 'birds'; // 春夏白天
+    setAmbience(started && !paused ? kind : null);
+  }
   updateRegion(dt);
   updateBubble(dt);
   villagerChatter();
