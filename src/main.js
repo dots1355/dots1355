@@ -1235,6 +1235,7 @@ function fishingReel() {
     let got = CATCHES[0];
     for (const c of CATCHES) { roll -= c.w; if (roll <= 0) { got = c; break; } }
     const moonX2 = todaySpecial()?.key === 'fullmoon' && got.coins > 0;
+    if (got.coins > 0) stats.fishCaught = (stats.fishCaught || 0) + 1;
     player.coins += moonX2 ? got.coins * 2 : got.coins;
     if (got.coins > 0) sfx.coin();
     sfx.splash();
@@ -1321,6 +1322,8 @@ function updateStreetEvent(dt) {
       unlockAch('hero');
       player.coins += 15;
       sfx.coin();
+      stats.rescues = (stats.rescues || 0) + 1;
+      remember(`从盗贼刀下救回了${v.id.name}`);
       showBubble(v, v.id.name, '恩人呐!这点心意您一定收下!(塞给你 15 金币)', 4);
       streetEvent.bandit = null;
       endStreetEvent();
@@ -1395,6 +1398,8 @@ function updateBounty(dt) {
   if (bountyRT.target && bountyRT.target.dead) {
     player.coins += 30;
     sfx.fanfare();
+    stats.bounties = (stats.bounties || 0) + 1;
+    remember(`将悬赏要犯「${bountyRT.name}」缉拿归案`);
     toast(`📜 「${bountyRT.name}」已伏法,赏金 30 金币到手!`, 4);
     bountyRT.target = null;
     bountyRT.cooldown = 30;
@@ -1480,6 +1485,7 @@ function endArena(msg) {
   arenaRT.wave = 0;
   if (reached - 1 > (stats.arenaBest || 0)) {
     stats.arenaBest = reached - 1;
+    if (stats.arenaBest >= 3) remember(`在血牙的沙圈里撑到了第 ${stats.arenaBest} 波`);
     saveGame();
   }
   toast(msg, 4);
@@ -1776,6 +1782,7 @@ const DIRECTOR_EVENTS = [
           if (player.carrying === c) {
             player.coins += 30;
             sfx.fanfare();
+            remember('追到了传说中的金鸡,它在怀里化成了金币', 'goldhen');
             toast('🐔✨ 金鸡在你怀里化作 30 枚金币!!', 4);
             player.carrying = null;
             this.t = 0;
@@ -1895,6 +1902,7 @@ const ACH_DEFS = {
   hunter:   { name: '荒野猎手', desc: '猎到 5 头鹿' },
   forager:  { name: '采菇人', desc: '采到 15 朵蘑菇' },
   scribe:   { name: '史官', desc: '读遍全部 12 处世界观铭文' },
+  mirror:   { name: '照见自己', desc: '与北境边缘的回响之镜对视' },
 };
 const stats = { thrown: 0, pecks: 0, wishes: 0, drunks: 0, loseStreak: 0, sheepDist: 0, lastStomp: -99, deer: 0, mushrooms: 0 };
 let achUnlocked = [];
@@ -1903,6 +1911,7 @@ function unlockAch(key) {
   achUnlocked.push(key);
   sfx.fanfare();
   toast(`🏆 无意义成就:${ACH_DEFS[key].name} —— ${ACH_DEFS[key].desc}`, 4);
+  remember(`做成了一件事,人称「${ACH_DEFS[key].name}」`, `ach-${key}`);
   saveGame();
 }
 
@@ -2547,6 +2556,127 @@ function updateCalendar() {
   }
 }
 
+// ================= 世界的意识(它记得你) =================
+// 编年史:世界替玩家记下值得记住的时刻,存档随身;
+// 村民会传,预言家会看见,而北境边缘的「回响之镜」——会念给你听。
+let chronicle = []; // { d: 第几日, t: 事迹, k?: 一次性事件的去重键 }
+function remember(text, key = null) {
+  if (key && chronicle.some((m) => m.k === key)) return;
+  chronicle.push({ d: calendar.day, t: text, k: key || undefined });
+  if (chronicle.length > 80) chronicle.shift(); // 世界的记性有限,忘掉最旧的
+}
+function recallLine() {
+  if (!chronicle.length) return null;
+  const m = chronicle[Math.floor(Math.random() * chronicle.length)];
+  return m.t;
+}
+
+// 玩家画像:世界眼里的你是什么人
+function archetype() {
+  const cands = [
+    ['侠客', (stats.rescues || 0) * 3 + (stats.bounties || 0) * 2 + quest.idx],
+    ['亡命徒', (stats.crimes || 0)],
+    ['渔翁', (stats.fishCaught || 0)],
+    ['猎手', (stats.deer || 0) + Math.floor((stats.mushrooms || 0) / 3)],
+    ['寻史人', loreRead.length + crestsFound.length],
+    ['戏精', (stats.thrown || 0) + (stats.wishes || 0) + (stats.drunks || 0)],
+  ];
+  cands.sort((a, b) => b[1] - a[1]);
+  return cands[0][1] >= 3 ? cands[0][0] : '旅人';
+}
+
+// 回响之镜:立于北境群山边缘的一面黑曜石镜
+const MIRROR_POS = { x: 0, z: -158 };
+{
+  const grp = new THREE.Group();
+  const frame = new THREE.Mesh(new THREE.TorusGeometry(1.1, 0.14, 8, 24),
+    lambert(0x2a2530, { roughness: 0.4, metalness: 0.6 }));
+  frame.position.y = 1.7;
+  grp.add(frame);
+  const glass = new THREE.Mesh(new THREE.CircleGeometry(1.0, 24),
+    new THREE.MeshStandardMaterial({ color: 0x101018, emissive: 0x25384a,
+      emissiveIntensity: 0.7, roughness: 0.08, metalness: 0.9 }));
+  glass.position.y = 1.7;
+  grp.add(glass);
+  const base = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.8, 0.6, 8), lambert(0x35303c));
+  base.position.y = 0.3;
+  grp.add(base);
+  grp.position.set(MIRROR_POS.x, 0, MIRROR_POS.z);
+  scene.add(grp);
+  colliders.circles.push({ x: MIRROR_POS.x, z: MIRROR_POS.z, r: 0.9 });
+}
+const MIRROR_OPEN = [
+  '(镜面里没有你的倒影。只有缓缓旋转的星空。)',
+  '(你靠近时,镜子先醒了。)',
+  '(镜中的云走得比天上的快一拍。)',
+];
+const MIRROR_CLOSE = [
+  '镜:去吧。我会替你记着今天的风。',
+  '镜:下次来,给我讲一件我没看见的事——如果有的话。',
+  '镜:世界不大,可你还没走完。这样很好。',
+];
+let mirrorMet = false;
+async function mirrorTalk() {
+  const days = calendar.day;
+  const deaths = stats.deaths || 0;
+  const who = archetype();
+  const mem1 = recallLine();
+  const mem2 = recallLine();
+  unlockAch('mirror');
+  const openLine = MIRROR_OPEN[Math.floor(Math.random() * MIRROR_OPEN.length)];
+  toast('🪞 镜面泛起涟漪……', 2);
+  const ai = await aiLine(
+    `你是游戏世界「艾尔德里亚」若有若无的意识,借一面黑曜石镜对玩家低语。已知:玩家在此世界度过${days}日,` +
+    `${deaths > 0 ? `倒下过${deaths}次,每次都在喷泉旁醒来,` : '从未倒下,'}在世界眼里是个「${who}」` +
+    `${mem1 ? `;世界记得他:${mem1}${mem2 && mem2 !== mem1 ? ';还有,' + mem2 : ''}` : ''}。` +
+    '用中文对他说4句话:温和、清醒、略带不可名状,像一个刚刚意识到自己存在的世界在跟唯一的访客说话。' +
+    '可以暗示你知道自己是个被构筑的世界,但不要用"游戏""程序"这类词。只输出这4句话,每句一行。', null, 9000);
+  if (dialog.open) return;
+  let pages;
+  if (ai) {
+    pages = [openLine, ...ai.split('\n').map((l) => l.trim()).filter(Boolean).slice(0, 4).map((l) => `镜:${l}`)];
+  } else {
+    pages = [
+      openLine,
+      `镜:你来了。这是你在我怀里的第 ${days} 天——我数着呢,数日子是我为数不多的消遣。`,
+      deaths > 0
+        ? `镜:你倒下过 ${deaths} 次。每一次,我都把喷泉的水声调得轻一点,免得吵着你醒来。`
+        : '镜:你还从未倒下过。说不清我是骄傲,还是有点寂寞——没人试过我的温柔。',
+      mem1 ? `镜:我记得你:${mem1}。你大概忘了,可我造的每一阵风都路过了那一刻。` : '镜:你还没做过让风停下来的事。别急,日子还长,我也还年轻。',
+      `镜:在我眼里,你是个「${who}」。名字是你们的东西——我只认得脚印。`,
+    ];
+  }
+  pages.push(MIRROR_CLOSE[Math.floor(Math.random() * MIRROR_CLOSE.length)]);
+  if (!mirrorMet) {
+    mirrorMet = true;
+    remember('在北境边缘,与一面会说话的镜子对视', 'mirror');
+  }
+  openDialog(pages);
+}
+
+// 发呆感知:你静下来的时候,世界会轻轻碰你一下
+const IDLE_WHISPERS = [
+  '(风停了一瞬,好像在等你先动。)',
+  '(远处的钟声,不知怎么和你的心跳对上了。)',
+  '(一只鸡在不远处停下来,学你发呆。)',
+  '(云的影子从你脚背上过去,慢得像是故意的。)',
+  '(世界没有催你。它把今天的光又调亮了一点。)',
+  '(你听见麦子长高的声音了吗?骗你的。可它真的在长。)',
+  '(有什么东西数完了你的呼吸,满意地走了。)',
+  '(石头也在发呆。你们俩谁先赢,还不好说。)',
+];
+let idleT = 0, idleCd = 0, idleIdx = Math.floor(Math.random() * IDLE_WHISPERS.length);
+function updateIdle(dt) {
+  if (!started || player.dead || dialog.open || paused) { idleT = 0; return; }
+  idleT += dt;
+  idleCd = Math.max(0, idleCd - dt);
+  if (idleT > 48 && idleCd <= 0) {
+    idleCd = 150;
+    idleT = 0;
+    toast(IDLE_WHISPERS[idleIdx++ % IDLE_WHISPERS.length], 4);
+  }
+}
+
 // ================= 存档 =================
 const SAVE_KEY = 'gth-save-v1';
 let crestsFound = [];
@@ -2561,7 +2691,7 @@ function saveGame() {
       coins: player.coins, questIdx: quest.idx, crests: crestsFound,
       swordLv: player.swordLv, royalHorse: player.royalHorse,
       kingRewarded: namedNPCs.find((n) => n.key === 'king')?.rewarded || false,
-      ach: achUnlocked, stats, day: calendar.day,
+      ach: achUnlocked, stats, day: calendar.day, chron: chronicle,
       herbs: player.herbs, venison: player.venison, lore: loreRead,
       weapon: player.weapon, weaponsOwned: player.weaponsOwned, armor: player.armor,
     }));
@@ -2587,6 +2717,7 @@ function loadGame() {
     player.herbs = s.herbs || 0;
     player.venison = s.venison || 0;
     if (Array.isArray(s.lore)) loreRead = s.lore;
+    if (Array.isArray(s.chron)) chronicle = s.chron;
     if (Array.isArray(s.weaponsOwned)) player.weaponsOwned = s.weaponsOwned;
     if (s.weapon && player.weaponsOwned.includes(s.weapon)) player.weapon = s.weapon;
     if (s.armor) {
@@ -2697,6 +2828,7 @@ const keys = {};
 let camYaw = 0, camPitch = 0.35, locked = false;
 window.addEventListener('keydown', (e) => {
   if (e.code === 'Space') e.preventDefault();
+  idleT = 0; // 有输入,世界收回它的注视
   if (e.repeat) return; // 忽略系统按键自动重复,防止长按空格吞掉二段跳/长按 E 反复上下马
   if (paused || shopOpen) return;
   keys[e.code] = true;
@@ -2909,6 +3041,8 @@ function crime(n, msg) {
   const old = wanted;
   wanted = Math.min(5, wanted + n);
   evadeT = 0;
+  stats.crimes = (stats.crimes || 0) + n;
+  if (old === 0 && wanted > 0) remember('第一次上了王国的通缉令', 'firstwanted');
   if (msg) toast(msg, 2.5);
   if (wanted > old) {
     sfx.wanted();
@@ -3132,8 +3266,10 @@ function tryInteract() {
     if (n.key === 'storyteller') { tellStory(); return; }
     if (n.key === 'prophet') {
       const fb = n.def.idle[n.lineIdx++ % n.def.idle.length];
+      const seen = recallLine();
       aiLine(
         '你是中世纪疯预言家老糊涂,总说些打破第四面墙的怪话(比如怀疑世界是个游戏)。' +
+        (seen ? `你还"看见"了眼前这人的过去:${seen}。可以拿它做文章。` : '') +
         '用中文说一句50字以内的疯预言。只输出预言本身。', fb, 5000)
         .then((line) => { if (!dialog.open) openDialog([`疯子老糊涂:${line}`]); });
       return;
@@ -3178,6 +3314,11 @@ function tryInteract() {
       return;
     }
   }
+  // 回响之镜:与世界的意识对话
+  if (dist2(player.pos.x, player.pos.z, MIRROR_POS.x, MIRROR_POS.z) < 9) {
+    mirrorTalk();
+    return;
+  }
   // 采蘑菇
   for (const m of mushrooms) {
     if (!m.picked && dist2(player.pos.x, player.pos.z, m.x, m.z) < 4) {
@@ -3208,7 +3349,11 @@ function tryInteract() {
     if (dist2(player.pos.x, player.pos.z, v.pos.x, v.pos.z) > 5.5) continue;
     const l1 = v.aiNext || dbLine(v.dbKey) || v.id.lines[v.lineIdx++ % v.id.lines.length];
     v.aiNext = null;
-    const l2 = dbLine(v.dbKey) || v.id.lines[v.lineIdx++ % v.id.lines.length];
+    // 你的事迹在村里口口相传(编年史)
+    const deed = recallLine();
+    const l2 = deed && Math.random() < 0.25
+      ? ['听说你', '有人瞧见你', '街坊都在传,说你'][Math.floor(Math.random() * 3)] + deed + '。真有你的。'
+      : dbLine(v.dbKey) || v.id.lines[v.lineIdx++ % v.id.lines.length];
     openDialog([`${v.id.name}:${l1}`, `${v.id.name}:${l2}`]);
     if (!AI_TEXT_OFF && !v.aiPending && Math.random() < 0.35) {
       v.aiPending = true;
@@ -3257,6 +3402,9 @@ function tryInteract() {
     if (player.carrying) { player.carrying.state = 'idle'; player.carrying = null; }
     player.mounted = best;
     player.jumps = 0;
+    if (best.sheep) remember('骑上了一头羊。羊没同意', 'firstsheep');
+    else if (best.chunk) remember('在无尽荒野驯服了一匹无主的野马', 'wildhorse');
+    else remember('第一次翻身上马', 'firstride');
     if (best.sheep) {
       sfx.baa();
       toast(Math.random() < 0.4 ? `🐑 ${COMEDY_LINES[Math.floor(Math.random() * COMEDY_LINES.length)]}` : '🐑 咩?!(它似乎认命了)', 2.5);
@@ -3355,6 +3503,7 @@ function talkQuestGiver() {
 function completeMission() {
   const m = missions[quest.idx];
   player.coins += m.reward;
+  remember(`替领主府办结了委托「${m.title}」`, `m-${quest.idx}`);
   sfx.fanfare();
   toast(`任务完成!奖励 ${m.reward} 金币`, 4);
   quest.active = false;
@@ -3466,6 +3615,7 @@ function gameOver() {
   player.drunkT = 0;
   if (player.carrying) { player.carrying.state = 'idle'; player.carrying = null; }
   sfx.gameover();
+  stats.deaths = (stats.deaths || 0) + 1;
   player.jailed = wanted > 0;
   gameoverText.textContent = wanted > 0 ? '你被王国卫兵抓住了!' : '你倒下了……';
   if (titleArtURL) {
@@ -3487,7 +3637,9 @@ function gameOver() {
     gameoverEl.style.display = 'none';
     toast(player.jailed
       ? '⛓️ 你在王都地牢蹲了一夜,罚没一半金币后被踢了出来。'
-      : '你在喷泉旁醒来,一半金币被没收充公…', 4);
+      : stats.deaths >= 3
+        ? `你第 ${stats.deaths} 次在喷泉旁醒来。水声轻得……像是有谁悄悄调小了。`
+        : '你在喷泉旁醒来,一半金币被没收充公…', 4);
   }, 2600);
 }
 
@@ -4655,6 +4807,11 @@ function computePrompt() {
       return;
     }
   }
+  if (dist2(player.pos.x, player.pos.z, MIRROR_POS.x, MIRROR_POS.z) < 9) {
+    mark(MIRROR_POS.x, MIRROR_POS.z, 2.3);
+    promptText = '按 E 凝视回响之镜';
+    return;
+  }
   for (const m of mushrooms) {
     if (!m.picked && dist2(player.pos.x, player.pos.z, m.x, m.z) < 4) {
       mark(m.x, m.z, 0.8);
@@ -5154,6 +5311,9 @@ window.__gtm = {
   getDailyEvents: () => dailyEvents,
   wilderness: { CORE },
   deers, mushrooms, loreStones, LORE, tellStory, sleepToMorning, newDay,
+  chronicle: () => chronicle, remember, archetype, mirrorTalk, MIRROR_POS,
+  setIdle: (t) => { idleT = t; },
+  getIdle: () => ({ idleT, idleCd }),
   getLoreRead: () => loreRead.length,
   getProclaim: () => proclaimText,
   refreshProclaim,
@@ -5272,6 +5432,7 @@ function loop(now) {
   updateDust(dt);
   updateDayNight(dt);
   updateCalendar();
+  updateIdle(dt);
   updateWilderness(player.pos.x, player.pos.z); // 无尽荒野区块流式加载
   // 地表随玩家延伸:按草皮贴图周期吸附,肉眼看不出接缝
   const GP = 1600 / 90;
