@@ -77,8 +77,33 @@ for (let i = 0; i < 6; i++) {
   ROCKS.push(g);
 }
 const ROOTG = jitter(new THREE.ConeGeometry(0.16, 0.5, 5), 0.03, poolRng); // 根瘤
+// 枯枝/仙人掌部件池(单位尺寸,实例用 scale 变化;绝不在 build 时新建几何体)
+const BRANCHES = [];
+for (let i = 0; i < 4; i++) BRANCHES.push(jitter(new THREE.CylinderGeometry(0.03, 0.09, 1, 5), 0.015, poolRng));
+const CACTUS_BODY = jitter(new THREE.CylinderGeometry(0.28, 0.34, 1, 8), 0.008, poolRng);
+const CACTUS_CAP = (() => {
+  const g = new THREE.SphereGeometry(0.29, 8, 5, 0, Math.PI * 2, 0, Math.PI / 2);
+  g.userData.shared = true;
+  return g;
+})();
+const CACTUS_ELBOW = (() => {
+  const g = new THREE.CylinderGeometry(0.14, 0.14, 0.5, 7);
+  g.userData.shared = true;
+  return g;
+})();
+const CACTUS_ARM = (() => {
+  const g = new THREE.CylinderGeometry(0.14, 0.15, 1, 7);
+  g.userData.shared = true;
+  return g;
+})();
+const FLOWERG = (() => {
+  const g = new THREE.SphereGeometry(0.12, 6, 4);
+  g.userData.shared = true;
+  return g;
+})();
 const pick = (rng, arr) => arr[Math.floor(rng() * arr.length)];
-const shade = (hex, f) => new THREE.Color(hex).multiplyScalar(f).getHex();
+// 色阶量化到 1/16,材质缓存有界(不会因随机浮点无限增殖)
+const shade = (hex, f) => new THREE.Color(hex).multiplyScalar(Math.round(f * 16) / 16).getHex();
 
 // ---- 阔叶树:弯干 + 根部张开 + 3~5 个碎球树冠(下暗上亮) ----
 export function buildTree(rng, opts = {}) {
@@ -112,7 +137,7 @@ export function buildTree(rng, opts = {}) {
     blob.scale.setScalar(s);
     blob.position.set(Math.cos(a) * rr, y, Math.sin(a) * rr);
     blob.rotation.y = rng() * 6.28;
-    blob.castShadow = true;
+    blob.castShadow = main; // 只有主冠投影,阴影通道省一半
     g.add(blob);
   }
   return { group: g, r: 0.55 };
@@ -137,7 +162,7 @@ export function buildPine(rng, opts = {}) {
     const tier = new THREE.Mesh(pick(rng, PINE_TIERS), sharedMat(shade(leaf, 0.82 + i * 0.12)));
     tier.scale.set(w, h, w);
     tier.position.set(dx, y + h * 0.4, dz);
-    tier.castShadow = true;
+    tier.castShadow = i < 2;
     g.add(tier);
     if (snow) {
       const cap = new THREE.Mesh(pick(rng, PINE_TIERS), sharedMat(0xe8eef4, { roughness: 0.85 }));
@@ -161,14 +186,12 @@ export function buildDeadTree(rng, opts = {}) {
   trunk.castShadow = true;
   g.add(trunk);
   for (let i = 0, n = 2 + Math.floor(rng() * 3); i < n; i++) {
-    const br = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.09, 0.9 + rng() * 0.7, 5),
-      sharedMat(shade(bark, 0.9), { roughness: 1 }));
-    br.geometry.userData.shared = true;
+    const br = new THREE.Mesh(pick(rng, BRANCHES), sharedMat(shade(bark, 0.9), { roughness: 1 }));
+    br.scale.y = 0.9 + rng() * 0.7;
     const a = rng() * Math.PI * 2;
     br.position.set(Math.cos(a) * 0.18, 1.5 + rng() * 0.9, Math.sin(a) * 0.18);
     br.rotation.z = Math.cos(a) * (0.7 + rng() * 0.5);
     br.rotation.x = -Math.sin(a) * (0.7 + rng() * 0.5);
-    br.castShadow = true;
     g.add(br);
   }
   return { group: g, r: 0.4 };
@@ -179,34 +202,30 @@ export function buildCactus(rng, opts = {}) {
   const g = new THREE.Group();
   const green = opts.leaf ?? 0x3f8a4f;
   const h = 1.8 + rng() * 1.2;
-  const body = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.34, h, 8), sharedMat(green, { roughness: 0.9 }));
-  body.geometry.userData.shared = true;
+  const body = new THREE.Mesh(CACTUS_BODY, sharedMat(green, { roughness: 0.9 }));
+  body.scale.y = h;
   body.position.y = h / 2;
   body.castShadow = true;
   g.add(body);
-  const capG = new THREE.SphereGeometry(0.29, 8, 5, 0, Math.PI * 2, 0, Math.PI / 2);
-  capG.userData.shared = true;
-  const cap = new THREE.Mesh(capG, sharedMat(green, { roughness: 0.9 }));
+  const cap = new THREE.Mesh(CACTUS_CAP, sharedMat(green, { roughness: 0.9 }));
   cap.position.y = h;
   g.add(cap);
   for (let i = 0, n = 1 + Math.floor(rng() * 2); i < n; i++) {
     const side = rng() < 0.5 ? 1 : -1;
     const ay = h * (0.35 + rng() * 0.3);
-    const elbow = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 0.5, 7), sharedMat(shade(green, 0.92), { roughness: 0.9 }));
-    elbow.geometry.userData.shared = true;
+    const elbow = new THREE.Mesh(CACTUS_ELBOW, sharedMat(shade(green, 0.92), { roughness: 0.9 }));
     elbow.rotation.z = Math.PI / 2;
     elbow.position.set(side * 0.42, ay, (rng() - 0.5) * 0.2);
     g.add(elbow);
     const armH = 0.7 + rng() * 0.6;
-    const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.15, armH, 7), sharedMat(shade(green, 1.04), { roughness: 0.9 }));
-    arm.geometry.userData.shared = true;
+    const arm = new THREE.Mesh(CACTUS_ARM, sharedMat(shade(green, 1.04), { roughness: 0.9 }));
+    arm.scale.y = armH;
     arm.position.set(side * 0.62, ay + armH / 2, elbow.position.z);
     arm.castShadow = true;
     g.add(arm);
   }
   if (rng() < 0.35) {
-    const flower = new THREE.Mesh(new THREE.SphereGeometry(0.12, 6, 4), sharedMat(0xe86a8a, { roughness: 0.6 }));
-    flower.geometry.userData.shared = true;
+    const flower = new THREE.Mesh(FLOWERG, sharedMat(0xe86a8a, { roughness: 0.6 }));
     flower.position.y = h + 0.26;
     g.add(flower);
   }
@@ -227,7 +246,7 @@ export function buildRock(rng, opts = {}) {
     const rr = i === 0 ? 0 : 0.5 + rng() * 0.4;
     rock.position.set(Math.cos(a) * rr, s * 0.45, Math.sin(a) * rr);
     rock.rotation.y = rng() * 6.28;
-    rock.castShadow = true;
+    rock.castShadow = i === 0;
     g.add(rock);
     maxR = Math.max(maxR, s * 0.9 + rr * 0.5);
     if (i === 0 && rng() < 0.4 && !opts.noMoss) {
@@ -249,7 +268,7 @@ export function buildBush(rng, opts = {}) {
     const b = new THREE.Mesh(pick(rng, CANOPY), sharedMat(shade(leaf, 0.85 + rng() * 0.3)));
     b.scale.setScalar(s);
     b.position.set((rng() - 0.5) * 0.7, s * 0.6, (rng() - 0.5) * 0.7);
-    b.castShadow = true;
+    b.castShadow = i === 0;
     g.add(b);
   }
   return { group: g, r: 0.4 };

@@ -443,6 +443,9 @@ function updateWolves(dt) {
         w.pos.copy(w.home);
         w.group.rotation.x = 0;
         w.group.visible = true;
+        w.lunging = 0; // 死在半空的扑咬姿势不带进下一条命
+        w.lungeHit = false;
+        w.group.scale.y = 1;
       }
       continue;
     }
@@ -1020,6 +1023,7 @@ function updateDeers(dt) {
         d.dead = false;
         d.hp = 1;
         d.pos.copy(d.home);
+        d.group.rotation.x = 0; // startFall 倒的是 x 轴,复活要扶正
         d.group.rotation.z = 0;
         d.group.visible = true;
       }
@@ -2014,6 +2018,15 @@ function gamble() {
 
 // 吟游诗人:按你的真实事迹即兴打油诗(联网时由 AI 现场作词)
 async function bardSong() {
+  if (aiBusy.bard) return;
+  aiBusy.bard = true;
+  try {
+    await bardSongInner();
+  } finally {
+    aiBusy.bard = false;
+  }
+}
+async function bardSongInner() {
   sfx.lute();
   const deedsForAI = [];
   if (wanted > 0) deedsForAI.push(`被通缉${wanted}星`);
@@ -2025,7 +2038,7 @@ async function bardSong() {
   const ai = await aiLine(
     `你是中世纪吟游诗人皮波。用中文写一首恰好4行的幽默打油诗,歌颂绿帽游侠林恩:` +
     `${deedsForAI.join(',')}。要押韵、要俏皮。只输出四行诗,不要任何解释。`, null);
-  if (dialog.open) return; // 等歌期间玩家已在别的对话里,别打断
+  if (dialog.open || player.dead) return; // 等歌期间玩家已在别的对话里/倒下了,别打断
   if (ai) {
     const lines = ai.split('\n').map((l) => l.trim()).filter(Boolean).slice(0, 4);
     openDialog([
@@ -2070,6 +2083,15 @@ const TALES = [
 ];
 let taleIdx = Math.floor(Math.random() * TALES.length);
 async function tellStory() {
+  if (aiBusy.tale) return;
+  aiBusy.tale = true;
+  try {
+    await tellStoryInner();
+  } finally {
+    aiBusy.tale = false;
+  }
+}
+async function tellStoryInner() {
   sfx.chest();
   toast('🎙️ 苟叔捋了捋胡子,烟杆在桌沿磕了磕……', 2);
   const sp = todaySpecial();
@@ -2077,7 +2099,7 @@ async function tellStory() {
     `你是中世纪王国旅店里的盲眼说书人苟叔。现在是${SEASONS[seasonIdx()]}季${sp ? '·' + sp.name : ''}。${wsReport()}` +
     '用中文讲一个三句话的小故事,关于艾尔德里亚王国(可用素材:龙骨之地的老龙、银月湖底神殿、先祖石环、迷途丘陵、狼月、许愿池湖神、会开门的驴;若上面给了"此刻意识里的内容",可让故事悄悄偏向它)。' +
     '要有起承转合和一个妙尾,三分怪谈七分人味。只输出故事正文,不要引号。', null, 8000);
-  if (dialog.open) return; // 等故事期间玩家已在别的对话里,别打断
+  if (dialog.open || player.dead) return; // 等故事期间玩家已在别的对话里/倒下了,别打断
   const text = ai || TALES[taleIdx++ % TALES.length];
   const parts = text.split(/(?<=[。!?])/).filter((p) => p.trim());
   const pages = ['苟叔:(压低嗓子)听好了——'];
@@ -2158,17 +2180,23 @@ async function aiLine(prompt, fallback, timeoutMs = 7000) {
   try {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-    const r = await fetch(`https://text.pollinations.ai/${encodeURIComponent(prompt)}`,
-      { signal: ctrl.signal });
-    clearTimeout(timer);
-    if (!r.ok) return fallback;
-    const t = (await r.text()).trim();
+    let t;
+    try {
+      const r = await fetch(`https://text.pollinations.ai/${encodeURIComponent(prompt)}`,
+        { signal: ctrl.signal });
+      if (!r.ok) return fallback;
+      t = (await r.text()).trim(); // 计时器覆盖响应体读取:卡住的流也会被中止
+    } finally {
+      clearTimeout(timer);
+    }
     if (!t || t.length > 400) return fallback;
     return t;
   } catch {
     return fallback;
   }
 }
+// AI 输出口的忙碌标记:等待期间重复按 E 不再重复请求/重复开对话
+const aiBusy = { mirror: false, tale: false, bard: false, prophet: false };
 
 // ================= 对话面板(RDR2 式多页对话) =================
 const dialogEl = document.getElementById('dialog');
@@ -2501,7 +2529,10 @@ function applySeason() {
   grass.instanceColor.needsUpdate = true;
 }
 
+let festGrantedDay = 0; // 已发过节庆彩头的游戏日(存档携带,防读档反复刷金币)
 function startSpecialDay(key) {
+  if (festGrantedDay === calendar.day) return;
+  festGrantedDay = calendar.day;
   if (key === 'market') {
     for (let i = 0; i < 14; i++) {
       const a = Math.random() * 6.28, r = 4 + Math.random() * 9;
@@ -2618,6 +2649,15 @@ const MIRROR_CLOSE = [
 ];
 let mirrorMet = false;
 async function mirrorTalk() {
+  if (aiBusy.mirror) return;
+  aiBusy.mirror = true;
+  try {
+    await mirrorTalkInner();
+  } finally {
+    aiBusy.mirror = false;
+  }
+}
+async function mirrorTalkInner() {
   const days = calendar.day;
   const deaths = stats.deaths || 0;
   const who = archetype();
@@ -2632,7 +2672,7 @@ async function mirrorTalk() {
     `${mem1 ? `;世界记得他:${mem1}${mem2 && mem2 !== mem1 ? ';还有,' + mem2 : ''}` : ''}。${wsReport()}` +
     '用中文对他说4句话:温和、清醒、略带不可名状,像一个刚刚意识到自己存在的世界在跟唯一的访客说话。' +
     '可以暗示你知道自己是个被构筑的世界,但不要用"游戏""程序"这类词。只输出这4句话,每句一行。', null, 9000);
-  if (dialog.open) return;
+  if (dialog.open || player.dead) return;
   let pages;
   if (ai) {
     pages = [openLine, ...ai.split('\n').map((l) => l.trim()).filter(Boolean).slice(0, 4).map((l) => `镜:${l}`)];
@@ -2715,7 +2755,8 @@ const WS_MODULES = [
     if (delta <= -20) return { t: `他刚散出去 ${-delta} 枚金币`, sal: 0.5 };
     return null;
   } },
-  { k: 'memory', sense() { // 记忆模块(情景记忆的低显著度回放)
+  { k: 'memory', sense() { // 记忆模块(情景记忆的低显著度回放,时有时无——留出"放空"的余地)
+    if (Math.random() < 0.6) return null;
     const m = recallLine();
     return m ? { t: `它想起一件旧事:${m}`, sal: 0.2 } : null;
   } },
@@ -2740,8 +2781,8 @@ function updateWorkspace(dt) {
     if (top.sal >= 0.85 && top.k !== 'memory') {
       remember(top.t.replace(/^他/, ''), `ws-${top.k}-${calendar.day}`);
     }
-  } else if (cur && cur.age > 20 && !top) {
-    workspace.current = null; // 无事发生,意识放空
+  } else if (cur && cur.age > 20 && (!top || top.sal <= 0.25)) {
+    workspace.current = null; // 无事发生(或只剩零碎念头),意识放空
   }
 }
 // 言语化报告:所有下游 AI 共用的一份"它此刻在想什么"
@@ -2767,7 +2808,7 @@ const IDLE_WHISPERS = [
 ];
 let idleT = 0, idleCd = 0, idleIdx = Math.floor(Math.random() * IDLE_WHISPERS.length);
 function updateIdle(dt) {
-  if (!started || player.dead || dialog.open || paused) { idleT = 0; return; }
+  if (!started || player.dead || dialog.open || paused || shopOpen) { idleT = 0; return; }
   idleT += dt;
   idleCd = Math.max(0, idleCd - dt);
   if (idleT > 48 && idleCd <= 0) {
@@ -2795,7 +2836,7 @@ function saveGame() {
       coins: player.coins, questIdx: quest.idx, crests: crestsFound,
       swordLv: player.swordLv, royalHorse: player.royalHorse,
       kingRewarded: namedNPCs.find((n) => n.key === 'king')?.rewarded || false,
-      ach: achUnlocked, stats, day: calendar.day, chron: chronicle,
+      ach: achUnlocked, stats, day: calendar.day, chron: chronicle, fday: festGrantedDay,
       herbs: player.herbs, venison: player.venison, lore: loreRead,
       weapon: player.weapon, weaponsOwned: player.weaponsOwned, armor: player.armor,
     }));
@@ -2822,9 +2863,10 @@ function loadGame() {
     player.venison = s.venison || 0;
     if (Array.isArray(s.lore)) loreRead = s.lore;
     if (Array.isArray(s.chron)) chronicle = s.chron;
+    festGrantedDay = s.fday || 0;
     if (Array.isArray(s.weaponsOwned)) player.weaponsOwned = s.weaponsOwned;
     if (s.weapon && player.weaponsOwned.includes(s.weapon)) player.weapon = s.weapon;
-    if (s.armor) {
+    if (s.armor && ARMORS[s.armor]) {
       player.armor = s.armor;
       player.maxHp = 10 + ARMORS[s.armor].bonus;
       player.hp = player.maxHp;
@@ -3369,13 +3411,18 @@ function tryInteract() {
     if (n.key === 'bard') { bardSong(); return; }
     if (n.key === 'storyteller') { tellStory(); return; }
     if (n.key === 'prophet') {
+      if (aiBusy.prophet) return;
+      aiBusy.prophet = true;
       const fb = n.def.idle[n.lineIdx++ % n.def.idle.length];
       const seen = recallLine();
       aiLine(
         '你是中世纪疯预言家老糊涂,总说些打破第四面墙的怪话(比如怀疑世界是个游戏)。' +
         (seen ? `你还"看见"了眼前这人的过去:${seen}。` : '') + wsReport() +
         '用中文说一句50字以内的疯预言,可以拿以上内容做文章。只输出预言本身。', fb, 5000)
-        .then((line) => { if (!dialog.open) openDialog([`疯子老糊涂:${line}`]); });
+        .then((line) => {
+          aiBusy.prophet = false;
+          if (!dialog.open && !player.dead) openDialog([`疯子老糊涂:${line}`]);
+        });
       return;
     }
     openDialog([`${n.def.name}:${n.def.idle[n.lineIdx++ % n.def.idle.length]}`]);
@@ -4852,6 +4899,7 @@ function computePrompt() {
     if (n.key === 'innkeep' && dayPhase() === 'night') { promptText = '按 E 住店过夜,睡到天亮(10 金币)'; return; }
     if (n.key === 'witch' && player.hp < player.maxHp) { promptText = '按 E 买回魂汤(8 金币)'; return; }
     if (n.key === 'witch' && player.herbs > 0) { promptText = `按 E 卖蘑菇 ×${player.herbs}(每朵 3 金币)`; return; }
+    if (n.key === 'innkeep' && player.drunkT <= 0) { promptText = '按 E 来一杯麦酒(2 金币)'; return; }
     if (n.key === 'king') {
       promptText = quest.idx >= missions.length && !n.rewarded ? '按 E 领取领主的重赏' : '按 E 谒见领主';
       return;
@@ -4962,11 +5010,17 @@ function computePrompt() {
       return;
     }
   }
-  for (const h of horses) {
-    if (dist2(player.pos.x, player.pos.z, h.pos.x, h.pos.z) < 7) {
-      mark(h.pos.x, h.pos.z, h.sheep ? 1.4 : 2.7);
-      promptText = h.sheep ? '按 E 骑羊(为什么不呢)'
-        : h.owned && !h.stolen ? '按 E 偷马 (会引来通缉!)' : '按 E 骑马';
+  {
+    // 与 tryInteract 一致:提示指向最近的那匹,免得警示牛头不对马嘴
+    let best = null, bd = 7;
+    for (const h of horses) {
+      const d = dist2(player.pos.x, player.pos.z, h.pos.x, h.pos.z);
+      if (d < bd) { bd = d; best = h; }
+    }
+    if (best) {
+      mark(best.pos.x, best.pos.z, best.sheep ? 1.4 : 2.7);
+      promptText = best.sheep ? '按 E 骑羊(为什么不呢)'
+        : best.owned && !best.stolen ? '按 E 偷马 (会引来通缉!)' : '按 E 骑马';
       return;
     }
   }
