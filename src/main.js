@@ -6,6 +6,7 @@ import { INTRO, REGIONS, GUARD_LINES, NPCS, MISSIONS, VILLAGERS, DIALOGS, TIME_G
 import { initAudio, sfx, startMusic, toggleMusic, weatherAudio, setAmbience } from './audio.js';
 import { preloadAIAssets, generateRemoteAITextures } from './textures.js';
 import { initWilderness, updateWilderness, wildRegionName, CORE } from './wilderness.js';
+import * as BANKS from './dialogue-banks.js';
 import { ShaderPass } from '../lib/jsm/postprocessing/ShaderPass.js';
 import { EffectComposer } from '../lib/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from '../lib/jsm/postprocessing/RenderPass.js';
@@ -693,7 +694,7 @@ function arrowHitEntities(a) {
   if (tryHit(bandits, (b) => {
     b.hp -= dmg; sfx.hit(); hitFX(b, 0.4); showDamage(b.pos, dmg);
     if (b.hp <= 0) {
-      b.dead = true; startFall(b); registerKill();
+      b.dead = true; startFall(b); registerKill(); choreProgress('bandits');
       dropCoins(b.pos, b.boss ? 20 : 5);
       if (quest.active && missions[quest.idx].type === 'bandits' && !b.boss && !b.escort && !b.bountyHead && !b.robber && !b.arena && !b.ambient && !b.duel && !b.convict && !b.eventFoe) {
         quest.progress++;
@@ -821,6 +822,8 @@ function updateDamageNums(dt) {
 
 let comboN = 0, comboT = 0;
 function registerKill() {
+  stats.kills = (stats.kills || 0) + 1;
+  if (stats.kills >= 100) unlockAch('slayer');
   comboT = 4;
   comboN++;
   sfx.kill();
@@ -1125,6 +1128,7 @@ frostfang.wary = spawnWhiteWolf(-286, -128);
 function slayBanditByWolf(b) {
   b.dead = true;
   startFall(b);
+  choreProgress('bandits');
   dropCoins(b.pos, b.boss ? 20 : 3);
   if (quest.active && missions[quest.idx].type === 'bandits' && !b.boss && !b.escort && !b.bountyHead &&
       !b.robber && !b.arena && !b.ambient && !b.duel && !b.convict && !b.eventFoe) {
@@ -1263,6 +1267,8 @@ function updateSprings(dt) {
     springTick = 0;
     spawnDust(player.pos.x, 0.6, player.pos.z, 3, 1.2, 1.6);
     stats.soak = (stats.soak || 0) + 2;
+    choreProgress('soak');
+    choreProgress('soak');
     if (stats.soak >= 30) unlockAch('soak');
     if (player.hp < player.maxHp) {
       player.hp++;
@@ -1338,6 +1344,8 @@ const BOAT_ISLE = { x: -100, z: 106.2 };
 let lakeBlessed = false;
 function rowTo(dst, msg) {
   sfx.splash();
+  stats.rows = (stats.rows || 0) + 1;
+  if (stats.rows >= 6) unlockAch('sailor');
   toast('🚣 你摇着小船,桨声把湖面剪开一道纹……', 2.5);
   player.pos.set(dst.x, 0, dst.z);
   player.vy = 0;
@@ -1392,6 +1400,7 @@ function endTrial(finished) {
   trialRT.rings = [];
   trialRT.active = false;
   if (!finished) { toast('🏁 计时赛作废。旗子下再来!', 2.5); return; }
+  choreProgress('race');
   const t = trialRT.t;
   const best = stats.raceBest || 0;
   if (!best || t < best) {
@@ -1485,6 +1494,22 @@ const CHORE_TYPES = [
     tpl: (g, who) => `${who}求助:办席短了硬菜,求 ${g} 块鲜鹿肉,价钱好说,板下自取。` },
   { key: 'fish', label: '钓鱼', goalMin: 2, goalMax: 3, reward: 10,
     tpl: (g, who) => `${who}求助:馋鱼了,腿脚又不便。替我钓 ${g} 条上来,赏钱压在石头底下。` },
+  { key: 'bandits', label: '清匪', goalMin: 2, goalMax: 3, reward: 16,
+    tpl: (g, who) => `${who}求助:路上又有劫道的了,哪位好汉料理掉 ${g} 个,让我进趟货?` },
+  { key: 'ride', label: '骑行', goalMin: 400, goalMax: 700, reward: 12,
+    tpl: (g, who) => `${who}求助:我那匹马缺操练,替我遛 ${g} 步(骑任意坐骑跑够里程即可)。` },
+  { key: 'cook', label: '烤肉', goalMin: 1, goalMax: 2, reward: 9,
+    tpl: (g, who) => `${who}求助:想念篝火烤肉的香味了,替我在野外篝火烤 ${g} 块,替我闻闻就行。` },
+  { key: 'pray', label: '代祷', goalMin: 1, goalMax: 1, reward: 10,
+    tpl: (g, who) => `${who}求助:腿脚不便,替我去荒野的小教堂石坛前祷告一回,心意板下奉上。` },
+  { key: 'soak', label: '试泉', goalMin: 6, goalMax: 10, reward: 11,
+    tpl: (g, who) => `${who}求助:听说荒野温泉能治腰,替我去泡 ${g} 息,回来告诉我烫不烫。` },
+  { key: 'race', label: '跑圈', goalMin: 1, goalMax: 1, reward: 12,
+    tpl: (g, who) => `${who}求助:跟人打赌说你能跑完赛旗全程,替我赢回这口气(完成一次计时赛)!` },
+  { key: 'wish', label: '许愿', goalMin: 2, goalMax: 3, reward: 8,
+    tpl: (g, who) => `${who}求助:我不敢见湖神,替我往喷泉里投 ${g} 枚金币许个愿,愿望内容我写好了压在板下。` },
+  { key: 'throw', label: '扔鸡', goalMin: 2, goalMax: 3, reward: 9,
+    tpl: (g, who) => `${who}求助:别问原因。把鸡扔出去 ${g} 次,要抛物线漂亮的。真的别问。` },
 ];
 function rollChore() {
   const t = CHORE_TYPES[Math.floor(Math.random() * CHORE_TYPES.length)];
@@ -1494,6 +1519,7 @@ function rollChore() {
   sideQuest.type = t.key;
   sideQuest.goal = goal;
   sideQuest.progress = 0;
+  sideQuest._rideDone = false;
   sideQuest.reward = t.reward + goal * 2;
   sideQuest.giver = giver;
   sideQuest.text = t.tpl(goal, giver);
@@ -2377,6 +2403,14 @@ const ACH_DEFS = {
   lakegift: { name: '湖神的恩赐', desc: '触碰湖心岛的月光祭坛(生命上限 +2)' },
   unsealer: { name: '开封者', desc: '走进被封印的王室地窖,请下先王战徽' },
   villagehero: { name: '村里的自己人', desc: '办妥 5 桩村务委托' },
+  rider:    { name: '千里驹', desc: '骑行累计 5000 步' },
+  fortune:  { name: '问卦者', desc: '找玛尔戈求 3 卦' },
+  penpal:   { name: '有信之人', desc: '收到 3 封来信' },
+  deept:    { name: '打破砂锅', desc: '追问 10 次(T 键)' },
+  sailor:   { name: '摆渡客', desc: '乘小船往返湖心岛 6 趟' },
+  slayer:   { name: '百战游侠', desc: '击败 100 个敌人' },
+  elder:    { name: '长住者', desc: '在艾尔德里亚度过 30 日' },
+  navigator:{ name: '远行者', desc: '走到离王都一万步之外' },
 };
 const stats = { thrown: 0, pecks: 0, wishes: 0, drunks: 0, loseStreak: 0, sheepDist: 0, lastStomp: -99, deer: 0, mushrooms: 0 };
 let achUnlocked = [];
@@ -2596,6 +2630,7 @@ const WISHES = [
 function fountainWish() {
   player.coins--;
   sfx.splash();
+  choreProgress('wish');
   if (++stats.wishes >= 10) unlockAch('wisher');
   const [text, effect] = WISHES[Math.floor(Math.random() * WISHES.length)];
   if (effect === 'coins') { player.coins += 10; sfx.coin(); }
@@ -2611,35 +2646,81 @@ const NPC_SCHEDULE = {
   fisher:     { dawn: [-100, 72], day: [-100, 72], dusk: [-100, 58], night: [-108, 60] },
 };
 
-// ================= 对话数据库(100 万字,tools/gen-dialogue.mjs 生成) =================
-// 每行按情境标签(时辰/天气/季节/节庆/任务进度)筛选,近期说过的不复读
-let DB = null;
-const dbUsed = new Map();
-fetch('./src/dialogue-db.json')
-  .then((r) => (r.ok ? r.json() : null))
-  .then((d) => { DB = d; })
-  .catch(() => { /* 缺失时回退到内置台词 */ });
-
+// ================= 运行时对话组合引擎(数亿字组合空间,零加载) =================
+// 情境开场 × 语气前缀 × 内容主体(12 类语料)× 口头禅收尾,按角色声线现场拼装;
+// 类目按当下情境加权(下雨多聊雨,节庆多聊节,主线推进聊时事),近期说过的不复读。
+const lineRecent = new Map();
 function dbLine(key) {
-  if (!DB || !DB[key]) return null;
-  const lines = DB[key];
+  const V = BANKS.VOICES[key];
+  if (!V) return null;
+  const phase = dayPhase();
   const w = weather.state === 'cloudy' ? 'clear' : weather.state;
-  const ctxs = new Set([`q${Math.min(quest.idx, 8)}`, dayPhase(), w,
-    ['spring', 'summer', 'autumn', 'winter'][seasonIdx()]]);
+  const seasonKey = ['spring', 'summer', 'autumn', 'winter'][seasonIdx()];
   const sp = todaySpecial();
-  if (sp) ctxs.add(sp.key);
-  let used = dbUsed.get(key);
-  if (!used) { used = new Set(); dbUsed.set(key, used); }
-  if (used.size > lines.length * 0.8) used.clear();
-  for (let tries = 0; tries < 30; tries++) {
-    const i = Math.floor(Math.random() * lines.length);
-    if (used.has(i)) continue;
-    const L = lines[i];
-    if (L.c && !ctxs.has(L.c)) continue;
-    used.add(i);
-    return L.t;
+  const rnd = Math.random;
+  const pick = (arr) => arr[Math.floor(rnd() * arr.length)];
+  const tail = () => (rnd() < 0.5 ? pick(V.tails) : '');
+  const mood = () => (rnd() < 0.3 ? pick(V.mood) : '');
+  const opener = (ctx) => (rnd() < 0.6 && BANKS.OPENERS[ctx] ? pick(BANKS.OPENERS[ctx]) : '');
+  const cats = [
+    ['job', 3], ['weather', w !== 'clear' ? 3 : 1], ['season', 2],
+    ['festival', sp ? 3 : 0], ['gossip', 2.2], ['rumor', 2.2], ['place', 1.4],
+    ['stage', 1.6], ['proverb', 1], ['memory', 1.2], ['smalltalk', 1.6], ['greet', 0.8],
+  ].filter(([, wgt]) => wgt > 0);
+  const total = cats.reduce((s2, c) => s2 + c[1], 0);
+  for (let attempt = 0; attempt < 8; attempt++) {
+    let roll = rnd() * total;
+    let cat = cats[0][0];
+    for (const [c, wgt] of cats) { roll -= wgt; if (roll <= 0) { cat = c; break; } }
+    let text = null;
+    if (cat === 'job') {
+      const jobs = [...(BANKS.JOB_EXTRA[key] || [])];
+      if (key.startsWith('v')) {
+        const vi = +key.slice(1);
+        if (VILLAGERS[vi]) jobs.push(...VILLAGERS[vi].lines.map((l) => l.replace(/[。!?]$/, '')));
+      }
+      if (jobs.length) text = `${opener(phase)}${mood()}${pick(jobs)}。${tail()}`;
+    } else if (cat === 'weather') {
+      const bank = BANKS.WEATHER_TALK[w];
+      if (bank) text = `${opener(w)}${mood()}${pick(bank)}。${tail()}`;
+    } else if (cat === 'season') {
+      text = `${opener(phase)}${mood()}${pick(BANKS.SEASON_TALK[seasonKey])}。${tail()}`;
+    } else if (cat === 'festival') {
+      const bank = BANKS.FESTIVAL_TALK[sp.key];
+      if (bank) text = `${mood()}${pick(bank)}。${tail()}`;
+    } else if (cat === 'gossip') {
+      const others = Object.keys(BANKS.FACTS).filter((k2) => k2 !== key);
+      const other = pick(others);
+      text = `${mood()}${pick(BANKS.GOSSIP_FRAMES).replace('{name}', BANKS.NAMES[other]).replace('{fact}', pick(BANKS.FACTS[other]))}${tail()}`;
+    } else if (cat === 'rumor') {
+      text = `${mood()}${pick(BANKS.RUMOR_FRAMES).replace('{r}', pick(BANKS.RUMORS))}${tail()}`;
+    } else if (cat === 'place') {
+      const p = pick(Object.keys(BANKS.PLACES));
+      text = `${pick(BANKS.PLACE_FRAMES).replace('{p}', p).replace('{f}', pick(BANKS.PLACES[p]))}${tail()}`;
+    } else if (cat === 'stage') {
+      const q = Math.min(quest.idx, BANKS.STAGE_TOPICS.length - 1);
+      text = `${mood()}${pick(BANKS.STAGE_FRAMES).replace('{t}', pick(BANKS.STAGE_TOPICS[q])).replace('{who}', pick(BANKS.WHO))}${tail()}`;
+    } else if (cat === 'proverb') {
+      text = `${mood()}${pick(BANKS.PROVERB_FRAMES).replace('{p}', pick(BANKS.PROVERBS))}${tail()}`;
+    } else if (cat === 'memory') {
+      const mems = BANKS.MEMORIES[key];
+      if (mems && mems.length) {
+        text = `${mood()}${pick(['说起来,{m}……', '有时想起,{m}。', '{m}——一晃这么多年了。', '跟你说件旧事:{m}。']).replace('{m}', pick(mems))}${tail()}`;
+      }
+    } else if (cat === 'smalltalk') {
+      if (BANKS.SMALLTALK.length) text = `${rnd() < 0.4 ? opener(phase) : ''}${mood()}${pick(BANKS.SMALLTALK)}${tail()}`;
+    } else if (cat === 'greet') {
+      text = `${pick(BANKS.OPENERS[phase])}${V.addr},${pick(['又见面了', '有何贵干', '今天气色不错', '路上顺利吗', '别来无恙'])}。${tail()}`;
+    }
+    if (!text) continue;
+    let recent = lineRecent.get(key);
+    if (!recent) { recent = []; lineRecent.set(key, recent); }
+    if (recent.includes(text)) continue; // 近期说过,换一句
+    recent.push(text);
+    if (recent.length > 40) recent.shift();
+    return text;
   }
-  return lines[Math.floor(Math.random() * lines.length)].t;
+  return null;
 }
 
 // ================= 运行时 AI 文本(免费接口,离线回退) =================
@@ -2760,6 +2841,8 @@ function setPortrait(speaker) {
 async function witchFortune(n) {
   aiBusy.fortune = true;
   player.coins -= 5;
+  stats.fortunes = (stats.fortunes || 0) + 1;
+  if (stats.fortunes >= 3) unlockAch('fortune');
   sfx.dice();
   const tday = calendar.day + 1;
   const ts = (() => {
@@ -2791,6 +2874,8 @@ async function deepTalk() {
   const sp = dialog.speaker;
   if (!sp || aiBusy.deep || dialog.typing) return;
   aiBusy.deep = true;
+  stats.deepTalks = (stats.deepTalks || 0) + 1;
+  if (stats.deepTalks >= 10) unlockAch('deept');
   const lastLine = (dialog.fullText || '').slice(0, 70);
   const ent = sp.ent || sp;
   const hist = ent.deepHist || [];
@@ -3038,6 +3123,7 @@ function updateRegion(dt) {
   if ((name === '艾尔德里亚原野' || name === '北境群山') &&
       (Math.abs(player.pos.x) > CORE || Math.abs(player.pos.z) > CORE)) {
     name = wildRegionName(player.pos.x, player.pos.z);
+    if (Math.max(Math.abs(player.pos.x), Math.abs(player.pos.z)) > 10000) unlockAch('navigator');
   }
   if (name !== curRegion) {
     curRegion = name;
@@ -3135,6 +3221,7 @@ function composeLetter() {
 function newDay() {
   calendar.day++;
   dailyEvents = 4;
+  if (calendar.day >= 30) unlockAch('elder');
   applySeason();
   respawnMushrooms();
   const sp = todaySpecial();
@@ -3834,7 +3921,8 @@ function tryInteract() {
     c.pos.set(player.pos.x, player.pos.y + 1.9, player.pos.z);
     c.vel.set(Math.sin(player.yaw) * 8, 3.5, Math.cos(player.yaw) * 8);
     sfx.cluck();
-    if (++stats.thrown >= 10) unlockAch('chucker');
+    choreProgress('throw');
+  if (++stats.thrown >= 10) unlockAch('chucker');
     return;
   }
   // 下马
@@ -3896,6 +3984,8 @@ function tryInteract() {
     if (n.key === 'innkeep' && letter) {
       const L = letter;
       letter = null;
+      stats.letters = (stats.letters || 0) + 1;
+      if (stats.letters >= 3) unlockAch('penpal');
       remember(`收到了${L.from}的一封信`);
       openDialog([
         '罗莎:(在围裙上擦了擦手,从兜里掏出一封信)喏,有人留给你的。',
@@ -4154,6 +4244,7 @@ function tryInteract() {
       player.hp = Math.min(player.maxHp, player.hp + 3);
       sfx.heart();
       stats.cooked = (stats.cooked || 0) + 1;
+      choreProgress('cook');
       if (stats.cooked >= 5) unlockAch('chef');
       toast(`🍖 烤鹿肉滋滋作响……回复 ❤×1.5(剩余鹿肉 ×${player.venison})`, 3);
       return;
@@ -4166,6 +4257,7 @@ function tryInteract() {
       if (blessDay !== calendar.day) {
         blessDay = calendar.day;
         player.blessT = 120;
+        choreProgress('pray');
         sfx.fanfare();
         openDialog(['(你在断壁间的石坛前低头片刻。风从缺了顶的殿堂穿过,像一声很轻的应答。)',
           '✨ 获得庇佑:脚下生风(移动加速,120 秒)']);
@@ -4435,7 +4527,7 @@ function meleeSweep(dmg, range, arcDot, knock) {
     b.hp -= dmg; sfx.hit(); hitFX(b, b.boss ? knock * 0.4 : knock);
     showDamage(b.pos, dmg, dmg >= 3);
     if (b.hp <= 0) {
-      b.dead = true; startFall(b); registerKill();
+      b.dead = true; startFall(b); registerKill(); choreProgress('bandits');
       dropCoins(b.pos, b.boss ? 20 : 5);
       addPickup('heart', b.pos.x, b.pos.z + 1, 30);
       if (b.boss) toast('⚔️ 血斧巴罗克倒下了!黑石兄弟会土崩瓦解!', 5);
@@ -6487,6 +6579,23 @@ function loop(now) {
     player.chargeT = 0;
   }
   if (player.blessT > 0) player.blessT -= dt;
+  // 骑行里程(村务/成就)
+  if (player.mounted && !player.dead) {
+    const mv = Math.hypot(player.pos.x - (player._lastRX ?? player.pos.x), player.pos.z - (player._lastRZ ?? player.pos.z));
+    if (mv > 0.02 && mv < 5) {
+      stats.rideDist = (stats.rideDist || 0) + mv;
+      if (sideQuest.active && sideQuest.type === 'ride') {
+        sideQuest.progress += mv;
+        if (sideQuest.progress >= sideQuest.goal && !sideQuest._rideDone) {
+          sideQuest._rideDone = true;
+          toast(`📋 村务【${sideQuest.giver}】:里程够了,回村务板交差!`, 3);
+        }
+      }
+      if (stats.rideDist >= 5000) unlockAch('rider');
+    }
+  }
+  player._lastRX = player.pos.x;
+  player._lastRZ = player.pos.z;
   updateFrostfang(dt);
   updateSprings(dt);
   updateTrial(dt);

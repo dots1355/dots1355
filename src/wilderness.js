@@ -1,4 +1,4 @@
-// 无尽荒野:核心王国(±500)之外的 100000×100000 世界由区块程序化生成
+// 无尽荒野:核心王国(±500)之外的 1000000×1000000 世界由区块程序化生成
 // 128×128 一块,随玩家加载/卸载;同一坐标永远生成同样的内容(坐标哈希做种子)
 import * as THREE from 'three';
 import { lambert } from './entities.js';
@@ -7,7 +7,7 @@ import { buildTree, buildPine, buildDeadTree, buildCactus, buildRock, buildBush 
 export const CHUNK = 128;
 export const VIEW_R = 2;          // 加载半径(区块数)
 export const CORE = 470;          // 核心手工区域半径(此范围内不生成)
-export const WORLD_LIMIT = 50000; // 世界半径 → 总幅面 100000×100000
+export const WORLD_LIMIT = 500000; // 世界半径 → 总幅面 1000000×1000000
 
 const chunks = new Map();
 const seenChunks = new Set(); // 本次会话已生成过的区块:重访不再重刷战利品(防反复越界刷金币/红心)
