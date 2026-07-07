@@ -331,8 +331,14 @@ addGuard(-40, 20, [[-40, 20], [-20, 20], [-20, -20], [-40, -20]]);
 
 // 每个村民都是有名有姓、有家有业的人(见 story.js)
 const villagerColors = [0x7a5c8f, 0x4a7a9f, 0xa06a3a, 0x5f7a3a, 0x9f4a6a, 0x6a6a7a];
+const villagerHair = [0x3a2a1a, 0x6a4a2a, 0x8a3a1a, 0x2a1a10, 0xbababa, 0x1a1a14, 0xd0b040];
 VILLAGERS.forEach((id, i) => {
-  const v = { ...makeHumanoid({ shirt: villagerColors[i % villagerColors.length], pants: 0x50412e }),
+  const v = { ...makeHumanoid({
+    shirt: villagerColors[i % villagerColors.length], pants: 0x50412e,
+    hair: villagerHair[i % villagerHair.length],
+    cap: [2, 6, 7, 13, 15, 17, 19].includes(i),   // 果贩/农夫/农妇/伙计/渔家女/磨坊主/村长:布帽
+    hood: [8, 18, 21].includes(i),                 // 猎人/守墓人/采药婆:兜帽
+  }),
     id, dbKey: `v${i}`, pos: new THREE.Vector3(id.home[0], 0, id.home[1]), yaw: Math.random() * 6.28,
     home: new THREE.Vector3(id.home[0], 0, id.home[1]),
     state: 'idle', timer: Math.random() * 3, walkT: 0, fleeT: 0, downT: 0,
@@ -1291,6 +1297,25 @@ function queueDream() {
       if (!dialog.open && !player.dead) openDialog([`(昨夜的梦)${DREAMS[dreamIdx++ % DREAMS.length]}`]);
     }, 4000);
   }
+}
+
+// ================= 旅程手账(J 键:一册在手,战绩全有) =================
+function openJournal() {
+  if (dialog.open) return;
+  const bestRace = stats.raceBest ? `${stats.raceBest.toFixed(1)} 秒` : '——';
+  const pages = [
+    `📖 旅程手账 · ${SEASONS[seasonIdx()]}季第 ${seasonDay()} 日(在这世上第 ${calendar.day} 天)`,
+    `世界眼里的你:「${archetype()}」 · 🪙 ${player.coins} · ❤ 上限 ${player.maxHp / 2} 心` +
+      `${player.relic ? ' · ☀️ 先王战徽' : ''}${frostfang.tamed ? ' · 🐺 霜牙同行' : ''}`,
+    `📜 委托 ${Math.min(quest.idx, missions.length)}/${missions.length} · 🛡️ 纹章 ${crestsFound.length}/${world.crestSpots.length} · 📖 铭文 ${loreRead.length}/${LORE.length} · 🏆 成就 ${achUnlocked.length}/${Object.keys(ACH_DEFS).length}`,
+    `🐺 猎狼 ${wolfKills} · 🦌 猎鹿 ${stats.deer || 0} · 🍄 采菇 ${stats.mushrooms || 0} · 🎣 钓鱼 ${stats.fishCaught || 0} · ⚡ 弹反 ${stats.parries || 0}`,
+    `🏟️ 竞技场最佳 ${stats.arenaBest || 0} 波 · 🏁 赛马纪录 ${bestRace} · 💀 倒下 ${stats.deaths || 0} 次`,
+  ];
+  const mems = chronicle.slice(-3);
+  if (mems.length) {
+    pages.push(`它记得你最近的事:${mems.map((m) => `第${m.d}日,${m.t}`).join(';')}。`);
+  }
+  openDialog(pages);
 }
 
 // ================= 拍照模式(P 键隐藏全部 HUD) =================
@@ -3357,6 +3382,7 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyF' && !dialog.open) tryAttack();
   if (e.code === 'KeyM') toast(toggleMusic() ? '♪ 音乐开' : '♪ 音乐关', 1.5);
   if (e.code === 'KeyP' && started) togglePhoto();
+  if (e.code === 'KeyJ' && started && !dialog.open) openJournal();
   if (e.code === 'KeyH') toggleHint();
   if (e.code === 'KeyQ') cycleWeapon();
   if ((e.code === 'KeyC' || e.code === 'ControlLeft') && !dialog.open) doRoll();
@@ -3958,9 +3984,16 @@ function tryInteract() {
     v.aiNext = null;
     // 你的事迹在村里口口相传(编年史)
     const deed = recallLine();
-    const l2 = deed && Math.random() < 0.25
-      ? ['听说你', '有人瞧见你', '街坊都在传,说你'][Math.floor(Math.random() * 3)] + deed + '。真有你的。'
-      : dbLine(v.dbKey) || v.id.lines[v.lineIdx++ % v.id.lines.length];
+    let l2;
+    if (v.dbKey === 'v11' && chronicle.length && Math.random() < 0.4) {
+      // 抄写员薇拉:你的事迹被写进编年史正文
+      const m = chronicle[Math.floor(Math.random() * chronicle.length)];
+      l2 = `(翻开编年史,蘸了蘸墨)「历第 ${m.d} 日,绿衣游侠林恩${m.t}。」——已录入正史,后人会读到的。`;
+    } else {
+      l2 = deed && Math.random() < 0.25
+        ? ['听说你', '有人瞧见你', '街坊都在传,说你'][Math.floor(Math.random() * 3)] + deed + '。真有你的。'
+        : dbLine(v.dbKey) || v.id.lines[v.lineIdx++ % v.id.lines.length];
+    }
     openDialog([`${v.id.name}:${l1}`, `${v.id.name}:${l2}`]);
     if (!AI_TEXT_OFF && !v.aiPending && Math.random() < 0.35) {
       v.aiPending = true;
@@ -6140,7 +6173,7 @@ window.__gtm = {
   chronicle: () => chronicle, remember, archetype, mirrorTalk, MIRROR_POS,
   frostfang, wildSpots, heavyAttack, togglePhoto, queueDream, damagePlayer, nearestSpot,
   trialRT, startTrial, prayAltar, rowTo, BOAT_PIER, BOAT_ISLE,
-  enterDungeon, exitDungeon, takeRelic, inDungeon, DGN, FISH_SPOT_ISLE,
+  enterDungeon, exitDungeon, takeRelic, inDungeon, DGN, FISH_SPOT_ISLE, openJournal,
   workspace, wsReport, tickWorkspace: () => { workspace.t = 0; updateWorkspace(0); },
   setIdle: (t) => { idleT = t; },
   getIdle: () => ({ idleT, idleCd }),
