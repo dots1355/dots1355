@@ -402,7 +402,13 @@ initWilderness(scene, colliders, {
   dropHeart(x, z, chunkKey) {
     addPickup('heart', x, z, 600, -1, chunkKey);
   },
+  registerSpot(type, x, z, chunkKey) {
+    wildSpots.push({ type, x, z, chunk: chunkKey });
+  },
   removeChunkEntities(chunkKey) {
+    for (let i = wildSpots.length - 1; i >= 0; i--) {
+      if (wildSpots[i].chunk === chunkKey) wildSpots.splice(i, 1);
+    }
     for (let i = pickups.length - 1; i >= 0; i--) {
       if (pickups[i].chunk === chunkKey) {
         scene.remove(pickups[i].mesh);
@@ -471,7 +477,7 @@ function updateWolves(dt) {
         resolveCollisions(w.pos, 0.4, colliders);
         if (!w.lungeHit && Math.hypot(player.pos.x - w.pos.x, player.pos.z - w.pos.z) < 1.2) {
           w.lungeHit = true;
-          damagePlayer(wolfBuff > 1 ? 2 : 1);
+          damagePlayer(wolfBuff > 1 ? 2 : 1, w);
         }
       }
       if (w.lunging <= 0) w.group.scale.y = 1;
@@ -515,7 +521,7 @@ function updateWolves(dt) {
         continue;
       }
       if (pd > 1.3) { moveEntity(w, player.pos.x, player.pos.z, w.speed * wolfBuff, dt); moving = true; }
-      else if (w.attackCd <= 0) { w.attackCd = 1.1; damagePlayer(1); }
+      else if (w.attackCd <= 0) { w.attackCd = 1.1; damagePlayer(1, w); }
     } else {
       const a = performance.now() * 0.0004 + w.home.x;
       moveEntity(w, w.home.x + Math.cos(a) * 6, w.home.z + Math.sin(a) * 6, w.speed * 0.25, dt);
@@ -1003,7 +1009,7 @@ function entFar(e) {
 // ================= 猎鹿(卖鹿肉给罗莎) =================
 const deers = [];
 function addDeer(x, z) {
-  const d = { ...makeHorse(0x9a7148), pos: new THREE.Vector3(x, 0, z), yaw: Math.random() * 6.28,
+  const d = { ...makeHorse(0x9a7148, false, { antlers: Math.random() < 0.55 }), pos: new THREE.Vector3(x, 0, z), yaw: Math.random() * 6.28,
     home: new THREE.Vector3(x, 0, z), deer: true, state: 'graze', timer: Math.random() * 4,
     walkT: 0, dead: false, respawnT: 0, fleeT: 0, downT: 0, hp: 1 };
   d.group.scale.setScalar(0.62);
@@ -1097,6 +1103,207 @@ const MUSH_SPOTS = [
 }
 function respawnMushrooms() {
   for (const m of mushrooms) { m.picked = false; m.group.visible = true; }
+}
+
+// ================= 狼伙伴「霜牙」(霜风隘口的白狼,鹿肉驯服) =================
+const frostfang = { ent: null, wary: null, tamed: false, feed: 0, atkCd: 0 };
+function spawnWhiteWolf(x, z) {
+  const w = { ...makeWolf(0xdfe6ee, 0x7ac0e8, 0x2a5a88), pos: new THREE.Vector3(x, 0, z),
+    yaw: Math.random() * 6.28, walkT: 0, timer: 0 };
+  w.group.position.copy(w.pos);
+  scene.add(w.group);
+  return w;
+}
+frostfang.wary = spawnWhiteWolf(-286, -128);
+function slayBanditByWolf(b) {
+  b.dead = true;
+  startFall(b);
+  dropCoins(b.pos, b.boss ? 20 : 3);
+  if (quest.active && missions[quest.idx].type === 'bandits' && !b.boss && !b.escort && !b.bountyHead &&
+      !b.robber && !b.arena && !b.ambient && !b.duel && !b.convict && !b.eventFoe) {
+    quest.progress++;
+    toast(`击败盗贼 ${quest.progress}/3(霜牙助攻!)`, 2);
+    if (quest.progress >= 3) completeMission();
+  }
+}
+function updateFrostfang(dt) {
+  // 未驯服:白狼在隘口游荡,保持距离打量你
+  if (!frostfang.tamed && frostfang.wary) {
+    const w = frostfang.wary;
+    if (entFar(w)) return;
+    const pd = Math.hypot(player.pos.x - w.pos.x, player.pos.z - w.pos.z);
+    let moving = false;
+    if (pd < 4.5) {
+      const fx = w.pos.x - player.pos.x, fz = w.pos.z - player.pos.z;
+      const fd = Math.hypot(fx, fz) || 1;
+      moveEntity(w, w.pos.x + (fx / fd) * 6, w.pos.z + (fz / fd) * 6, 4.5, dt);
+      moving = true;
+    } else if (pd > 26) {
+      // 不追人,溜达回家
+      if (!moveEntity(w, -286, -128, 2.2, dt)) moving = true;
+    }
+    w.group.position.copy(w.pos);
+    w.group.rotation.y = pd < 20 ? Math.atan2(player.pos.x - w.pos.x, player.pos.z - w.pos.z) : w.yaw;
+    const sw = moving ? Math.sin(w.walkT) * 0.6 : 0;
+    w.parts.legs[0].rotation.x = sw;
+    w.parts.legs[1].rotation.x = -sw;
+    w.parts.legs[2].rotation.x = -sw;
+    w.parts.legs[3].rotation.x = sw;
+    return;
+  }
+  // 已驯服:跟随 + 替你咬盗贼和恶狼
+  const w = frostfang.ent;
+  if (!w) return;
+  frostfang.atkCd = Math.max(0, frostfang.atkCd - dt);
+  const pd = Math.hypot(player.pos.x - w.pos.x, player.pos.z - w.pos.z);
+  if (pd > 60) { w.pos.set(player.pos.x + 2, 0, player.pos.z + 2); } // 跟丢了瞬移归队
+  // 找玩家身边最近的敌人
+  let target = null, td = 14 * 14;
+  for (const b of bandits) {
+    if (b.dead || b.downT > 0 || b.robber) continue;
+    const d = dist2(player.pos.x, player.pos.z, b.pos.x, b.pos.z);
+    if (d < td) { td = d; target = b; }
+  }
+  for (const e of wolves) {
+    if (e.dead || e.arena) continue;
+    const d = dist2(player.pos.x, player.pos.z, e.pos.x, e.pos.z);
+    if (d < td) { td = d; target = e; }
+  }
+  let moving = false;
+  if (target) {
+    const dd = Math.hypot(target.pos.x - w.pos.x, target.pos.z - w.pos.z);
+    if (dd > 1.6) {
+      moveEntity(w, target.pos.x, target.pos.z, 8.6, dt);
+      moving = true;
+    } else if (frostfang.atkCd <= 0) {
+      frostfang.atkCd = 0.9;
+      sfx.hit();
+      hitFX(target, 0.4);
+      showDamage(target.pos, 1);
+      target.hp -= 1;
+      if (target.hp <= 0) {
+        if (wolves.includes(target)) killWolf(target);
+        else slayBanditByWolf(target);
+      }
+    }
+  } else if (pd > 3.5) {
+    moveEntity(w, player.pos.x + 1.5, player.pos.z + 1.5, pd > 12 ? 9 : 5.5, dt);
+    moving = true;
+  }
+  w.group.position.copy(w.pos);
+  if (moving || target) w.group.rotation.y = w.yaw;
+  const sw = moving ? Math.sin(w.walkT) * 0.6 : 0;
+  w.parts.legs[0].rotation.x = sw;
+  w.parts.legs[1].rotation.x = -sw;
+  w.parts.legs[2].rotation.x = -sw;
+  w.parts.legs[3].rotation.x = sw;
+}
+function tameFrostfang() {
+  frostfang.tamed = true;
+  frostfang.ent = frostfang.wary;
+  frostfang.wary = null;
+  unlockAch('packmate');
+  remember('用三块鹿肉驯服了霜风隘口的白狼「霜牙」', 'frostfang');
+  toast('🐺 白狼低头蹭了蹭你的手——「霜牙」愿意与你同行!', 5);
+  saveGame();
+}
+
+// ================= 野外热点:篝火(烤肉)/温泉(泡汤)/教堂(庇佑) =================
+const wildSpots = [];
+// 核心区固定热点:幽暗森林边的猎人篝火 + 霜风隘口温泉
+{
+  const cf = new THREE.Group();
+  for (let i = 0; i < 5; i++) {
+    const a = (i / 5) * Math.PI * 2;
+    const st = new THREE.Mesh(new THREE.IcosahedronGeometry(0.22, 0), lambert(0x66625c));
+    st.position.set(Math.cos(a) * 0.7, 0.12, Math.sin(a) * 0.7);
+    cf.add(st);
+  }
+  const flame = new THREE.Mesh(new THREE.ConeGeometry(0.3, 0.7, 6),
+    new THREE.MeshStandardMaterial({ color: 0xff9a3d, emissive: 0xcc5500, emissiveIntensity: 1.4 }));
+  flame.position.y = 0.4;
+  cf.add(flame);
+  cf.position.set(-118, 0, -32);
+  scene.add(cf);
+  wildSpots.push({ type: 'campfire', x: -118, z: -32, chunk: null });
+
+  const pool = new THREE.Mesh(new THREE.CircleGeometry(2.6, 14),
+    new THREE.MeshStandardMaterial({ color: 0x7ad4d8, emissive: 0x1a5a5e, emissiveIntensity: 0.4, roughness: 0.15 }));
+  pool.rotation.x = -Math.PI / 2;
+  pool.position.set(-272, 0.03, -122);
+  scene.add(pool);
+  for (let i = 0; i < 7; i++) {
+    const a = (i / 7) * Math.PI * 2;
+    const st = new THREE.Mesh(new THREE.IcosahedronGeometry(0.35, 0), lambert(0x8a857e));
+    st.position.set(-272 + Math.cos(a) * 2.8, 0.22, -122 + Math.sin(a) * 2.8);
+    scene.add(st);
+  }
+  wildSpots.push({ type: 'spring', x: -272, z: -122, chunk: null });
+}
+function nearestSpot(type, r2) {
+  for (const sp of wildSpots) {
+    if (sp.type === type && dist2(player.pos.x, player.pos.z, sp.x, sp.z) < r2) return sp;
+  }
+  return null;
+}
+let springTick = 0, blessDay = 0;
+function updateSprings(dt) {
+  if (!started || player.dead) return;
+  const sp = nearestSpot('spring', 14);
+  if (!sp) { springTick = 0; return; }
+  springTick += dt;
+  if (springTick >= 2) {
+    springTick = 0;
+    spawnDust(player.pos.x, 0.6, player.pos.z, 3, 1.2, 1.6);
+    stats.soak = (stats.soak || 0) + 2;
+    if (stats.soak >= 30) unlockAch('soak');
+    if (player.hp < player.maxHp) {
+      player.hp++;
+      sfx.heart();
+    }
+  }
+}
+
+// ================= 梦境(旅店过夜时,AI 把编年史揉进梦里) =================
+const DREAMS = [
+  '你梦见自己站在麦田中央,每一穗麦子都朝着你弯腰,像在行礼,又像在偷笑。',
+  '你梦见银月湖底亮着一盏灯,守灯人背对着你,肩膀很像你自己。',
+  '你梦见那只鸡。它坐在王座上,神情威严。你醒来前,它点了点头。',
+  '你梦见风车转得越来越慢,最后停住——整个世界都在等它,谁也不敢先动。',
+  '你梦见一枚金币掉进许愿池,沉了很久很久,久到你在梦里睡着了。',
+  '你梦见雪落进炉火,没有熄,反而烧得更旺。有人在你身后轻轻说:记住这个。',
+];
+let dreamIdx = Math.floor(Math.random() * DREAMS.length);
+function queueDream() {
+  if (Math.random() < 0.45) return; // 不是每晚都做梦
+  const mem = recallLine();
+  if (!AI_TEXT_OFF && !aiBusy.dream) {
+    aiBusy.dream = true;
+    aiLine(
+      `你是梦本身。给一个中世纪游侠写一段40字以内的梦境,素材:${mem || '空旷的原野与一面镜子'}。` +
+      '要有画面感,微微超现实,不解释,不加引号。只输出梦境。', null, 9000,
+    ).then((t) => {
+      aiBusy.dream = false;
+      if (t && !dialog.open && !player.dead) openDialog([`(昨夜的梦)${t}`]);
+    });
+  } else {
+    setTimeout(() => {
+      if (!dialog.open && !player.dead) openDialog([`(昨夜的梦)${DREAMS[dreamIdx++ % DREAMS.length]}`]);
+    }, 4000);
+  }
+}
+
+// ================= 拍照模式(P 键隐藏全部 HUD) =================
+let photoMode = false;
+const PHOTO_HIDE = ['hearts', 'coins', 'equip', 'wanted', 'mission', 'region', 'minimap',
+  'prompt', 'controls-hint', 'combo', 'weather', 'bubble', 'toast'];
+function togglePhoto() {
+  photoMode = !photoMode;
+  for (const id of PHOTO_HIDE) {
+    const el = document.getElementById(id);
+    if (el) el.style.visibility = photoMode ? 'hidden' : '';
+  }
+  if (!photoMode) toast('📷 已退出拍照模式', 1.5);
 }
 
 // ================= 世界观铭文(可阅读的石碑,集齐 12 处) =================
@@ -1908,6 +2115,10 @@ const ACH_DEFS = {
   forager:  { name: '采菇人', desc: '采到 15 朵蘑菇' },
   scribe:   { name: '史官', desc: '读遍全部 12 处世界观铭文' },
   mirror:   { name: '照见自己', desc: '与北境边缘的回响之镜对视' },
+  parry:    { name: '见招拆招', desc: '完成 5 次完美弹反' },
+  chef:     { name: '野炊大师', desc: '在篝火上烤 5 块鹿肉' },
+  packmate: { name: '孤狼不再', desc: '驯服白狼「霜牙」' },
+  soak:     { name: '泡汤客', desc: '在温泉里泡满 30 秒' },
 };
 const stats = { thrown: 0, pecks: 0, wishes: 0, drunks: 0, loseStreak: 0, sheepDist: 0, lastStomp: -99, deer: 0, mushrooms: 0 };
 let achUnlocked = [];
@@ -2196,7 +2407,7 @@ async function aiLine(prompt, fallback, timeoutMs = 7000) {
   }
 }
 // AI 输出口的忙碌标记:等待期间重复按 E 不再重复请求/重复开对话
-const aiBusy = { mirror: false, tale: false, bard: false, prophet: false };
+const aiBusy = { mirror: false, tale: false, bard: false, prophet: false, dream: false };
 
 // ================= 对话面板(RDR2 式多页对话) =================
 const dialogEl = document.getElementById('dialog');
@@ -2837,6 +3048,7 @@ function saveGame() {
       swordLv: player.swordLv, royalHorse: player.royalHorse,
       kingRewarded: namedNPCs.find((n) => n.key === 'king')?.rewarded || false,
       ach: achUnlocked, stats, day: calendar.day, chron: chronicle, fday: festGrantedDay,
+      wolf: frostfang.tamed, wolfFeed: frostfang.feed,
       herbs: player.herbs, venison: player.venison, lore: loreRead,
       weapon: player.weapon, weaponsOwned: player.weaponsOwned, armor: player.armor,
     }));
@@ -2864,6 +3076,13 @@ function loadGame() {
     if (Array.isArray(s.lore)) loreRead = s.lore;
     if (Array.isArray(s.chron)) chronicle = s.chron;
     festGrantedDay = s.fday || 0;
+    frostfang.feed = s.wolfFeed || 0;
+    if (s.wolf && !frostfang.tamed) {
+      frostfang.tamed = true;
+      frostfang.ent = frostfang.wary;
+      frostfang.wary = null;
+      if (frostfang.ent) frostfang.ent.pos.set(world.playerSpawn.x + 2, 0, world.playerSpawn.z + 2);
+    }
     if (Array.isArray(s.weaponsOwned)) player.weaponsOwned = s.weaponsOwned;
     if (s.weapon && player.weaponsOwned.includes(s.weapon)) player.weapon = s.weapon;
     if (s.armor && ARMORS[s.armor]) {
@@ -2984,6 +3203,7 @@ window.addEventListener('keydown', (e) => {
   }
   if (e.code === 'KeyF' && !dialog.open) tryAttack();
   if (e.code === 'KeyM') toast(toggleMusic() ? '♪ 音乐开' : '♪ 音乐关', 1.5);
+  if (e.code === 'KeyP' && started) togglePhoto();
   if (e.code === 'KeyH') toggleHint();
   if (e.code === 'KeyQ') cycleWeapon();
   if ((e.code === 'KeyC' || e.code === 'ControlLeft') && !dialog.open) doRoll();
@@ -2993,6 +3213,7 @@ window.addEventListener('keydown', (e) => {
 renderer.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
 window.addEventListener('mousedown', (e) => {
   if (e.button === 2 && started && !player.dead && !player.mounted && player.weapon !== 'bow') {
+    if (!player.blocking) player.blockStart = performance.now(); // 完美弹反判定窗
     player.blocking = true;
   }
 });
@@ -3298,6 +3519,7 @@ function tryInteract() {
         player.coins -= 10;
         sfx.heart();
         sleepToMorning();
+        queueDream();
         openDialog(['罗莎:(掀开门帘)天亮了,汤在灶上。伤都歇利索了吧?路上小心。']);
       } else {
         openDialog(['罗莎:住店 10 金币……先坐着喝口水吧,看你风尘仆仆的。']);
@@ -3462,6 +3684,49 @@ function tryInteract() {
   for (const s of loreStones) {
     if (dist2(player.pos.x, player.pos.z, s.def.x, s.def.z) < 8) {
       readLore(s);
+      return;
+    }
+  }
+  // 白狼霜牙:喂鹿肉驯服
+  if (!frostfang.tamed && frostfang.wary &&
+      dist2(player.pos.x, player.pos.z, frostfang.wary.pos.x, frostfang.wary.pos.z) < 26) {
+    if (player.venison > 0) {
+      player.venison--;
+      frostfang.feed++;
+      sfx.heart();
+      if (frostfang.feed >= 3) tameFrostfang();
+      else toast(`🐺 白狼叼走了鹿肉,退开两步,眼神软了一点(${frostfang.feed}/3)`, 3.5);
+    } else {
+      toast('🐺 白狼盯着你的手——它想要的是鹿肉。', 2.5);
+    }
+    return;
+  }
+  // 篝火烤肉
+  {
+    const cf = nearestSpot('campfire', 30);
+    if (cf && player.venison > 0) {
+      player.venison--;
+      player.hp = Math.min(player.maxHp, player.hp + 3);
+      sfx.heart();
+      stats.cooked = (stats.cooked || 0) + 1;
+      if (stats.cooked >= 5) unlockAch('chef');
+      toast(`🍖 烤鹿肉滋滋作响……回复 ❤×1.5(剩余鹿肉 ×${player.venison})`, 3);
+      return;
+    }
+  }
+  // 遗迹教堂:祈祷得庇佑(每日一次)
+  {
+    const ch = nearestSpot('chapel', 30);
+    if (ch) {
+      if (blessDay !== calendar.day) {
+        blessDay = calendar.day;
+        player.blessT = 120;
+        sfx.fanfare();
+        openDialog(['(你在断壁间的石坛前低头片刻。风从缺了顶的殿堂穿过,像一声很轻的应答。)',
+          '✨ 获得庇佑:脚下生风(移动加速,120 秒)']);
+      } else {
+        openDialog(['(石坛安静。神明今日已听过你的祷告——祂也需要歇一歇。)']);
+      }
       return;
     }
   }
@@ -3672,27 +3937,19 @@ function completeMission() {
 }
 
 // ================= 攻击 =================
-function tryAttack() {
-  if (!started || player.dead || player.attackT > 0 || player.mounted || player.carrying ||
-      player.blocking || player.rollT > 0) return;
-  const def = WEAPONS[player.weapon];
-  player.attackT = def.cd;
-  player.attackDur = def.cd;
-  if (player.weapon === 'bow') { shootArrow(); return; }
-  sfx.sword();
-  if (dist2(player.pos.x, player.pos.z, 140, 20) < 80) unlockAch('windmill');
-  const dmg = def.dmg + (player.swordLv >= 2 ? 1 : 0);
+// 近战横扫判定:普通挥击与蓄力重击共用(dmg/范围/角度/击退可调)
+function meleeSweep(dmg, range, arcDot, knock) {
   const fx = Math.sin(player.yaw), fz = Math.cos(player.yaw);
   const hitOne = (list, onHit) => {
     for (const e of list) {
       if (e.downT > 0 || e.dead) continue;
       const dx = e.pos.x - player.pos.x, dz = e.pos.z - player.pos.z;
       const d = Math.hypot(dx, dz);
-      if (d < def.range && (dx * fx + dz * fz) / (d || 1) > 0.35) onHit(e);
+      if (d < range && (dx * fx + dz * fz) / (d || 1) > arcDot) onHit(e);
     }
   };
   hitOne(guards, (g) => {
-    g.hp -= dmg; sfx.hit(); hitFX(g, def.knock); showDamage(g.pos, dmg, dmg >= 3);
+    g.hp -= dmg; sfx.hit(); hitFX(g, knock); showDamage(g.pos, dmg, dmg >= 3);
     if (!g.wantedHit) { g.wantedHit = true; crime(1, '你袭击了卫兵!'); }
     if (g.hp <= 0) {
       g.downT = 14; g.stunT = 0; g.group.rotation.z = 0;
@@ -3702,7 +3959,7 @@ function tryAttack() {
     } else g.state = 'chase';
   });
   hitOne(bandits, (b) => {
-    b.hp -= dmg; sfx.hit(); hitFX(b, b.boss ? def.knock * 0.4 : def.knock);
+    b.hp -= dmg; sfx.hit(); hitFX(b, b.boss ? knock * 0.4 : knock);
     showDamage(b.pos, dmg, dmg >= 3);
     if (b.hp <= 0) {
       b.dead = true; startFall(b); registerKill();
@@ -3717,7 +3974,7 @@ function tryAttack() {
     }
   });
   hitOne(wolves, (w) => {
-    w.hp -= dmg; sfx.hit(); hitFX(w, def.knock); showDamage(w.pos, dmg, dmg >= 3);
+    w.hp -= dmg; sfx.hit(); hitFX(w, knock); showDamage(w.pos, dmg, dmg >= 3);
     if (w.hp <= 0) killWolf(w);
   });
   hitOne(deers, (d) => {
@@ -3736,6 +3993,33 @@ function tryAttack() {
   });
 }
 
+function tryAttack() {
+  // 骑射:马背上可以开弓(其余武器仍需下马)
+  if (!started || player.dead || player.attackT > 0 || player.carrying ||
+      player.blocking || player.rollT > 0) return;
+  if (player.mounted && player.weapon !== 'bow') return;
+  const def = WEAPONS[player.weapon];
+  player.attackT = def.cd;
+  player.attackDur = def.cd;
+  if (player.weapon === 'bow') { shootArrow(); return; }
+  sfx.sword();
+  if (dist2(player.pos.x, player.pos.z, 140, 20) < 80) unlockAch('windmill');
+  meleeSweep(def.dmg + (player.swordLv >= 2 ? 1 : 0), def.range, 0.35, def.knock);
+}
+
+// 蓄力重击:按住 F 约 0.7 秒自动挥出 —— 双倍伤害、超广角横扫、大击退
+function heavyAttack() {
+  const def = WEAPONS[player.weapon];
+  player.attackT = def.cd * 1.6;
+  player.attackDur = def.cd * 1.6;
+  sfx.sword();
+  sfx.clank();
+  camShake = Math.max(camShake, 0.3);
+  hitStopT = Math.max(hitStopT, 0.06);
+  meleeSweep((def.dmg + (player.swordLv >= 2 ? 1 : 0)) * 2, def.range + 0.7, -0.1, def.knock * 1.8);
+  stats.heavies = (stats.heavies || 0) + 1;
+}
+
 function dropCoins(pos, n) {
   for (let i = 0; i < n; i++) {
     const a = Math.random() * 6.28;
@@ -3743,9 +4027,23 @@ function dropCoins(pos, n) {
   }
 }
 
-function damagePlayer(n) {
+function damagePlayer(n, attacker = null) {
   if (player.invulnT > 0 || player.dead) return;
   if (player.blocking && player.rollT <= 0) {
+    // 完美弹反:出手前 0.25 秒内举盾 → 攻击者踉跄 2 秒 + 时停
+    if (attacker && attacker.stunT !== undefined &&
+        performance.now() - (player.blockStart || 0) < 250) {
+      attacker.stunT = Math.max(attacker.stunT || 0, 2.2);
+      hitStopT = Math.max(hitStopT, 0.14);
+      camShake = Math.max(camShake, 0.25);
+      sfx.clank();
+      sfx.clear();
+      toast('⚡ 完美弹反!', 1.4);
+      stats.parries = (stats.parries || 0) + 1;
+      if (stats.parries >= 5) unlockAch('parry');
+      player.invulnT = 0.5;
+      return;
+    }
     sfx.clank();
     camShake = Math.max(camShake, 0.15);
     player.invulnT = 0.35;
@@ -3885,7 +4183,7 @@ function updateGuards(dt) {
         if (g.windupT <= 0) {
           g.attackCd = 0.9;
           g.swingT = 0.3;
-          if (Math.hypot(player.pos.x - g.pos.x, player.pos.z - g.pos.z) < 2.3) damagePlayer(1);
+          if (Math.hypot(player.pos.x - g.pos.x, player.pos.z - g.pos.z) < 2.3) damagePlayer(1, g);
         }
       } else if (pd > 1.6) {
         moveEntity(g, player.pos.x, player.pos.z, g.speed, dt);
@@ -3989,7 +4287,7 @@ function updateBandits(dt) {
         if (b.windupT <= 0) {
           b.attackCd = 1.0;
           b.swingT = 0.3;
-          if (Math.hypot(player.pos.x - b.pos.x, player.pos.z - b.pos.z) < 2.3) damagePlayer(b.dmg);
+          if (Math.hypot(player.pos.x - b.pos.x, player.pos.z - b.pos.z) < 2.3) damagePlayer(b.dmg, b);
         }
       } else if (pd > 1.6) { moveEntity(b, player.pos.x, player.pos.z, b.speed, dt); moving = true; }
       else if (b.attackCd <= 0) { b.windupT = 0.45; telegraphFlash(b); }
@@ -4292,7 +4590,8 @@ function updatePlayer(dt) {
     moveState = 2;
     return;
   }
-  const speed = (keys['ShiftLeft'] || keys['ShiftRight'] ? 8.4 : 5.0) * (player.blocking ? 0.45 : 1);
+  const speed = (keys['ShiftLeft'] || keys['ShiftRight'] ? 8.4 : 5.0) * (player.blocking ? 0.45 : 1) *
+    (player.blessT > 0 ? 1.15 : 1); // 教堂庇佑:脚下生风
   const prevYaw = player.yaw;
   if (moving) {
     player.pos.x += mv.x * speed * dt;
@@ -4960,6 +5259,27 @@ function computePrompt() {
       return;
     }
   }
+  if (!frostfang.tamed && frostfang.wary &&
+      dist2(player.pos.x, player.pos.z, frostfang.wary.pos.x, frostfang.wary.pos.z) < 26) {
+    mark(frostfang.wary.pos.x, frostfang.wary.pos.z, 1.3);
+    promptText = player.venison > 0
+      ? `按 E 喂鹿肉给白狼(驯服 ${frostfang.feed}/3)` : '🐺 白狼想要鹿肉(去猎一头鹿)';
+    return;
+  }
+  {
+    const cf = nearestSpot('campfire', 30);
+    if (cf && player.venison > 0) {
+      mark(cf.x, cf.z, 1.2);
+      promptText = `按 E 烤鹿肉(回 ❤×1.5,剩 ×${player.venison})`;
+      return;
+    }
+    const ch = nearestSpot('chapel', 30);
+    if (ch) {
+      mark(ch.x, ch.z, 2.0);
+      promptText = blessDay !== calendar.day ? '按 E 在石坛前祈祷(获得庇佑)' : '(神明今日已听过你的祷告)';
+      return;
+    }
+  }
   if (dist2(player.pos.x, player.pos.z, MIRROR_POS.x, MIRROR_POS.z) < 9) {
     mark(MIRROR_POS.x, MIRROR_POS.z, 2.3);
     promptText = '按 E 凝视回响之镜';
@@ -5471,6 +5791,7 @@ window.__gtm = {
   wilderness: { CORE },
   deers, mushrooms, loreStones, LORE, tellStory, sleepToMorning, newDay,
   chronicle: () => chronicle, remember, archetype, mirrorTalk, MIRROR_POS,
+  frostfang, wildSpots, heavyAttack, togglePhoto, queueDream, damagePlayer, nearestSpot,
   workspace, wsReport, tickWorkspace: () => { workspace.t = 0; updateWorkspace(0); },
   setIdle: (t) => { idleT = t; },
   getIdle: () => ({ idleT, idleCd }),
@@ -5513,6 +5834,20 @@ function loop(now) {
   }
 
   updatePlayer(dt);
+  // 蓄力重击:按住 F 约 0.7 秒自动挥出(松手清零)
+  if (keys['KeyF'] && !player.dead && !player.mounted && !player.carrying &&
+      player.weapon !== 'bow' && player.rollT <= 0 && !dialog.open) {
+    player.chargeT = (player.chargeT || 0) + dt;
+    if (player.chargeT >= 0.7 && player.attackT <= 0) {
+      player.chargeT = 0;
+      heavyAttack();
+    }
+  } else {
+    player.chargeT = 0;
+  }
+  if (player.blessT > 0) player.blessT -= dt;
+  updateFrostfang(dt);
+  updateSprings(dt);
   updateGuards(dt);
   updateBandits(dt);
   updateWolves(dt);

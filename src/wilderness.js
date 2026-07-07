@@ -205,9 +205,10 @@ function genChunk(cx, cz) {
     }
     for (let i = 0; i < 7; i++) drop(px + (rng() - 0.5) * 4, pz + (rng() - 0.5) * 4);
   } else if (roll < 0.38) {
-    // 猎人营地(安全补给):帐篷 + 一颗心
+    // 猎人营地(安全补给):帐篷 + 一颗心 + 可烤肉的篝火
     tentAt(px, pz, 0x5a6a45);
     campfire(px + 2.2, pz);
+    hooks.registerSpot('campfire', px + 2.2, pz, key);
     dropH(px + 1, pz + 2);
     drop(px - 1.5, pz + 1);
   } else if (roll < 0.42) {
@@ -259,6 +260,77 @@ function genChunk(cx, cz) {
       stone(px + Math.cos(a) * 3, pz + Math.sin(a) * 3, 1.6 + rng() * 1.2, 0.8);
     }
     for (let i = 0; i < 4; i++) drop(px + (rng() - 0.5) * 3, pz + (rng() - 0.5) * 3);
+  } else if (roll < 0.585 && (biome === 'forest' || biome === 'snow')) {
+    // 温泉:站进去慢慢回血
+    const pool = new THREE.Mesh(new THREE.CircleGeometry(2.6, 14),
+      new THREE.MeshStandardMaterial({ color: 0x7ad4d8, emissive: 0x1a5a5e, emissiveIntensity: 0.4, roughness: 0.15 }));
+    pool.rotation.x = -Math.PI / 2;
+    pool.position.set(px, 0.03, pz);
+    g.add(pool);
+    for (let i = 0; i < 7; i++) {
+      const a = (i / 7) * Math.PI * 2;
+      const st = new THREE.Mesh(new THREE.IcosahedronGeometry(0.35, 0), lambert(0x8a857e));
+      st.position.set(px + Math.cos(a) * 2.8, 0.22, pz + Math.sin(a) * 2.8);
+      g.add(st);
+    }
+    hooks.registerSpot('spring', px, pz, key);
+  } else if (roll < 0.62) {
+    // 遗迹小教堂:断墙 + 石坛,祈祷得庇佑
+    for (const [wx, wz, ww] of [[px - 2.4, pz, 0.5], [px + 2.4, pz, 0.5]]) {
+      const wall = new THREE.Mesh(new THREE.BoxGeometry(ww, 2.2 + rng(), 4.5), lambert(0x9d9486, { roughness: 0.95 }));
+      wall.position.set(wx, 1.1, wz);
+      wall.rotation.z = (rng() - 0.5) * 0.08;
+      wall.castShadow = true;
+      g.add(wall);
+      const col = { x: wx, z: wz, r: 1.1 };
+      colliders.circles.push(col);
+      cols.push(col);
+    }
+    const altar = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.9, 0.7), lambert(0xb8b0a2, { roughness: 0.9 }));
+    altar.position.set(px, 0.45, pz - 1.4);
+    altar.castShadow = true;
+    g.add(altar);
+    hooks.registerSpot('chapel', px, pz, key);
+    drop(px + 1, pz + 1);
+    drop(px - 1, pz + 1.5);
+  } else if (roll < 0.655) {
+    // 陨石坑:焦黑坑沿 + 发光晶簇 + 星屑金币
+    const rim = new THREE.Mesh(new THREE.TorusGeometry(3, 0.5, 6, 14), lambert(0x3a352f, { roughness: 1 }));
+    rim.rotation.x = -Math.PI / 2;
+    rim.position.set(px, 0.15, pz);
+    g.add(rim);
+    for (let i = 0; i < 3; i++) {
+      const c = new THREE.Mesh(new THREE.ConeGeometry(0.3, 1 + rng(), 5),
+        new THREE.MeshStandardMaterial({ color: 0x9adce8, emissive: 0x2a6a88, emissiveIntensity: 0.9, roughness: 0.2 }));
+      c.position.set(px + (rng() - 0.5) * 2.4, 0.5, pz + (rng() - 0.5) * 2.4);
+      c.rotation.z = (rng() - 0.5) * 0.6;
+      g.add(c);
+    }
+    for (let i = 0; i < 5; i++) drop(px + (rng() - 0.5) * 5, pz + (rng() - 0.5) * 5);
+  } else if (roll < 0.69 && biome !== 'snow') {
+    // 商队残骸:翻倒的货车 + 散落钱箱 + 一个劫道的
+    const bed = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.3, 1.4), lambert(0x8a6a45, { roughness: 0.95 }));
+    bed.position.set(px, 0.6, pz);
+    bed.rotation.z = 0.7;
+    bed.castShadow = true;
+    g.add(bed);
+    const wheel = new THREE.Mesh(new THREE.TorusGeometry(0.5, 0.08, 6, 10), lambert(0x5a4632));
+    wheel.position.set(px + 1.4, 0.55, pz + 0.6);
+    wheel.rotation.y = rng() * 2;
+    wheel.castShadow = true;
+    g.add(wheel);
+    for (let i = 0; i < 2; i++) {
+      const cr = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.7, 0.7), lambert(0x8a6a45, { roughness: 0.9 }));
+      cr.position.set(px + (rng() - 0.5) * 3, 0.35, pz + (rng() - 0.5) * 3);
+      cr.rotation.y = rng() * 2;
+      g.add(cr);
+    }
+    const col = { x: px, z: pz, r: 1.2 };
+    colliders.circles.push(col);
+    cols.push(col);
+    const b = hooks.spawnBandit(px + 4, pz + 2, key);
+    if (b) spawned.push(b);
+    for (let i = 0; i < 6; i++) drop(px + (rng() - 0.5) * 4, pz + (rng() - 0.5) * 4);
   }
 
   scene.add(g);
