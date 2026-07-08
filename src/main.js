@@ -1893,7 +1893,12 @@ function takeBounty() {
       .then((t) => { if (t) bountyRT.crime = t; });
   }
   sfx.accept();
-  openDialog([`(揭下悬赏令)通缉要犯「${bountyRT.name}」,现身于${place}一带。生死不论,赏金 30 枚。`]);
+  openDialog([`(揭下悬赏令)通缉要犯「${bountyRT.name}」,现身于${place}一带。生死不论,赏金 30 枚。`], null,
+    wantedPosterSpeaker());
+}
+// 悬赏令上的通缉画像:AI 按罪犯名字现画一张(种子固定,同一人永远同一张脸)
+function wantedPosterSpeaker() {
+  return { key: null, name: bountyRT.name, desc: 'scarred wanted outlaw criminal, rough charcoal wanted-poster sketch' };
 }
 function updateBounty(dt) {
   if (bountyRT.cooldown > 0) bountyRT.cooldown -= dt;
@@ -1907,6 +1912,96 @@ function updateBounty(dt) {
     bountyRT.cooldown = 30;
     saveGame();
   }
+}
+
+// ================= 置业:湖畔小屋(玩家自己的家) =================
+const HOME = { x: -82, z: 66, doorX: -82, doorZ: 68.6, price: 200 };
+const homeRT = { sign: null, signCtx: null };
+{
+  const g = new THREE.Group();
+  const wall = new THREE.Mesh(new THREE.BoxGeometry(5, 2.6, 4), lambert(0xd8cbaa, { roughness: 0.92 }));
+  wall.position.y = 1.3;
+  wall.castShadow = wall.receiveShadow = true;
+  g.add(wall);
+  const roof = new THREE.Mesh(new THREE.ConeGeometry(3.8, 1.9, 4), lambert(0x8a4a2e, { roughness: 0.85 }));
+  roof.position.y = 3.55;
+  roof.rotation.y = Math.PI / 4;
+  roof.castShadow = true;
+  g.add(roof);
+  const door = new THREE.Mesh(new THREE.PlaneGeometry(0.95, 1.7), lambert(0x5a3a20, { roughness: 0.95 }));
+  door.position.set(0, 0.85, 2.02);
+  g.add(door);
+  const win = new THREE.Mesh(new THREE.PlaneGeometry(0.8, 0.8),
+    new THREE.MeshStandardMaterial({ color: 0x2a3a50, emissive: 0xffd27a, emissiveIntensity: 0.3, roughness: 0.4 }));
+  win.position.set(1.6, 1.5, 2.02);
+  g.add(win);
+  const post = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.07, 1.3, 5), lambert(0x6b4a2f, { roughness: 0.9 }));
+  post.position.set(-1.9, 0.65, 2.6);
+  g.add(post);
+  const sc = document.createElement('canvas');
+  sc.width = 128;
+  sc.height = 64;
+  homeRT.signCtx = sc.getContext('2d');
+  const sign = new THREE.Mesh(new THREE.PlaneGeometry(1.3, 0.65),
+    new THREE.MeshStandardMaterial({ map: new THREE.CanvasTexture(sc), side: THREE.DoubleSide, roughness: 0.95 }));
+  sign.position.set(-1.9, 1.35, 2.6);
+  g.add(sign);
+  homeRT.sign = sign;
+  g.position.set(HOME.x, 0, HOME.z);
+  scene.add(g);
+  colliders.boxes.push({ minX: HOME.x - 2.7, maxX: HOME.x + 2.7, minZ: HOME.z - 2.2, maxZ: HOME.z + 2.2 });
+}
+function paintHomeSign() {
+  const c = homeRT.signCtx;
+  c.fillStyle = '#d8c9a0';
+  c.fillRect(0, 0, 128, 64);
+  c.fillStyle = '#5a3a1a';
+  c.textAlign = 'center';
+  if (player.home) {
+    c.font = 'bold 22px serif';
+    c.fillText('林恩的小屋', 64, 40);
+  } else {
+    c.font = 'bold 20px serif';
+    c.fillText('出售', 64, 28);
+    c.font = '16px serif';
+    c.fillText(`${HOME.price} 金币`, 64, 52);
+  }
+  homeRT.sign.material.map.needsUpdate = true;
+}
+paintHomeSign();
+function homeInteract() {
+  if (!player.home) {
+    if (player.coins >= HOME.price) {
+      player.coins -= HOME.price;
+      player.home = true;
+      paintHomeSign();
+      sfx.fanfare();
+      remember('买下了苇岸边的湖畔小屋,在艾尔德里亚安了家', 'home-buy');
+      unlockAch('homeowner');
+      openDialog([
+        `(你数出 ${HOME.price} 枚金币,村长把一把黄铜钥匙放进你手心)`,
+        '门轴吱呀一响——一张床、一扇窗、一整面湖,从今天起都是你的了。',
+        '门口的木牌翻了个面:「林恩的小屋」。晚上回来睡一觉,第二天走路都带风。',
+      ]);
+    } else {
+      openDialog([`(出售)湖畔小屋:一张床、一扇窗、一整面湖。售价 ${HOME.price} 金币,你还差 ${HOME.price - player.coins} 枚。`]);
+    }
+    return;
+  }
+  if (wanted > 0) {
+    openDialog(['(你从门缝往外看)卫兵正在苇丛边晃悠。通缉犯睡不了安稳觉——先去摆平通缉再回家。']);
+    return;
+  }
+  if (player.homeDay === calendar.day) {
+    openDialog(['(床还带着体温)今天已经睡过了……再睡下去就要长进床里了。']);
+    return;
+  }
+  sleepToMorning();
+  queueDream();
+  player.homeDay = calendar.day;
+  sfx.heart();
+  saveGame();
+  openDialog(['(自己的床就是不一样)一觉睡到大天亮,窗外湖光正好。今天浑身是劲。(安眠:移动 +8%)']);
 }
 
 // ================= 荒沙角斗场(波次生存) =================
@@ -2427,6 +2522,8 @@ const ACH_DEFS = {
   deept:    { name: '打破砂锅', desc: '追问 10 次(T 键)' },
   sailor:   { name: '摆渡客', desc: '乘小船往返湖心岛 6 趟' },
   slayer:   { name: '百战游侠', desc: '击败 100 个敌人' },
+  ironarm:  { name: '铁臂之上', desc: '掰手腕赢下铁臂加隆 3 次' },
+  homeowner:{ name: '置业成家', desc: '买下苇岸边的湖畔小屋' },
   elder:    { name: '长住者', desc: '在艾尔德里亚度过 30 日' },
   navigator:{ name: '远行者', desc: '走到离王都一万步之外' },
 };
@@ -2487,6 +2584,16 @@ const FUNNY = {
       '想听哪段?龙骨?湖底?还是……你自己的?',
     ],
   },
+  strongman: {
+    name: '铁臂加隆', spot: [24, 81, -1.4],
+    style: { shirt: 0x7a3a2a, pants: 0x3a3026, hair: 0x2a2018 },
+    idle: [
+      '这条胳膊掰弯过马蹄铁。马当时也在。',
+      '旅店的桌子换了三张,都是被我掰坏的。',
+      '有人说我靠蛮力。胡说,我还靠体重。',
+      '祖传的手艺:我爷爷掰赢过一头熊。熊自己承认的。',
+    ],
+  },
   quixote: {
     name: '风车骑士唐豆', spot: [133.5, 14.5, 1.0],
     style: { shirt: 0x7a7a86, pants: 0x3a3a44, helmet: true, sword: true },
@@ -2535,6 +2642,62 @@ function gamble() {
     `豆子:(哗啦一掷)你 ${a}+${b}=${my} 点,我 ${c}+${d}=${his} 点!`,
     result,
   ]);
+}
+
+// 掰手腕:酒馆前的力量赌局——狂按 E 把加隆的手压下去
+const ARM_SPOT = { x: 24, z: 81 };
+const armRT = { active: false, meter: 0.5, t: 0, cooldown: 0 };
+function armWrestle() {
+  if (armRT.active) return;
+  if (armRT.cooldown > 0) {
+    openDialog(['加隆:(甩着胳膊)让我缓缓……你这细胳膊哪来这么大的劲。']);
+    return;
+  }
+  if (player.coins < 15) {
+    openDialog(['加隆:(把蒲扇大的手一摊)赌注 15 金币。没钱?先去搬一天砖,练练再来。'], null,
+      { key: null, name: '铁臂加隆', desc: NPC_DESC_EN.strongman });
+    return;
+  }
+  player.coins -= 15;
+  armRT.active = true;
+  armRT.meter = 0.5;
+  armRT.t = 0;
+  sfx.accept();
+  toast('💪 掰手腕开始!狂按 E 把他的手压下去!!', 2.5);
+}
+function armPress() {
+  armRT.meter = Math.min(1.05, armRT.meter + 0.055);
+  sfx.clank();
+}
+function endArm(win, note) {
+  armRT.active = false;
+  armRT.cooldown = 6;
+  if (win) {
+    player.coins += 30;
+    stats.arms = (stats.arms || 0) + 1;
+    sfx.fanfare();
+    remember('掰手腕赢了铁臂加隆,赢走 30 金币');
+    if (stats.arms >= 3) unlockAch('ironarm');
+    openDialog(['加隆:(不可置信地盯着自己被按平的手)……我输了?我输了!!好小子,30 金币拿走——下回我可不让你了!'], null,
+      { key: null, name: '铁臂加隆', desc: NPC_DESC_EN.strongman });
+  } else {
+    sfx.hit();
+    openDialog([note || '加隆:(啪的一声把你的手背按在桌上)哈——!承让承让,15 金币进了今晚的酒钱。'], null,
+      { key: null, name: '铁臂加隆', desc: NPC_DESC_EN.strongman });
+  }
+  saveGame();
+}
+function updateArm(dt) {
+  if (armRT.cooldown > 0) armRT.cooldown -= dt;
+  if (!armRT.active) return;
+  armRT.t += dt;
+  if (dist2(player.pos.x, player.pos.z, ARM_SPOT.x, ARM_SPOT.z) > 30) {
+    endArm(false, '加隆:(冲你的背影喊)哎——手都没松你人先跑了?!赌注归我啦!');
+    return;
+  }
+  armRT.meter -= (0.16 + Math.min(0.18, armRT.t * 0.022)) * dt; // 拖得越久他劲越大
+  if (armRT.meter >= 1) endArm(true);
+  else if (armRT.meter <= 0 || armRT.t > 15) endArm(false);
 }
 
 // 吟游诗人:按你的真实事迹即兴打油诗(联网时由 AI 现场作词)
@@ -2829,6 +2992,7 @@ const NPC_DESC_EN = {
   trader: 'horse trader woman', innkeep: 'warm innkeeper woman', fisher: 'old fisherman with straw hat',
   witch: 'swamp witch stirring a pot', gambler: 'grinning dice gambler', bard: 'flamboyant lute bard',
   prophet: 'wild-eyed mad prophet', quixote: 'rusty windmill knight', storyteller: 'blind old storyteller with pipe',
+  strongman: 'burly bald tavern strongman with huge arms',
 };
 // ---- AI 肖像:每位说话人一张(pollinations 生成,种子固定,浏览器缓存;离线自动隐藏) ----
 const portraitEl = document.getElementById('dialog-portrait');
@@ -3618,6 +3782,7 @@ function saveGame() {
       chore: sideQuest.active ? sideQuest : null,
       herbs: player.herbs, venison: player.venison, lore: loreRead,
       weapon: player.weapon, weaponsOwned: player.weaponsOwned, armor: player.armor,
+      home: player.home, homeDay: player.homeDay,
     }));
   } catch { /* 隐私模式等 */ }
 }
@@ -3662,6 +3827,11 @@ function loadGame() {
     }
     if (Array.isArray(s.weaponsOwned)) player.weaponsOwned = s.weaponsOwned;
     if (s.weapon && player.weaponsOwned.includes(s.weapon)) player.weapon = s.weapon;
+    if (s.home) {
+      player.home = true;
+      player.homeDay = s.homeDay || 0;
+      paintHomeSign();
+    }
     if (s.armor && ARMORS[s.armor]) {
       player.armor = s.armor;
       player.maxHp = 10 + ARMORS[s.armor].bonus + (lakeBlessed ? 2 : 0);
@@ -3775,7 +3945,8 @@ window.addEventListener('keydown', (e) => {
   if (paused || shopOpen) return;
   keys[e.code] = true;
   if (e.code === 'KeyE') {
-    if (dialog.open) advanceDialog();
+    if (armRT.active) armPress(); // 掰手腕中:E 是发力,不是交互
+    else if (dialog.open) advanceDialog();
     else tryInteract();
   }
   if (e.code === 'KeyF' && !dialog.open) tryAttack();
@@ -4229,6 +4400,7 @@ function tryInteract() {
   for (const n of funnyNPCs) {
     if (dist2(player.pos.x, player.pos.z, n.pos.x, n.pos.z) > 7) continue;
     if (n.key === 'gambler') { gamble(); return; }
+    if (n.key === 'strongman') { armWrestle(); return; }
     if (n.key === 'bard') { bardSong(); return; }
     if (n.key === 'storyteller') { tellStory(); return; }
     if (n.key === 'prophet') {
@@ -4250,6 +4422,11 @@ function tryInteract() {
       { key: null, name: n.def.name, desc: NPC_DESC_EN[n.key], ent: n });
     return;
   }
+  // 湖畔小屋:买房 / 回家安眠
+  if (dist2(player.pos.x, player.pos.z, HOME.doorX, HOME.doorZ) < 6) {
+    homeInteract();
+    return;
+  }
   // 悬赏板
   if (dist2(player.pos.x, player.pos.z, 8, 46) < 8) {
     if (wanted > 0) {
@@ -4264,7 +4441,7 @@ function tryInteract() {
       }
       return;
     }
-    if (bountyRT.target) openDialog([`(告示板)悬赏令仍在追缉中——「${bountyRT.name}」,${bountyRT.crime ? `罪状:${bountyRT.crime}` : '生死不论'}。`]);
+    if (bountyRT.target) openDialog([`(告示板)悬赏令仍在追缉中——「${bountyRT.name}」,${bountyRT.crime ? `罪状:${bountyRT.crime}` : '生死不论'}。`], null, wantedPosterSpeaker());
     else if (bountyRT.cooldown > 0) openDialog(['(告示板)新的悬赏令还没贴出来,过一会儿再来看看。']);
     else takeBounty();
     return;
@@ -5291,7 +5468,8 @@ function updatePlayer(dt) {
     return;
   }
   const speed = (keys['ShiftLeft'] || keys['ShiftRight'] ? 8.4 : 5.0) * (player.blocking ? 0.45 : 1) *
-    (player.blessT > 0 ? 1.15 : 1); // 教堂庇佑:脚下生风
+    (player.blessT > 0 ? 1.15 : 1) * // 教堂庇佑:脚下生风
+    (player.homeDay === calendar.day ? 1.08 : 1); // 在自家床上睡过:安眠增益
   const prevYaw = player.yaw;
   if (moving) {
     player.pos.x += mv.x * speed * dt;
@@ -5879,6 +6057,11 @@ function computePrompt() {
   promptText = '';
   promptTargetPos = null;
   if (!started || player.dead) return;
+  if (armRT.active) {
+    const filled = Math.round(Math.max(0, Math.min(1, armRT.meter)) * 10);
+    promptText = `💪 ${'█'.repeat(filled)}${'░'.repeat(10 - filled)} 狂按 E!!`;
+    return;
+  }
   if (fishing.active) {
     promptText = fishing.phase === 'bite' ? '‼️ 咬钩了!按 E 收杆!!' : '🎣 等鱼上钩……(走动收竿)';
     return;
@@ -5956,6 +6139,7 @@ function computePrompt() {
       prophet: '按 E 听老糊涂的预言(?)',
       quixote: '按 E 与风车骑士交谈',
       storyteller: '按 E 听苟叔说书(AI 现编)',
+      strongman: `按 E 掰手腕(赌 15 赢 30${stats.arms ? `,战绩 ${stats.arms} 胜` : ''})`,
     }[n.key];
     return;
   }
@@ -6060,6 +6244,13 @@ function computePrompt() {
   if (dist2(player.pos.x, player.pos.z, 8, 46) < 8) {
     mark(8, 46, 2.4);
     promptText = bountyRT.target ? '按 E 查看悬赏令' : '按 E 揭悬赏令(赏金 30)';
+    return;
+  }
+  if (dist2(player.pos.x, player.pos.z, HOME.doorX, HOME.doorZ) < 6) {
+    mark(HOME.x, HOME.z, 3.2);
+    promptText = !player.home
+      ? (player.coins >= HOME.price ? `按 E 买下湖畔小屋(${HOME.price} 金币)` : `(出售)湖畔小屋 ${HOME.price} 金币,还差 ${HOME.price - player.coins}`)
+      : player.homeDay === calendar.day ? '(安眠中:移动 +8%。明天再睡)' : '按 E 回屋睡一觉(安眠:移动 +8%)';
     return;
   }
   for (const c of chickens) {
@@ -6631,6 +6822,7 @@ const BARD_COUPLETS = [
 window.__gtm = {
   player, quest, questRT, horses, guards, bandits, villagers, wolves, namedNPCs, steward,
   chickens, funnyNPCs, fishing, streetEvent, bountyRT, takeBounty, trySpawnStreetEvent,
+  armRT, armWrestle, armPress, HOME, homeInteract,
   arrows, WEAPONS, cycleWeapon, openShop, refreshShop, tryRob, doRoll, arenaRT, arenaHost, startArenaWave,
   director, DIRECTOR_EVENTS,
   crime, weather, setWeather, talkQuestGiver, completeMission, missions, advanceDialog,
@@ -6660,6 +6852,7 @@ window.__gtm = {
   refreshProclaim,
   getCrests: () => crestsFound.length,
   dialogOpen: () => dialog.open,
+  getDialog: () => ({ open: dialog.open, page: dialog.pages[dialog.idx], speaker: dialog.speaker && dialog.speaker.name }),
   getRevenge: () => revengeT,
 };
 
@@ -6774,6 +6967,7 @@ function loop(now) {
   updateDirector(dt);
   updateStreetEvent(dt);
   updateBounty(dt);
+  updateArm(dt);
   updateWeather(dt);
   // 环境氛围音:按季节 × 时辰 × 天气切换(4 秒判一次)
   ambienceT -= dt;
