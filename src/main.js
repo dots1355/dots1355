@@ -2664,6 +2664,10 @@ function armWrestle() {
   armRT.t = 0;
   sfx.accept();
   toast('💪 掰手腕开始!狂按 E 把他的手压下去!!', 2.5);
+  if (!AI_TEXT_OFF) {
+    aiLine('你是中世纪酒馆大力士铁臂加隆,自称掰弯过马蹄铁。开赛瞬间对挑战者喊一句25字以内的垃圾话,越具体越好笑越好,只输出那句话。', null, 5000)
+      .then((t) => { if (t && armRT.active) toast(`💪 加隆:${t}`, 2.5); });
+  }
 }
 function armPress() {
   armRT.meter = Math.min(1.05, armRT.meter + 0.055);
@@ -3638,6 +3642,9 @@ const WS_MODULES = [
     if (dist2(player.pos.x, player.pos.z, MIRROR_POS.x, MIRROR_POS.z) < 900) return { t: '他在朝那面镜子走来', sal: 0.75 };
     if (inDungeon()) return { t: '他在被封印的地窖里,黑暗贴着他的后颈', sal: 0.65 };
     if (d > CORE) return { t: '他在没有名字的荒野里赶路', sal: 0.4 };
+    if (player.home && dist2(player.pos.x, player.pos.z, HOME.x, HOME.z) < 1600) {
+      return { t: dayPhase() === 'night' ? '夜里,他自己的窗子在湖边亮着' : '他望得见自己的屋顶,炊烟往上走', sal: 0.35 };
+    }
     return null;
   } },
   { k: 'weather', sense() { // 天象模块
