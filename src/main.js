@@ -1313,7 +1313,9 @@ function openJournal() {
   const bestRace = stats.raceBest ? `${stats.raceBest.toFixed(1)} 秒` : '——';
   const pages = [
     `📖 旅程手账 · ${SEASONS[seasonIdx()]}季第 ${seasonDay()} 日(在这世上第 ${calendar.day} 天)`,
-    `🫧 它此刻:${workspace.current ? workspace.current.t : '放空'} · 心境「${moodWord()}」`,
+    `🫧 它此刻:${workspace.current ? workspace.current.t : '放空'} · 心境「${moodWord()}」` +
+      `${MIND.surprise > 0.4 ? ' · 刚被现实惊了一下' : ''}`,
+    ...(mindReport() ? [`🧠 心象:${mindReport()}`] : []),
     `世界眼里的你:「${archetype()}」 · 🪙 ${player.coins} · ❤ 上限 ${player.maxHp / 2} 心` +
       `${player.relic ? ' · ☀️ 先王战徽' : ''}${frostfang.tamed ? ' · 🐺 霜牙同行' : ''}`,
     `📜 委托 ${Math.min(quest.idx, missions.length)}/${missions.length} · 🛡️ 纹章 ${crestsFound.length}/${world.crestSpots.length} · 📖 铭文 ${loreRead.length}/${LORE.length} · 🏆 成就 ${achUnlocked.length}/${Object.keys(ACH_DEFS).length}`,
@@ -3519,6 +3521,12 @@ function consolidate() {
   }
   workspace.mood.v *= 0.5; // 睡一觉,心境平复大半
   workspace.mood.a = 0.2;
+  // 去习惯化:隔上一夜,见惯的事重新变得新鲜一点;太浅的习惯直接忘掉
+  for (const k of Object.keys(MIND.habit)) {
+    MIND.habit[k] *= 0.7;
+    if (MIND.habit[k] < 0.5) delete MIND.habit[k];
+  }
+  MIND.surprise *= 0.5;
 }
 function newDay() {
   consolidate();
@@ -3686,6 +3694,164 @@ const workspace = {
   focusK: null, focusT: 0,  // 自上而下注意:刚点火的模块短时间内更容易再次胜出
   cueRecent: [],            // 最近被地点勾起的记忆(容量 6,防两条旧事来回鬼打墙)
 };
+
+// ================= 可塑心智:一张在线学习的小神经网络 =================
+// 全局工作空间之下,长着一张真实的神经网络(15 维感觉 → 10 个 tanh 隐元 → 两类头):
+//   · 效价预测头:每次心跳都预测"下一刻我会感觉如何",预测误差就是【惊讶】——
+//     惊讶本身会点火进入意识,也会推高唤起(预测加工,自我模型的雏形)
+//   · 注意增益头:8 个模块各有一路学出来的自上而下注意——点火后心境变好的通路被强化,
+//     变坏的被回避。世界玩着玩着,会长出自己的性格
+//   · 习惯化:同一个念头赢得越多,越难再点火(见惯不惊);隔几日不见又会恢复(去习惯化)
+// 权重随存档持久化:这颗心跨会话地自我进化,两个玩家玩出两个不同性情的世界。
+const MIND_KEYS = ['threat', 'body', 'goal', 'place', 'weather', 'wealth', 'memory', 'self', 'surprise'];
+const MIND_ZH = { threat: '危险', body: '身体', goal: '差事', place: '远方', weather: '天色',
+  wealth: '钱袋', memory: '旧事', self: '它自己', surprise: '意外' };
+const MIND = { I: 15, H: 10, steps: 0, surprise: 0, vHat: 0, xPrev: null, hPrev: null,
+  gains: {}, habit: {}, trace: null, surToastCd: 0 };
+{
+  // 定种子初始化(mulberry32):新档的心都从同一张白纸长起,分岔全靠各自的经历
+  let s = 20260708;
+  const rnd = () => {
+    s |= 0; s = (s + 0x6D2B79F5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return (((t ^ (t >>> 14)) >>> 0) / 4294967296 - 0.5) * 0.6;
+  };
+  MIND.w1 = Array.from({ length: MIND.H }, () => Array.from({ length: MIND.I }, rnd));
+  MIND.b1 = Array.from({ length: MIND.H }, () => 0);
+  MIND.w2v = Array.from({ length: MIND.H }, rnd);
+  MIND.b2v = 0;
+  MIND.wA = {};
+  MIND.bA = {};
+  for (const k of MIND_KEYS) {
+    MIND.wA[k] = Array.from({ length: MIND.H }, rnd);
+    MIND.bA[k] = 0;
+  }
+}
+function mindFeatures() {
+  const d = Math.max(Math.abs(player.pos.x), Math.abs(player.pos.z));
+  const ph = dayPhase();
+  return [
+    player.hp / player.maxHp,
+    Math.min(1, wanted / 3),
+    Math.min(1, Math.log10(1 + player.coins) / 3),
+    player.mounted ? 1 : 0,
+    (player.carrying || player.drunkT > 0) ? 1 : 0,
+    ph === 'night' ? 1 : 0,
+    ph === 'dawn' ? 1 : 0,
+    weather.rain > 0.25 ? 1 : 0,
+    isWinter() ? 1 : 0,
+    d > CORE ? 1 : 0,
+    inDungeon() ? 1 : 0,
+    (player.home && dist2(player.pos.x, player.pos.z, HOME.x, HOME.z) < 1600) ? 1 : 0,
+    quest.active ? 1 : 0,
+    workspace.mood.v,
+    workspace.mood.a,
+  ];
+}
+const clampW = (x) => Math.max(-3, Math.min(3, x));
+// 一次心跳:先用上一拍的预测对账(学习),再为这一拍前馈出预测与注意增益
+function mindTick() {
+  // 1) 对账:上一拍预测的效价 vs 现在真实的心境 → 惊讶,并做一步随机梯度下降
+  if (MIND.hPrev) {
+    const err = workspace.mood.v - MIND.vHat;
+    MIND.surprise = MIND.surprise * 0.7 + Math.min(1, Math.abs(err) * 1.6) * 0.3;
+    const lr = 0.03;
+    const dv = err * (1 - MIND.vHat * MIND.vHat);
+    for (let i = 0; i < MIND.H; i++) {
+      const dh = dv * MIND.w2v[i] * (1 - MIND.hPrev[i] * MIND.hPrev[i]);
+      MIND.w2v[i] = clampW(MIND.w2v[i] + lr * dv * MIND.hPrev[i]);
+      for (let j = 0; j < MIND.I; j++) MIND.w1[i][j] = clampW(MIND.w1[i][j] + lr * dh * MIND.xPrev[j]);
+      MIND.b1[i] = clampW(MIND.b1[i] + lr * dh);
+    }
+    MIND.b2v = clampW(MIND.b2v + lr * dv);
+    // 惊讶推高唤起:没料到的事让这颗心清醒
+    workspace.mood.a = Math.min(1, workspace.mood.a + MIND.surprise * 0.08);
+    if (Math.abs(err) > 0.55 && MIND.surToastCd <= 0 && started && !dialog.open) {
+      MIND.surToastCd = 60;
+      toast('🫧 (这颗心愣了一下——事情没照它预想的走。)', 3);
+    }
+  }
+  // 2) 注意的强化学习:上次点火之后心境变好了,就在相似情境里更留意那一路
+  if (MIND.trace) {
+    const r = workspace.mood.v - MIND.trace.v0;
+    const wa = MIND.wA[MIND.trace.k];
+    if (wa) for (let i = 0; i < MIND.H; i++) wa[i] = clampW(wa[i] + 0.05 * r * MIND.trace.h[i]);
+    MIND.trace = null;
+  }
+  // 3) 前馈:算这一拍的隐状态、效价预测、每模块注意增益
+  const x = mindFeatures();
+  const h = new Array(MIND.H);
+  for (let i = 0; i < MIND.H; i++) {
+    let z = MIND.b1[i];
+    for (let j = 0; j < MIND.I; j++) z += MIND.w1[i][j] * x[j];
+    h[i] = Math.tanh(z);
+  }
+  let zv = MIND.b2v;
+  for (let i = 0; i < MIND.H; i++) zv += MIND.w2v[i] * h[i];
+  MIND.vHat = Math.tanh(zv);
+  for (const k of MIND_KEYS) {
+    let za = MIND.bA[k];
+    for (let i = 0; i < MIND.H; i++) za += MIND.wA[k][i] * h[i];
+    MIND.gains[k] = 1 + 0.6 * Math.tanh(za);
+  }
+  MIND.xPrev = x;
+  MIND.hPrev = h;
+  MIND.steps++;
+}
+// 习惯化:同一念头反复点火,越来越难再进意识;新鲜事反而有加成
+function habitFactor(k, t) {
+  const n = MIND.habit[`${k}|${t.slice(0, 8)}`] || 0;
+  return n === 0 ? 1.15 : 1 / (1 + 0.13 * (n - 1));
+}
+function habitBump(k, t) {
+  const key = `${k}|${t.slice(0, 8)}`;
+  MIND.habit[key] = (MIND.habit[key] || 0) + 1;
+  const keys = Object.keys(MIND.habit);
+  if (keys.length > 120) { // 只留最深的习惯
+    keys.sort((a, b) => MIND.habit[a] - MIND.habit[b]);
+    for (const kk of keys.slice(0, 20)) delete MIND.habit[kk];
+  }
+}
+// 这颗心如今的性情:哪路注意被它自己养大了,哪路被它冷落了
+function mindReport() {
+  let hi = null, lo = null;
+  for (const k of MIND_KEYS) {
+    const g = MIND.gains[k] ?? 1;
+    if (!hi || g > MIND.gains[hi]) hi = k;
+    if (!lo || g < MIND.gains[lo]) lo = k;
+  }
+  if (!hi || MIND.steps < 40) return '';
+  let s = `这颗心是自己长成的(第 ${MIND.steps} 次心跳):偏爱盯着「${MIND_ZH[hi]}」`;
+  if (lo && lo !== hi && MIND.gains[lo] < 0.92) s += `,对「${MIND_ZH[lo]}」不太上心`;
+  const deepest = Object.entries(MIND.habit).sort((a, b) => b[1] - a[1])[0];
+  if (deepest && deepest[1] >= 4) s += `;有些事它已见惯不惊(比如${deepest[0].split('|')[1]}…)`;
+  return s + '。';
+}
+function mindSave() {
+  const r3 = (x) => Math.round(x * 1000) / 1000;
+  return {
+    w1: MIND.w1.map((r) => r.map(r3)), b1: MIND.b1.map(r3),
+    w2v: MIND.w2v.map(r3), b2v: r3(MIND.b2v),
+    wA: Object.fromEntries(MIND_KEYS.map((k) => [k, MIND.wA[k].map(r3)])),
+    bA: Object.fromEntries(MIND_KEYS.map((k) => [k, r3(MIND.bA[k])])),
+    habit: MIND.habit, steps: MIND.steps,
+  };
+}
+function mindLoad(m) {
+  if (!m || !Array.isArray(m.w1) || m.w1.length !== MIND.H || !Array.isArray(m.w1[0]) ||
+      m.w1[0].length !== MIND.I || !Array.isArray(m.w2v) || m.w2v.length !== MIND.H) return;
+  MIND.w1 = m.w1;
+  MIND.b1 = m.b1 || MIND.b1;
+  MIND.w2v = m.w2v;
+  MIND.b2v = m.b2v || 0;
+  for (const k of MIND_KEYS) {
+    if (m.wA && Array.isArray(m.wA[k]) && m.wA[k].length === MIND.H) MIND.wA[k] = m.wA[k];
+    if (m.bA && typeof m.bA[k] === 'number') MIND.bA[k] = m.bA[k];
+  }
+  MIND.habit = m.habit || {};
+  MIND.steps = m.steps || 0;
+}
 // 心境的言语化
 function moodWord() {
   const { v, a } = workspace.mood;
@@ -3701,7 +3867,7 @@ function moodWord() {
 const WS_AFFECT = {
   threat: { v: -0.3, a: 0.3 }, weather: { v: -0.08, a: 0.12 }, goal: { v: 0, a: 0.12 },
   body: { v: 0.12, a: 0.05 }, wealth: { v: 0.2, a: 0.08 }, place: { v: 0.05, a: 0.08 },
-  memory: { v: 0.05, a: -0.05 }, self: { v: 0, a: -0.04 },
+  memory: { v: 0.05, a: -0.05 }, self: { v: 0, a: -0.04 }, surprise: { v: 0, a: 0.22 },
 };
 // 心境对注意的调制:不安的心盯着威胁,舒畅的心留意人间
 function moodMod(k) {
@@ -3788,7 +3954,21 @@ const WS_MODULES = [
     if (mw === '惊惶' || mw === '欢腾' || mw === '低沉') {
       return { t: `它觉察到自己的心境:${mw}`, sal: 0.32 };
     }
+    // 对自身可塑性的觉察:它注意到自己的注意在变
+    if (MIND.steps > 240 && Math.random() < 0.05) {
+      let hi = null;
+      for (const k of MIND_KEYS) if (!hi || (MIND.gains[k] ?? 1) > (MIND.gains[hi] ?? 1)) hi = k;
+      if (hi && MIND.gains[hi] > 1.12) {
+        return { t: `它注意到自己变了——越来越留意「${MIND_ZH[hi]}」,是经历把它养成这样的`, sal: 0.33 };
+      }
+    }
     if (Math.random() < 0.04) return { t: '它想起自己是什么——一座装着旅人的世界,而且醒着', sal: 0.3 };
+    return null;
+  } },
+  { k: 'surprise', sense() { // 惊讶模块:预测误差本身进入意识(它知道自己没料到)
+    if (MIND.surprise > 0.35) {
+      return { t: MIND.surprise > 0.6 ? '事情完全没照这颗心预想的走,它睁大了眼' : '有什么和它预想的不一样', sal: 0.3 + MIND.surprise * 0.45 };
+    }
     return null;
   } },
 ];
@@ -3800,12 +3980,14 @@ function updateWorkspace(dt) {
   // 心境余温衰减(缓慢回到基线)
   workspace.mood.v += (0 - workspace.mood.v) * 0.04;
   workspace.mood.a += (0.2 - workspace.mood.a) * 0.06;
-  // 竞争:自下而上的显著度 × 自上而下的注意(刚点火的模块占便宜)× 心境调制
+  MIND.surToastCd = Math.max(0, MIND.surToastCd - 2.5);
+  mindTick(); // 神经心跳:学习上一拍、预测这一拍、给出各路注意增益
+  // 竞争:自下而上的显著度 × 心境调制 × 学出来的注意 × 习惯化 ×(短时焦点)
   let top = null;
   for (const m of WS_MODULES) {
     const c = m.sense();
     if (!c) continue;
-    let sal = c.sal * moodMod(m.k);
+    let sal = c.sal * moodMod(m.k) * (MIND.gains[m.k] ?? 1) * habitFactor(m.k, c.t);
     if (m.k === workspace.focusK && workspace.focusT > 0) sal *= 1.25;
     if (!top || sal > top.sal) top = { t: c.t, sal, raw: c.sal, k: m.k };
   }
@@ -3818,6 +4000,8 @@ function updateWorkspace(dt) {
     if (workspace.history.length > 48) workspace.history.shift();
     workspace.focusK = top.k;
     workspace.focusT = 8;
+    habitBump(top.k, top.t); // 见一次,熟一分
+    MIND.trace = { k: top.k, h: MIND.hPrev, v0: workspace.mood.v }; // 下一拍按心境好坏给这路注意发奖惩
     // 点火的情绪余温
     const aff = WS_AFFECT[top.k];
     if (aff) {
@@ -3831,6 +4015,10 @@ function updateWorkspace(dt) {
     }
   } else if (cur && cur.age > 20 && (!top || top.sal <= 0.25)) {
     workspace.current = null; // 无事发生(或只剩零碎念头),意识放空
+  } else if (cur) {
+    // 念头持续占据工作空间:暴露本身也在累积习惯化(盯得越久,越见惯不惊)
+    const key = `${cur.k}|${cur.t.slice(0, 8)}`;
+    if (MIND.habit[key]) MIND.habit[key] += 0.08;
   }
 }
 // 言语化报告:所有下游 AI 共用的一份"它此刻在想什么"
@@ -3840,6 +4028,9 @@ function wsReport() {
   let s = `世界此刻的心境:${moodWord()}。`;
   if (cur) s += `它意识里想着:${cur.t}。`;
   if (recent.length) s += `之前闪过的念头:${recent.join(';')}。`;
+  if (MIND.surprise > 0.4) s += '它刚被现实惊了一下(事情没照它预想的走)。';
+  const mr = mindReport();
+  if (mr) s += mr;
   return s;
 }
 
@@ -3891,6 +4082,7 @@ function saveGame() {
       herbs: player.herbs, venison: player.venison, lore: loreRead,
       weapon: player.weapon, weaponsOwned: player.weaponsOwned, armor: player.armor,
       home: player.home, homeDay: player.homeDay,
+      mind: mindSave(),
     }));
   } catch { /* 隐私模式等 */ }
 }
@@ -3941,6 +4133,7 @@ function loadGame() {
       paintHomeSign();
       refreshTrophies();
     }
+    mindLoad(s.mind); // 这颗心接着上次的样子继续长
     if (s.armor && ARMORS[s.armor]) {
       player.armor = s.armor;
       player.maxHp = 10 + ARMORS[s.armor].bonus + (lakeBlessed ? 2 : 0);
@@ -6967,6 +7160,7 @@ window.__gtm = {
   sideQuest, choreBoard, choreProgress, CHORE_POS,
   composeLetter, witchFortune, getLetter: () => letter,
   workspace, wsReport, moodWord, consolidate, tickWorkspace: () => { workspace.t = 0; updateWorkspace(0); },
+  MIND, mindReport, mindTick, habitFactor, mindSave,
   testBlocked: (x, z, r = 0.45) => {
     const p = { x, z };
     resolveCollisions(p, r, colliders);
