@@ -1950,6 +1950,24 @@ const homeRT = { sign: null, signCtx: null };
   g.position.set(HOME.x, 0, HOME.z);
   scene.add(g);
   colliders.boxes.push({ minX: HOME.x - 2.7, maxX: HOME.x + 2.7, minZ: HOME.z - 2.2, maxZ: HOME.z + 2.2 });
+  // 信箱:买房后出现;有信时小红旗立起,信直接寄到家
+  const mb = new THREE.Group();
+  const mpost = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.07, 1.1, 5), lambert(0x6b4a2f, { roughness: 0.9 }));
+  mpost.position.y = 0.55;
+  mb.add(mpost);
+  const mbox = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.35, 0.35), lambert(0x8a4a2e, { roughness: 0.8 }));
+  mbox.position.y = 1.2;
+  mbox.castShadow = true;
+  mb.add(mbox);
+  const mflag = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.3, 0.09),
+    new THREE.MeshStandardMaterial({ color: 0xe83a4e, emissive: 0x7a0f1c, emissiveIntensity: 0.45 }));
+  mflag.position.set(0.3, 1.45, 0);
+  mb.add(mflag);
+  mb.position.set(HOME.x + 3.4, 0, HOME.z + 3.2);
+  mb.visible = false;
+  scene.add(mb);
+  homeRT.mailbox = mb;
+  homeRT.mailFlag = mflag;
 }
 function paintHomeSign() {
   const c = homeRT.signCtx;
@@ -1969,12 +1987,62 @@ function paintHomeSign() {
   homeRT.sign.material.map.needsUpdate = true;
 }
 paintHomeSign();
+// 战利品墙:成就长在自家外墙上——战徽挂门楣,大鱼上木牌,双剑交叉,狼牙成串
+function refreshTrophies() {
+  if (!player.home) return;
+  if (homeRT.trophies) scene.remove(homeRT.trophies);
+  const t = new THREE.Group();
+  const has = (k) => achUnlocked.includes(k);
+  if (player.relic || has('unsealer')) {
+    const m = new THREE.Mesh(crestG, new THREE.MeshStandardMaterial({
+      color: 0xd4af37, emissive: 0x8a5c00, emissiveIntensity: 0.6, metalness: 0.9, roughness: 0.3 }));
+    m.position.set(0, 2.25, 2.06);
+    t.add(m);
+  }
+  if (has('bigfish')) {
+    const plank = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.45, 0.05), lambert(0x5a3a20, { roughness: 0.95 }));
+    plank.position.set(-1.6, 1.75, 2.05);
+    t.add(plank);
+    const fish = new THREE.Mesh(new THREE.ConeGeometry(0.13, 0.7, 6),
+      new THREE.MeshStandardMaterial({ color: 0x9ab8d0, metalness: 0.6, roughness: 0.35 }));
+    fish.rotation.z = Math.PI / 2;
+    fish.position.set(-1.6, 1.75, 2.1);
+    t.add(fish);
+  }
+  if (has('gladiator')) {
+    for (const s of [-1, 1]) {
+      const sw = new THREE.Mesh(new THREE.BoxGeometry(0.09, 1.0, 0.05),
+        new THREE.MeshStandardMaterial({ color: 0xb8bcc2, metalness: 0.85, roughness: 0.3 }));
+      sw.rotation.z = 0.65 * s;
+      sw.position.set(1.6, 1.95, 2.05);
+      t.add(sw);
+    }
+  }
+  if (has('packmate')) {
+    for (let i = 0; i < 5; i++) {
+      const fang = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.18, 5),
+        lambert(0xe8e4da, { roughness: 0.6 }));
+      fang.rotation.x = Math.PI;
+      fang.position.set(-0.5 + i * 0.25, 2.5, 2.05);
+      t.add(fang);
+    }
+  }
+  t.position.set(HOME.x, 0, HOME.z);
+  scene.add(t);
+  homeRT.trophies = t;
+}
+function updateHome() {
+  if (!homeRT.mailbox) return;
+  homeRT.mailbox.visible = !!player.home;
+  homeRT.mailFlag.visible = !!letter;
+}
 function homeInteract() {
   if (!player.home) {
     if (player.coins >= HOME.price) {
       player.coins -= HOME.price;
       player.home = true;
       paintHomeSign();
+      refreshTrophies();
       sfx.fanfare();
       remember('买下了苇岸边的湖畔小屋,在艾尔德里亚安了家', 'home-buy');
       unlockAch('homeowner');
@@ -2218,6 +2286,38 @@ const DIRECTOR_EVENTS = [
     },
   },
   {
+    key: 'brawl', w: 7,
+    cond: () => quest.idx >= 1 && dist2(player.pos.x, player.pos.z, 12, 76) < 4900,
+    start() {
+      const rowdies = [];
+      for (let i = 0; i < 3; i++) {
+        const b = addBandit(17 + i * 2.2, 78.5 + (i % 2) * 2.4, { hp: 2, dmg: 1, speed: 4.6 });
+        b.eventFoe = true;
+        rowdies.push(b);
+      }
+      toast('📣 旅店门口打起来了!罗莎喊:「谁把这几个醉鬼放倒,今晚酒钱全免!」', 4);
+      sfx.wanted();
+      return {
+        t: 75,
+        update() {
+          if (rowdies.every((b) => b.dead)) {
+            player.coins += 15;
+            player.drunkT = Math.max(player.drunkT, 18); // 罗莎说到做到,真按来一大杯
+            sfx.fanfare();
+            remember('替罗莎撂倒了三个闹事的醉鬼');
+            toast('🍺 醉鬼全被撂倒!罗莎塞来 15 金币,还真端来一大杯麦酒。', 4);
+            this.t = 0;
+          }
+        },
+        end() {
+          for (const b of rowdies) {
+            if (!b.dead) { scene.remove(b.group); const i = bandits.indexOf(b); if (i >= 0) bandits.splice(i, 1); }
+          }
+        },
+      };
+    },
+  },
+  {
     key: 'convict', w: 8,
     cond: () => quest.idx >= 1,
     start() {
@@ -2443,7 +2543,7 @@ function updateDirector(dt) {
   const pool = DIRECTOR_EVENTS.filter((e) => e.cond());
   if (!pool.length) { director.cd = 30; return; }
   // 满月夜里亡魂更容易现身;世界的心境挑它爱看的戏(意识 → 行为的闭环)
-  const COMIC = ['goldenChicken', 'chickenRiot', 'coinRain', 'wiseCow', 'roastRunaway', 'wedding', 'starShower'];
+  const COMIC = ['goldenChicken', 'chickenRiot', 'coinRain', 'wiseCow', 'roastRunaway', 'wedding', 'starShower', 'brawl'];
   const SOMBER = ['wolfRaid', 'ghost', 'funeral', 'tollAmbush', 'convict', 'wishThief'];
   const wOf = (e) => {
     let w2 = e.w;
@@ -2535,6 +2635,7 @@ function unlockAch(key) {
   sfx.fanfare();
   toast(`🏆 无意义成就:${ACH_DEFS[key].name} —— ${ACH_DEFS[key].desc}`, 4);
   remember(`做成了一件事,人称「${ACH_DEFS[key].name}」`, `ach-${key}`);
+  if (player.home) refreshTrophies(); // 新战利品当场挂上外墙
   saveGame();
 }
 
@@ -3401,7 +3502,7 @@ function composeLetter() {
     `${deed ? `,可以提到他:${deed}` : ''}。语气符合身份,家常、真挚,可带一点小事相托或小牢骚。只输出信的正文。`,
     null, 9000,
   ).then((t) => { if (t && letter && letter.from === from) letter.text = t; });
-  toast('📮 罗莎那儿好像有你的一封信。', 3.5);
+  toast(player.home ? '📮 家门口的信箱插上了一封新信,小红旗立起来了。' : '📮 罗莎那儿好像有你的一封信。', 3.5);
 }
 
 // 新的一天:换日、刷新每日限额/蘑菇/公告,报时
@@ -3838,6 +3939,7 @@ function loadGame() {
       player.home = true;
       player.homeDay = s.homeDay || 0;
       paintHomeSign();
+      refreshTrophies();
     }
     if (s.armor && ARMORS[s.armor]) {
       player.armor = s.armor;
@@ -4267,7 +4369,7 @@ function tryInteract() {
       }
       return;
     }
-    if (n.key === 'innkeep' && letter) {
+    if (n.key === 'innkeep' && letter && !player.home) { // 有房后信直接寄到家门口信箱
       const L = letter;
       letter = null;
       stats.letters = (stats.letters || 0) + 1;
@@ -4427,6 +4529,17 @@ function tryInteract() {
     }
     openDialog([`${n.def.name}:${n.def.idle[n.lineIdx++ % n.def.idle.length]}`], null,
       { key: null, name: n.def.name, desc: NPC_DESC_EN[n.key], ent: n });
+    return;
+  }
+  // 自家信箱:有信时优先取信
+  if (player.home && letter && dist2(player.pos.x, player.pos.z, HOME.x + 3.4, HOME.z + 3.2) < 5) {
+    const L = letter;
+    letter = null;
+    stats.letters = (stats.letters || 0) + 1;
+    if (stats.letters >= 3) unlockAch('penpal');
+    remember(`在自家信箱收到了${L.from}的一封信`);
+    sfx.chest();
+    openDialog(['(你掀开自家信箱的盖子,把小红旗放平——里面躺着一封信)', `(${L.from}的信)${L.text}`]);
     return;
   }
   // 湖畔小屋:买房 / 回家安眠
@@ -6094,7 +6207,7 @@ function computePrompt() {
     }
     if (n.key === 'blacksmith') { promptText = '按 E 打开铁匠铺(武器/护甲)'; return; }
     if (n.key === 'trader' && !player.royalHorse) { promptText = '按 E 找马贩瑟尔玛(皇家骏马 80 金币)'; return; }
-    if (n.key === 'innkeep' && letter) { promptText = '按 E 取信(有人写给你的)'; return; }
+    if (n.key === 'innkeep' && letter && !player.home) { promptText = '按 E 取信(有人写给你的)'; return; }
     if (n.key === 'innkeep' && player.venison > 0) { promptText = `按 E 卖鹿肉 ×${player.venison}(每块 5 金币)`; return; }
     if (n.key === 'innkeep' && player.hp < player.maxHp) { promptText = '按 E 住店休息,回满生命(10 金币)'; return; }
     if (n.key === 'innkeep' && dayPhase() === 'night') { promptText = '按 E 住店过夜,睡到天亮(10 金币)'; return; }
@@ -6251,6 +6364,11 @@ function computePrompt() {
   if (dist2(player.pos.x, player.pos.z, 8, 46) < 8) {
     mark(8, 46, 2.4);
     promptText = bountyRT.target ? '按 E 查看悬赏令' : '按 E 揭悬赏令(赏金 30)';
+    return;
+  }
+  if (player.home && letter && dist2(player.pos.x, player.pos.z, HOME.x + 3.4, HOME.z + 3.2) < 5) {
+    mark(HOME.x + 3.4, HOME.z + 3.2, 1.8);
+    promptText = '按 E 开信箱(小红旗立着——有信!)';
     return;
   }
   if (dist2(player.pos.x, player.pos.z, HOME.doorX, HOME.doorZ) < 6) {
@@ -6829,7 +6947,9 @@ const BARD_COUPLETS = [
 window.__gtm = {
   player, quest, questRT, horses, guards, bandits, villagers, wolves, namedNPCs, steward,
   chickens, funnyNPCs, fishing, streetEvent, bountyRT, takeBounty, trySpawnStreetEvent,
-  armRT, armWrestle, armPress, HOME, homeInteract,
+  armRT, armWrestle, armPress, HOME, homeInteract, refreshTrophies,
+  getMail: () => ({ box: homeRT.mailbox.visible, flag: homeRT.mailFlag.visible }),
+  trophyCount: () => (homeRT.trophies ? homeRT.trophies.children.length : 0),
   arrows, WEAPONS, cycleWeapon, openShop, refreshShop, tryRob, doRoll, arenaRT, arenaHost, startArenaWave,
   director, DIRECTOR_EVENTS,
   crime, weather, setWeather, talkQuestGiver, completeMission, missions, advanceDialog,
@@ -6975,6 +7095,7 @@ function loop(now) {
   updateStreetEvent(dt);
   updateBounty(dt);
   updateArm(dt);
+  updateHome();
   updateWeather(dt);
   // 环境氛围音:按季节 × 时辰 × 天气切换(4 秒判一次)
   ambienceT -= dt;
