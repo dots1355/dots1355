@@ -1290,7 +1290,9 @@ const DREAMS = [
 let dreamIdx = Math.floor(Math.random() * DREAMS.length);
 function queueDream() {
   if (Math.random() < 0.45) return; // 不是每晚都做梦
-  const mem = dayTopThought || recallLine();
+  const mem = [dayTopThought,
+    dayTopSurprise ? `它最没料到的一刻:${dayTopSurprise}` : null,
+  ].filter(Boolean).join(';') || recallLine();
   if (!AI_TEXT_OFF && !aiBusy.dream) {
     aiBusy.dream = true;
     aiLine(
@@ -2553,6 +2555,9 @@ function updateDirector(dt) {
     const v = workspace.mood.v;
     if (COMIC.includes(e.key)) w2 *= 1 + Math.max(0, v) * 1.2 - Math.max(0, -v) * 0.5;
     if (SOMBER.includes(e.key)) w2 *= 1 + Math.max(0, -v) * 0.9;
+    // 学出来的性情也挑戏:盯着危险长大的心多排阴郁戏,恋着人间烟火的心多排喜剧
+    if (SOMBER.includes(e.key)) w2 *= 0.5 + 0.5 * (MIND.gains.threat ?? 1);
+    if (COMIC.includes(e.key)) w2 *= 0.5 + 0.25 * ((MIND.gains.body ?? 1) + (MIND.gains.wealth ?? 1));
     return Math.max(0.1, w2);
   };
   let total = pool.reduce((s, e) => s + wOf(e), 0);
@@ -3509,6 +3514,7 @@ function composeLetter() {
 
 // 新的一天:换日、刷新每日限额/蘑菇/公告,报时
 let dayTopThought = null; // 昨日最强点火(梦与巩固的素材)
+let dayTopSurprise = null; // 昨日最没料到的一刻(消夜入梦)
 function consolidate() {
   const yesterday = calendar.day;
   let top = null;
@@ -3527,6 +3533,8 @@ function consolidate() {
     if (MIND.habit[k] < 0.5) delete MIND.habit[k];
   }
   MIND.surprise *= 0.5;
+  dayTopSurprise = MIND.daySur.e > 0.5 ? MIND.daySur.t : null; // 沉淀给今晚的梦
+  MIND.daySur = { e: 0, t: null };
 }
 function newDay() {
   consolidate();
@@ -3544,6 +3552,7 @@ function newDay() {
     if (sp) startSpecialDay(sp.key);
     refreshProclaim();
     if (!letter && Math.random() < 0.35) composeLetter();
+    if (!MIND.wish && Math.random() < 0.6) mindMakeWish(); // 新的一天,新的好奇
     saveGame();
   }
 }
@@ -3707,7 +3716,10 @@ const MIND_KEYS = ['threat', 'body', 'goal', 'place', 'weather', 'wealth', 'memo
 const MIND_ZH = { threat: '危险', body: '身体', goal: '差事', place: '远方', weather: '天色',
   wealth: '钱袋', memory: '旧事', self: '它自己', surprise: '意外' };
 const MIND = { I: 15, H: 10, steps: 0, surprise: 0, vHat: 0, xPrev: null, hPrev: null,
-  gains: {}, habit: {}, trace: null, surToastCd: 0 };
+  gains: {}, habit: {}, trace: null, surToastCd: 0,
+  expo: Array.from({ length: 15 }, () => 0), // 经验暴露向量:它见过多少次每种处境
+  wish: null,                                // 好奇心:它想亲眼看看的、自己最少经历的东西
+  daySur: { e: 0, t: null } };               // 今天最没料到的一刻(夜里入梦)
 {
   // 定种子初始化(mulberry32):新档的心都从同一张白纸长起,分岔全靠各自的经历
   let s = 20260708;
@@ -3756,6 +3768,9 @@ function mindTick() {
   if (MIND.hPrev) {
     const err = workspace.mood.v - MIND.vHat;
     MIND.surprise = MIND.surprise * 0.7 + Math.min(1, Math.abs(err) * 1.6) * 0.3;
+    if (Math.abs(err) > MIND.daySur.e) { // 记下今天最没料到的一刻,夜里它会梦见
+      MIND.daySur = { e: Math.abs(err), t: workspace.current ? workspace.current.t : null };
+    }
     const lr = 0.03;
     const dv = err * (1 - MIND.vHat * MIND.vHat);
     for (let i = 0; i < MIND.H; i++) {
@@ -3769,6 +3784,7 @@ function mindTick() {
     workspace.mood.a = Math.min(1, workspace.mood.a + MIND.surprise * 0.08);
     if (Math.abs(err) > 0.55 && MIND.surToastCd <= 0 && started && !dialog.open) {
       MIND.surToastCd = 60;
+      camShake = Math.max(camShake, 0.12); // 惊讶在画面上也颤一下
       toast('🫧 (这颗心愣了一下——事情没照它预想的走。)', 3);
     }
   }
@@ -3798,6 +3814,53 @@ function mindTick() {
   MIND.xPrev = x;
   MIND.hPrev = h;
   MIND.steps++;
+  // 经验暴露:它记着自己见过多少次每种处境(好奇心的原料)
+  for (let j = 0; j < MIND.I; j++) MIND.expo[j] = Math.min(9999, MIND.expo[j] + Math.max(0, x[j]));
+  // 心愿:亲眼见到想看的处境,连续两拍就算看真了
+  if (MIND.wish) {
+    if (x[MIND.wish.i] >= 1) {
+      MIND.wish.count = (MIND.wish.count || 0) + 1;
+      if (MIND.wish.count >= 2) {
+        const w = MIND.wish;
+        MIND.wish = null;
+        player.coins += 8;
+        workspace.mood.v = Math.min(1, workspace.mood.v + 0.3);
+        workspace.mood.a = Math.min(1, workspace.mood.a + 0.1);
+        sfx.fanfare();
+        remember(`它想亲眼看看「${w.name}」,你带它看了`, `wish-${calendar.day}`);
+        toast(`🫧 (它看到了「${w.name}」。它很满足——你能感觉到,世界把光调亮了一点。+8 金币)`, 5);
+      }
+    } else {
+      MIND.wish.count = 0;
+    }
+  } else if (MIND.steps === 60) {
+    mindMakeWish(); // 醒来后不久,第一个念头自己冒出来
+  }
+}
+// 世界的心愿:从自己最少经历的处境里挑一个,想亲眼看看
+const MIND_WISHES = [
+  { i: 3, name: '马背上的风', hint: '骑上一匹马,带它跑一段' },
+  { i: 4, name: '晕乎乎的人间', hint: '喝一杯麦酒,或抱起一只鸡' },
+  { i: 5, name: '深夜还醒着的世界', hint: '夜里别急着睡,出去走走' },
+  { i: 6, name: '黎明的第一缕光', hint: '在拂晓时分醒着' },
+  { i: 7, name: '一场瓢泼的雨', hint: '等一场雨,站到雨里去' },
+  { i: 9, name: '没有名字的荒野', hint: '走出王国的边界' },
+  { i: 10, name: '地窖里的黑暗', hint: '掀开城堡后的暗门下去' },
+  { i: 11, name: '一个属于人的家', hint: '在自己的屋檐下站一会儿' },
+];
+function mindMakeWish() {
+  if (MIND.wish) return;
+  let total = 0;
+  const ws = MIND_WISHES.map((w) => {
+    const wt = 1 / (1 + (MIND.expo[w.i] || 0)); // 越没见过,越想看
+    total += wt;
+    return [w, wt];
+  });
+  let roll = Math.random() * total;
+  let pick = ws[0][0];
+  for (const [w, wt] of ws) { roll -= wt; if (roll <= 0) { pick = w; break; } }
+  MIND.wish = { i: pick.i, name: pick.name, hint: pick.hint, count: 0 };
+  if (started) toast(`🫧 这颗心起了个念头:它想亲眼看看「${pick.name}」。(${pick.hint})`, 5);
 }
 // 习惯化:同一念头反复点火,越来越难再进意识;新鲜事反而有加成
 function habitFactor(k, t) {
@@ -3826,6 +3889,7 @@ function mindReport() {
   if (lo && lo !== hi && MIND.gains[lo] < 0.92) s += `,对「${MIND_ZH[lo]}」不太上心`;
   const deepest = Object.entries(MIND.habit).sort((a, b) => b[1] - a[1])[0];
   if (deepest && deepest[1] >= 4) s += `;有些事它已见惯不惊(比如${deepest[0].split('|')[1]}…)`;
+  if (MIND.wish) s += `;它现在有个心愿——想亲眼看看「${MIND.wish.name}」`;
   return s + '。';
 }
 function mindSave() {
@@ -3836,6 +3900,7 @@ function mindSave() {
     wA: Object.fromEntries(MIND_KEYS.map((k) => [k, MIND.wA[k].map(r3)])),
     bA: Object.fromEntries(MIND_KEYS.map((k) => [k, r3(MIND.bA[k])])),
     habit: MIND.habit, steps: MIND.steps,
+    expo: MIND.expo.map((x) => Math.round(x)), wish: MIND.wish,
   };
 }
 function mindLoad(m) {
@@ -3851,6 +3916,8 @@ function mindLoad(m) {
   }
   MIND.habit = m.habit || {};
   MIND.steps = m.steps || 0;
+  if (Array.isArray(m.expo) && m.expo.length === MIND.I) MIND.expo = m.expo;
+  if (m.wish && MIND_WISHES.some((w) => w.i === m.wish.i)) MIND.wish = m.wish;
 }
 // 心境的言语化
 function moodWord() {
@@ -4029,6 +4096,7 @@ function wsReport() {
   if (cur) s += `它意识里想着:${cur.t}。`;
   if (recent.length) s += `之前闪过的念头:${recent.join(';')}。`;
   if (MIND.surprise > 0.4) s += '它刚被现实惊了一下(事情没照它预想的走)。';
+  if (MIND.wish) s += `它有个心愿:想亲眼看看「${MIND.wish.name}」。`;
   const mr = mindReport();
   if (mr) s += mr;
   return s;
@@ -7160,7 +7228,7 @@ window.__gtm = {
   sideQuest, choreBoard, choreProgress, CHORE_POS,
   composeLetter, witchFortune, getLetter: () => letter,
   workspace, wsReport, moodWord, consolidate, tickWorkspace: () => { workspace.t = 0; updateWorkspace(0); },
-  MIND, mindReport, mindTick, habitFactor, mindSave,
+  MIND, mindReport, mindTick, habitFactor, mindSave, mindMakeWish, MIND_WISHES,
   testBlocked: (x, z, r = 0.45) => {
     const p = { x, z };
     resolveCollisions(p, r, colliders);
