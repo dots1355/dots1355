@@ -2045,6 +2045,24 @@ function updateHome() {
   homeRT.mailbox.visible = !!player.home;
   homeRT.mailFlag.visible = !!letter;
 }
+
+// 萤火相随:替这颗心实现三个心愿后的谢礼——一点它自己的光,入夜后绕着你飞
+const fireflyMesh = new THREE.Mesh(new THREE.SphereGeometry(0.09, 6, 5),
+  new THREE.MeshBasicMaterial({ color: 0xd8ffa0, transparent: true, opacity: 0.95 }));
+fireflyMesh.visible = false;
+scene.add(fireflyMesh);
+function updateFirefly() {
+  const ph = dayPhase();
+  const show = !!player.firefly && !player.dead && (ph === 'night' || ph === 'dusk');
+  fireflyMesh.visible = show;
+  if (!show) return;
+  const t = nowMs * 0.001;
+  fireflyMesh.position.set(
+    player.pos.x + Math.cos(t * 1.3) * (0.9 + Math.sin(t * 0.7) * 0.25),
+    1.55 + Math.sin(t * 2.1) * 0.28,
+    player.pos.z + Math.sin(t * 1.3) * (0.9 + Math.cos(t * 0.9) * 0.25));
+  fireflyMesh.material.opacity = 0.65 + Math.sin(t * 5.2) * 0.3; // 一明一灭地呼吸
+}
 function homeInteract() {
   if (!player.home) {
     if (player.coins >= HOME.price) {
@@ -2636,6 +2654,7 @@ const ACH_DEFS = {
   slayer:   { name: '百战游侠', desc: '击败 100 个敌人' },
   ironarm:  { name: '铁臂之上', desc: '掰手腕赢下铁臂加隆 3 次' },
   homeowner:{ name: '置业成家', desc: '买下苇岸边的湖畔小屋' },
+  wishkeeper:{ name: '代它看世界', desc: '替这颗心实现 3 个心愿(夜里有萤火谢你)' },
   elder:    { name: '长住者', desc: '在艾尔德里亚度过 30 日' },
   navigator:{ name: '远行者', desc: '走到离王都一万步之外' },
 };
@@ -3092,6 +3111,9 @@ function openDialog(pages, onDone = null, speaker = null) {
   dialog.idx = 0;
   dialog.onDone = onDone;
   dialog.speaker = speaker;
+  if (speaker && speaker.name && !player.dead) { // 羁绊:它记着你最常找谁说话
+    MIND.bond[speaker.name] = Math.min(999, (MIND.bond[speaker.name] || 0) + 1);
+  }
   bubble.timer = 0; // 对话时收起闲聊气泡
   dialogEl.style.display = 'block';
   setPortrait(speaker);
@@ -3717,13 +3739,15 @@ const workspace = {
 //     变坏的被回避。世界玩着玩着,会长出自己的性格
 //   · 习惯化:同一个念头赢得越多,越难再点火(见惯不惊);隔几日不见又会恢复(去习惯化)
 // 权重随存档持久化:这颗心跨会话地自我进化,两个玩家玩出两个不同性情的世界。
-const MIND_KEYS = ['threat', 'body', 'goal', 'place', 'weather', 'wealth', 'memory', 'self', 'surprise'];
+const MIND_KEYS = ['threat', 'body', 'goal', 'place', 'weather', 'wealth', 'memory', 'self', 'surprise', 'bond'];
 const MIND_ZH = { threat: '危险', body: '身体', goal: '差事', place: '远方', weather: '天色',
-  wealth: '钱袋', memory: '旧事', self: '它自己', surprise: '意外' };
+  wealth: '钱袋', memory: '旧事', self: '它自己', surprise: '意外', bond: '那些人' };
 const MIND = { I: 15, H: 10, steps: 0, surprise: 0, vHat: 0, xPrev: null, hPrev: null,
   gains: {}, habit: {}, trace: null, surToastCd: 0,
   expo: Array.from({ length: 15 }, () => 0), // 经验暴露向量:它见过多少次每种处境
   wish: null,                                // 好奇心:它想亲眼看看的、自己最少经历的东西
+  wishDone: 0,                               // 替它实现过几个心愿(三个换一件谢礼)
+  bond: {},                                  // 羁绊:它注意到你最常找谁
   daySur: { e: 0, t: null } };               // 今天最没料到的一刻(夜里入梦)
 {
   // 定种子初始化(mulberry32):新档的心都从同一张白纸长起,分岔全靠各自的经历
@@ -3828,12 +3852,19 @@ function mindTick() {
       if (MIND.wish.count >= 2) {
         const w = MIND.wish;
         MIND.wish = null;
+        MIND.wishDone++;
         player.coins += 8;
         workspace.mood.v = Math.min(1, workspace.mood.v + 0.3);
         workspace.mood.a = Math.min(1, workspace.mood.a + 0.1);
         sfx.fanfare();
         remember(`它想亲眼看看「${w.name}」,你带它看了`, `wish-${calendar.day}`);
         toast(`🫧 (它看到了「${w.name}」。它很满足——你能感觉到,世界把光调亮了一点。+8 金币)`, 5);
+        if (MIND.wishDone === 3 && !player.firefly) { // 三愿既偿:它派一点自己的光跟着你
+          player.firefly = true;
+          unlockAch('wishkeeper');
+          remember('替这颗心看过三样东西后,一点萤火开始在夜里跟着你', 'firefly');
+          setTimeout(() => toast('🫧 (三个心愿,你都带它看过了。作为谢礼,它分了一点自己的光给你——入夜后看你身边。)', 6), 5200);
+        }
       }
     } else {
       MIND.wish.count = 0;
@@ -3895,6 +3926,8 @@ function mindReport() {
   const deepest = Object.entries(MIND.habit).sort((a, b) => b[1] - a[1])[0];
   if (deepest && deepest[1] >= 4) s += `;有些事它已见惯不惊(比如${deepest[0].split('|')[1]}…)`;
   if (MIND.wish) s += `;它现在有个心愿——想亲眼看看「${MIND.wish.name}」`;
+  const fav = mindFavorite();
+  if (fav) s += `;在所有人里它最留意${fav[0]}(${fav[1]} 回)`;
   return s + '。';
 }
 function mindSave() {
@@ -3906,6 +3939,7 @@ function mindSave() {
     bA: Object.fromEntries(MIND_KEYS.map((k) => [k, r3(MIND.bA[k])])),
     habit: MIND.habit, steps: MIND.steps,
     expo: MIND.expo.map((x) => Math.round(x)), wish: MIND.wish,
+    wishDone: MIND.wishDone, bond: MIND.bond,
   };
 }
 function mindLoad(m) {
@@ -3923,6 +3957,8 @@ function mindLoad(m) {
   MIND.steps = m.steps || 0;
   if (Array.isArray(m.expo) && m.expo.length === MIND.I) MIND.expo = m.expo;
   if (m.wish && MIND_WISHES.some((w) => w.i === m.wish.i)) MIND.wish = m.wish;
+  MIND.wishDone = m.wishDone || 0;
+  if (m.bond && typeof m.bond === 'object') MIND.bond = m.bond;
 }
 // 心境的言语化
 function moodWord() {
@@ -3940,6 +3976,7 @@ const WS_AFFECT = {
   threat: { v: -0.3, a: 0.3 }, weather: { v: -0.08, a: 0.12 }, goal: { v: 0, a: 0.12 },
   body: { v: 0.12, a: 0.05 }, wealth: { v: 0.2, a: 0.08 }, place: { v: 0.05, a: 0.08 },
   memory: { v: 0.05, a: -0.05 }, self: { v: 0, a: -0.04 }, surprise: { v: 0, a: 0.22 },
+  bond: { v: 0.15, a: 0 },
 };
 // 心境对注意的调制:不安的心盯着威胁,舒畅的心留意人间
 function moodMod(k) {
@@ -4043,7 +4080,26 @@ const WS_MODULES = [
     }
     return null;
   } },
+  { k: 'bond', sense() { // 羁绊模块:它对具体的人长出了偏爱
+    const fav = mindFavorite();
+    if (!fav) return null;
+    if (dialog.open && dialog.speaker && dialog.speaker.name === fav[0]) {
+      return { t: `他又在和${fav[0]}说话了。它注意到自己有点高兴`, sal: 0.42 };
+    }
+    if (Math.random() < 0.06) {
+      return { t: `在所有人里,它最留意${fav[0]}——他找过这个人 ${fav[1]} 回,它都记着`, sal: 0.28 };
+    }
+    return null;
+  } },
 ];
+// 它最留意的人(说话满 5 回才算数)
+function mindFavorite() {
+  let best = null;
+  for (const [name, n] of Object.entries(MIND.bond)) {
+    if (n >= 5 && (!best || n > best[1])) best = [name, n];
+  }
+  return best;
+}
 function updateWorkspace(dt) {
   workspace.t -= dt;
   workspace.focusT = Math.max(0, workspace.focusT - dt);
@@ -4154,7 +4210,7 @@ function saveGame() {
       chore: sideQuest.active ? sideQuest : null,
       herbs: player.herbs, venison: player.venison, lore: loreRead,
       weapon: player.weapon, weaponsOwned: player.weaponsOwned, armor: player.armor,
-      home: player.home, homeDay: player.homeDay,
+      home: player.home, homeDay: player.homeDay, firefly: player.firefly,
       mind: mindSave(),
     }));
   } catch { /* 隐私模式等 */ }
@@ -4206,6 +4262,7 @@ function loadGame() {
       paintHomeSign();
       refreshTrophies();
     }
+    player.firefly = !!s.firefly;
     mindLoad(s.mind); // 这颗心接着上次的样子继续长
     if (s.armor && ARMORS[s.armor]) {
       player.armor = s.armor;
@@ -7238,7 +7295,8 @@ window.__gtm = {
   sideQuest, choreBoard, choreProgress, CHORE_POS,
   composeLetter, witchFortune, getLetter: () => letter,
   workspace, wsReport, moodWord, consolidate, tickWorkspace: () => { workspace.t = 0; updateWorkspace(0); },
-  MIND, mindReport, mindTick, habitFactor, mindSave, mindMakeWish, MIND_WISHES,
+  MIND, mindReport, mindTick, habitFactor, mindSave, mindMakeWish, MIND_WISHES, mindFavorite,
+  getFirefly: () => ({ owned: !!player.firefly, visible: fireflyMesh.visible }),
   testBlocked: (x, z, r = 0.45) => {
     const p = { x, z };
     resolveCollisions(p, r, colliders);
@@ -7368,6 +7426,7 @@ function loop(now) {
   updateBounty(dt);
   updateArm(dt);
   updateHome();
+  updateFirefly();
   updateWeather(dt);
   // 环境氛围音:按季节 × 时辰 × 天气切换(4 秒判一次)
   ambienceT -= dt;
