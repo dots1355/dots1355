@@ -1318,6 +1318,11 @@ function openJournal() {
     `🫧 它此刻:${workspace.current ? workspace.current.t : '放空'} · 心境「${moodWord()}」` +
       `${MIND.surprise > 0.4 ? ' · 刚被现实惊了一下' : ''}`,
     ...(mindReport() ? [`🧠 心象:${mindReport()}`] : []),
+    ...(MIND.steps >= 40 ? [(() => {
+      const top = MIND_KEYS.map((k) => [k, MIND.gains[k] ?? 1]).sort((a, b) => b[1] - a[1]);
+      const fmt = ([k, g]) => `${MIND_ZH[k]} ${g.toFixed(2)}×`;
+      return `🧠 注意分布(自己长的):${top.slice(0, 3).map(fmt).join(' · ')} … 最冷落:${fmt(top[top.length - 1])}`;
+    })()] : []),
     `世界眼里的你:「${archetype()}」 · 🪙 ${player.coins} · ❤ 上限 ${player.maxHp / 2} 心` +
       `${player.relic ? ' · ☀️ 先王战徽' : ''}${frostfang.tamed ? ' · 🐺 霜牙同行' : ''}`,
     `📜 委托 ${Math.min(quest.idx, missions.length)}/${missions.length} · 🛡️ 纹章 ${crestsFound.length}/${world.crestSpots.length} · 📖 铭文 ${loreRead.length}/${LORE.length} · 🏆 成就 ${achUnlocked.length}/${Object.keys(ACH_DEFS).length}`,
@@ -5308,6 +5313,11 @@ function gameOver() {
   sfx.gameover();
   if (trialRT.active) endTrial(false);
   stats.deaths = (stats.deaths || 0) + 1;
+  // 它眼睁睁看着他倒下:这颗心的重大事件——心境重击、惊讶拉满、记进长期记忆
+  workspace.mood.v = Math.max(-1, workspace.mood.v - 0.5);
+  workspace.mood.a = Math.min(1, workspace.mood.a + 0.5);
+  MIND.surprise = Math.max(MIND.surprise, 0.8);
+  remember(`它眼睁睁看着他倒下了(第 ${stats.deaths} 次)`, `death-${calendar.day}`);
   player.jailed = wanted > 0;
   gameoverText.textContent = wanted > 0 ? '你被王国卫兵抓住了!' : '你倒下了……';
   if (titleArtURL) {
