@@ -363,11 +363,53 @@ function addBandit(x, z, opts = {}) {
 
 // ================= 狼群 =================
 const wolves = [];
+// ================= 内容自进化:传说 × 生态 × 导演 =================
+// 游戏内容自己长:你的事迹像谣言一样代代变异(文化演化);狼群在猎杀压力下
+// 一代比一代精(生态演化);事件导演按你真正参与过什么自然选择戏码(排片演化)。
+// 全部随存档持久化——这个世界离开你也在长,回来时已不是你走时的样子。
+const EVO = {
+  legends: [],                 // 传说基因池:{src, base, extra, gen, heat}
+  wolfGen: 1, wolfPressure: 0, wolfSpeed: 0, // 狼群世代/猎杀压力/累计提速
+  eventFit: {},                // 导演事件适应度:参与 +1,冷场 -0.3
+};
+const LEGEND_EMBELLISH = ['——亲眼所见的人都这么说', ',连卫兵都点了头', ',那天风都停了半刻',
+  ',据说月亮探出头看了一眼', ',酒馆里为这个干了三杯', ',吟游诗人已经在编曲子了'];
+const LEGEND_SWAPS = [['独自', '单枪匹马'], ['赢了', '不费吹灰之力赢了'], ['救回', '徒手救回'],
+  ['击退', '一声吼就击退'], ['缉拿', '谈笑间缉拿'], ['钓上', '赤手抓上'], ['买下', '一掷千金买下'],
+  ['猎到', '闭着眼猎到'], ['撂倒', '用小拇指撂倒'], ['掰手腕', '隔着桌子掰手腕']];
+function legendText(l) { return l.base + (l.extra || ''); }
+function seedLegend() {
+  const cands = chronicle.filter((m) => !m.t.startsWith('它') && !EVO.legends.some((L) => L.src === m.t));
+  if (!cands.length) return;
+  const m = cands[Math.floor(Math.random() * cands.length)];
+  EVO.legends.push({ src: m.t, base: `绿衣游侠${m.t}`, extra: '', gen: 1, heat: 1 });
+  if (EVO.legends.length > 10) { // 选择:热度垫底的传说被人遗忘
+    EVO.legends.sort((a, b) => b.heat - a.heat);
+    EVO.legends.length = 10;
+  }
+}
+function mutateLegend(l) {
+  l.gen++;
+  l.base = l.base.replace(/\d+/g, (n) => String(Math.min(999, Math.ceil(+n * (1.4 + Math.random()))))); // 数字越传越大
+  const sw = LEGEND_SWAPS[Math.floor(Math.random() * LEGEND_SWAPS.length)];
+  if (l.base.includes(sw[0]) && !l.base.includes(sw[1])) l.base = l.base.replace(sw[0], sw[1]);
+  l.extra = LEGEND_EMBELLISH[Math.floor(Math.random() * LEGEND_EMBELLISH.length)];
+  if (!AI_TEXT_OFF && Math.random() < 0.5) { // 联网时让 AI 来当"以讹传讹"的那张嘴
+    aiLine(`把这句关于绿衣游侠林恩的传闻再夸张一点点,像民间以讹传讹又传了一代:「${l.base}」。25字以内,只输出新传闻本身。`, null, 7000)
+      .then((t) => { if (t && t.length < 60) l.base = t.replace(/[「」"']/g, ''); });
+  }
+}
+function evolveLegends() { // 每过一夜,总有一条传闻长出新的枝节
+  if (EVO.legends.length < 3) seedLegend();
+  if (!EVO.legends.length) return;
+  mutateLegend(EVO.legends[Math.floor(Math.random() * EVO.legends.length)]);
+}
+
 let wolfKills = 0;
 function addWolf(x, z) {
   const w = { ...makeWolf(), pos: new THREE.Vector3(x, 0, z), yaw: Math.random() * 6.28,
-    home: new THREE.Vector3(x, 0, z), hp: 2, speed: 7.2, attackCd: 0, stunT: 0, walkT: 0,
-    dead: false, respawnT: 0 };
+    home: new THREE.Vector3(x, 0, z), hp: EVO.wolfGen >= 3 ? 3 : 2, speed: 7.2 + EVO.wolfSpeed,
+    attackCd: 0, stunT: 0, walkT: 0, dead: false, respawnT: 0 };
   w.group.position.copy(w.pos);
   scene.add(w.group);
   wolves.push(w);
@@ -452,7 +494,8 @@ function updateWolves(dt) {
       w.respawnT -= dt;
       if (w.respawnT <= 0) {
         w.dead = false;
-        w.hp = 2;
+        w.hp = EVO.wolfGen >= 3 ? 3 : 2; // 演化到第三代,狼更扛揍
+        w.speed = 7.2 + EVO.wolfSpeed;   // "下一代"继承演化出的速度
         w.pos.copy(w.home);
         w.group.rotation.x = 0;
         w.group.visible = true;
@@ -552,6 +595,7 @@ function killWolf(w) {
   setTimeout(() => { if (w.dead) w.group.visible = false; }, 2500);
   dropCoins(w.pos, 2);
   wolfKills++;
+  EVO.wolfPressure++; // 猎杀压力:选择的原料
   choreProgress('wolves');
   // 竞技场里的狼不算狼灾任务(和盗贼任务的排除规则对齐)
   if (!w.arena && quest.active && missions[quest.idx].type === 'wolves') {
@@ -1332,6 +1376,12 @@ function openJournal() {
   const mems = chronicle.slice(-3);
   if (mems.length) {
     pages.push(`它记得你最近的事:${mems.map((m) => `第${m.d}日,${m.t}`).join(';')}。`);
+  }
+  {
+    const topLeg = EVO.legends.reduce((b, x) => (!b || x.heat > b.heat ? x : b), null);
+    const evoBits = [`🐺 狼群第 ${EVO.wolfGen} 代${EVO.wolfSpeed > 0.3 ? '(比从前更快)' : ''}`];
+    if (topLeg && topLeg.gen > 1) evoBits.push(`最响的传说已传出第 ${topLeg.gen} 种说法:「${legendText(topLeg)}」`);
+    pages.push(`🧬 自进化的世界:${evoBits.join(' · ')}`);
   }
   openDialog(pages);
 }
@@ -2556,9 +2606,16 @@ function updateDirector(dt) {
   if (director.handle) {
     const h = director.handle;
     h.t -= dt;
+    director.ageT = (director.ageT || 0) + dt;
     if (h.update) h.update(dt);
     if (h.t <= 0) {
       if (h.end) h.end();
+      // 排片演化:提前收场 = 玩家真参与了,这类戏加分;演满全场没人理,减分
+      if (director.key) {
+        const engaged = director.ageT < (director.dur || 0) - 0.5;
+        EVO.eventFit[director.key] = Math.max(-2, Math.min(4,
+          (EVO.eventFit[director.key] || 0) + (engaged ? 1 : -0.3)));
+      }
       director.handle = null;
       director.cd = 90 + Math.random() * 70;
     }
@@ -2581,6 +2638,7 @@ function updateDirector(dt) {
     // 学出来的性情也挑戏:盯着危险长大的心多排阴郁戏,恋着人间烟火的心多排喜剧
     if (SOMBER.includes(e.key)) w2 *= 0.5 + 0.5 * (MIND.gains.threat ?? 1);
     if (COMIC.includes(e.key)) w2 *= 0.5 + 0.25 * ((MIND.gains.body ?? 1) + (MIND.gains.wealth ?? 1));
+    w2 *= 1 + 0.12 * (EVO.eventFit[e.key] || 0); // 排片演化:观众用脚投票
     return Math.max(0.1, w2);
   };
   let total = pool.reduce((s, e) => s + wOf(e), 0);
@@ -2589,6 +2647,9 @@ function updateDirector(dt) {
   for (const e of pool) { roll -= wOf(e); if (roll <= 0) { ev = e; break; } }
   dailyEvents--;
   director.handle = ev.start();
+  director.key = ev.key;
+  director.dur = director.handle ? director.handle.t : 0;
+  director.ageT = 0;
 }
 
 // ================= 具名 NPC =================
@@ -3580,6 +3641,18 @@ function newDay() {
     refreshProclaim();
     if (!letter && Math.random() < 0.35) composeLetter();
     if (!MIND.wish && Math.random() < 0.6) mindMakeWish(); // 新的一天,新的好奇
+    evolveLegends(); // 谣言过了一夜,又长出新枝节
+    if (EVO.wolfPressure >= 4) { // 猎杀压力够大:狼群换代
+      EVO.wolfGen++;
+      EVO.wolfPressure = 0;
+      EVO.wolfSpeed = Math.min(2.4, EVO.wolfSpeed + 0.35);
+      toast(`🐺 猎户们说,这一带的狼一代比一代精了(第 ${EVO.wolfGen} 代)。`, 4.5);
+      remember('狼群换了一代,比从前更快更警觉', `wolfgen-${EVO.wolfGen}`);
+    } else if (EVO.wolfPressure === 0 && EVO.wolfSpeed > 0) {
+      EVO.wolfSpeed = Math.max(0, EVO.wolfSpeed - 0.12); // 没人猎狼,狼又懒散回去
+    } else {
+      EVO.wolfPressure = Math.max(0, EVO.wolfPressure - 1); // 压力隔夜消退
+    }
     saveGame();
   }
 }
@@ -4212,6 +4285,8 @@ function saveGame() {
       weapon: player.weapon, weaponsOwned: player.weaponsOwned, armor: player.armor,
       home: player.home, homeDay: player.homeDay, firefly: player.firefly,
       mind: mindSave(),
+      evo: { legends: EVO.legends, wolfGen: EVO.wolfGen, wolfPressure: EVO.wolfPressure,
+        wolfSpeed: EVO.wolfSpeed, eventFit: EVO.eventFit },
     }));
   } catch { /* 隐私模式等 */ }
 }
@@ -4264,6 +4339,14 @@ function loadGame() {
     }
     player.firefly = !!s.firefly;
     mindLoad(s.mind); // 这颗心接着上次的样子继续长
+    if (s.evo) { // 自进化的内容也接着长
+      if (Array.isArray(s.evo.legends)) EVO.legends = s.evo.legends.filter((l) => l && l.base);
+      EVO.wolfGen = s.evo.wolfGen || 1;
+      EVO.wolfPressure = s.evo.wolfPressure || 0;
+      EVO.wolfSpeed = s.evo.wolfSpeed || 0;
+      if (s.evo.eventFit && typeof s.evo.eventFit === 'object') EVO.eventFit = s.evo.eventFit;
+      for (const w of wolves) if (!w.dead) w.speed = 7.2 + EVO.wolfSpeed; // 在世的狼也是这一代的
+    }
     if (s.armor && ARMORS[s.armor]) {
       player.armor = s.armor;
       player.maxHp = 10 + ARMORS[s.armor].bonus + (lakeBlessed ? 2 : 0);
@@ -5037,6 +5120,11 @@ function tryInteract() {
       // 抄写员薇拉:你的事迹被写进编年史正文
       const m = chronicle[Math.floor(Math.random() * chronicle.length)];
       l2 = `(翻开编年史,蘸了蘸墨)「历第 ${m.d} 日,绿衣游侠林恩${m.t}。」——已录入正史,后人会读到的。`;
+    } else if (EVO.legends.length && Math.random() < 0.3) {
+      // 传说演化:村民复述最热的那条(复述本身就是传播 → 热度自增,被自然选择留下)
+      const l = EVO.legends.reduce((b, x) => (x.heat > b.heat ? x : b));
+      l.heat++;
+      l2 = `街坊传得有鼻子有眼:「${legendText(l)}」——这话都传到第 ${l.gen} 种说法了,越传越神。`;
     } else {
       l2 = deed && Math.random() < 0.25
         ? ['听说你', '有人瞧见你', '街坊都在传,说你'][Math.floor(Math.random() * 3)] + deed + '。真有你的。'
@@ -7280,7 +7368,7 @@ window.__gtm = {
   trophyCount: () => (homeRT.trophies ? homeRT.trophies.children.length : 0),
   arrows, WEAPONS, cycleWeapon, openShop, refreshShop, tryRob, doRoll, arenaRT, arenaHost, startArenaWave,
   director, DIRECTOR_EVENTS,
-  crime, weather, setWeather, talkQuestGiver, completeMission, missions, advanceDialog,
+  crime, weather, setWeather, talkQuestGiver, completeMission, missions, advanceDialog, tryInteract,
   getWanted: () => wanted,
   setTime: (t) => { dayTime = t; },
   calendar, seasonIdx, seasonDay, todaySpecial, applySeason, world,
@@ -7297,6 +7385,7 @@ window.__gtm = {
   workspace, wsReport, moodWord, consolidate, tickWorkspace: () => { workspace.t = 0; updateWorkspace(0); },
   MIND, mindReport, mindTick, habitFactor, mindSave, mindMakeWish, MIND_WISHES, mindFavorite,
   getFirefly: () => ({ owned: !!player.firefly, visible: fireflyMesh.visible }),
+  EVO, seedLegend, mutateLegend, evolveLegends, legendText,
   testBlocked: (x, z, r = 0.45) => {
     const p = { x, z };
     resolveCollisions(p, r, colliders);
