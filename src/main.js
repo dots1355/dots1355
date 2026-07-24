@@ -945,12 +945,22 @@ function updateMercs(dt) {
         m.attackCd = 1.0;
         m.swingT = 0.32;
         sfx.sword();
-        target.hp -= 1;
-        showDamage(target.pos, 1);
+        const dmg = m.veteran ? 2 : 1;
+        target.hp -= dmg;
+        showDamage(target.pos, dmg);
         hitFX(target, 0.5);
         if (target.hp <= 0) {
           if (wolves.includes(target)) killWolf(target);
           else { target.dead = true; startFall(target); registerKill(); dropCoins(target.pos, 5); }
+          m.kills = (m.kills || 0) + 1;
+          if (m.kills >= 5 && !m.veteran) { // 五个人头,升老兵:更能打、更扛揍
+            m.veteran = true;
+            m.hp += 4;
+            m.name = `老兵·${m.name}`;
+            sfx.fanfare();
+            toast(`🪖 ${m.name}身经百战,晋升老兵!(伤害翻倍)`, 3.5);
+            remember(`佣兵${m.name}在你麾下打成了老兵`);
+          }
         }
       }
     } else {
@@ -1074,12 +1084,16 @@ function pointBlocked(x, z) {
   return false;
 }
 function shootArrow() {
-  const mesh = new THREE.Mesh(arrowGeo, arrowMat);
-  const dir = new THREE.Vector3(Math.sin(player.yaw), 0.06, Math.cos(player.yaw)).normalize();
-  const pos = new THREE.Vector3(player.pos.x + dir.x * 0.6, player.pos.y + 1.15, player.pos.z + dir.z * 0.6);
-  mesh.position.copy(pos);
-  scene.add(mesh);
-  arrows.push({ mesh, pos, vel: dir.multiplyScalar(26), ttl: 3, stuck: false });
+  // 弓术 5 级专属:一弓双箭(小角度散射)
+  const shots = skillLv('archery') >= 5 ? [0, 0.09] : [0];
+  for (const off of shots) {
+    const mesh = new THREE.Mesh(arrowGeo, arrowMat);
+    const dir = new THREE.Vector3(Math.sin(player.yaw + off), 0.06, Math.cos(player.yaw + off)).normalize();
+    const pos = new THREE.Vector3(player.pos.x + dir.x * 0.6, player.pos.y + 1.15, player.pos.z + dir.z * 0.6);
+    mesh.position.copy(pos);
+    scene.add(mesh);
+    arrows.push({ mesh, pos, vel: dir.multiplyScalar(26), ttl: 3, stuck: false });
+  }
   sfx.arrow();
 }
 function arrowHitEntities(a) {
@@ -3109,6 +3123,8 @@ const ACH_DEFS = {
   wishkeeper:{ name: '代它看世界', desc: '替这颗心实现 3 个心愿(夜里有萤火谢你)' },
   mage:     { name: '半路出家的法师', desc: '施放 30 次法术' },
   dovah:    { name: '龙之传人', desc: '在龙骨之地的龙颅前学会冲击战吼' },
+  cutpurse: { name: '三只手', desc: '扒窃得手 5 次' },
+  walldef:  { name: '南门之盾', desc: '击退黑石兄弟会的劫掠' },
   elder:    { name: '长住者', desc: '在艾尔德里亚度过 30 日' },
   navigator:{ name: '远行者', desc: '走到离王都一万步之外' },
 };
@@ -5909,9 +5925,9 @@ function tryAttack() {
     sfx.combo();
     camShake = Math.max(camShake, 0.22);
   }
-  // 潜行偷袭:蹲行状态近身出手 ×3(天际的背刺)
-  const sneakMul = player.sneaking ? 3 : 1;
-  if (player.sneaking) toast('🗡️ 偷袭!(×3)', 1.2);
+  // 潜行偷袭:蹲行状态近身出手 ×3(短匕是行家家伙,×4)
+  const sneakMul = player.sneaking ? (player.weapon === 'dagger' ? 4 : 3) : 1;
+  if (player.sneaking) toast(`🗡️ 偷袭!(×${sneakMul})`, 1.2);
   meleeSweep(meleeBonus(def.dmg + (player.swordLv >= 2 ? 1 : 0) + (player.relic ? 1 : 0) + (third ? 1 : 0)) * sneakMul,
     def.range + (third ? 0.4 : 0), 0.35, def.knock * (third ? 1.8 : 1));
   skillXp('onehand', 1);
@@ -5927,7 +5943,11 @@ function heavyAttack() {
   sfx.clank();
   camShake = Math.max(camShake, 0.3);
   hitStopT = Math.max(hitStopT, 0.06);
-  meleeSweep((def.dmg + (player.swordLv >= 2 ? 1 : 0) + (player.relic ? 1 : 0)) * 2, def.range + 0.7, -0.1, def.knock * 1.8);
+  // 巨剑专属:蓄力横扫近乎全周,击退更狠(势大力沉的代价是它本来就慢)
+  const wide = player.weapon === 'greatsword';
+  meleeSweep(meleeBonus((def.dmg + (player.swordLv >= 2 ? 1 : 0) + (player.relic ? 1 : 0)) * 2),
+    def.range + 0.7, wide ? -0.6 : -0.1, def.knock * (wide ? 2.3 : 1.8));
+  skillXp('onehand', 1);
   stats.heavies = (stats.heavies || 0) + 1;
 }
 
@@ -6725,6 +6745,34 @@ function doRoll() {
 
 function tryRob() {
   if (!started || player.dead || player.mounted) return;
+  // 扒窃(天际式):潜行状态从背后下手——无声取财;失手立刻炸锅
+  if (player.sneaking) {
+    for (const v of villagers) {
+      if (v.sleeping || v.downT > 0 || (v.robbedT || 0) > 0) continue;
+      if (dist2(player.pos.x, player.pos.z, v.pos.x, v.pos.z) > 6.5) continue;
+      const dx = player.pos.x - v.pos.x, dz = player.pos.z - v.pos.z;
+      const d = Math.hypot(dx, dz) || 1;
+      const behind = (dx * Math.sin(v.yaw) + dz * Math.cos(v.yaw)) / d < -0.1; // 站在其背后
+      const chance = Math.min(0.92, (behind ? 0.55 : 0.25) + 0.05 * (skillLv('sneak') - 1));
+      v.robbedT = 90;
+      if (Math.random() < chance) {
+        const take = 2 + Math.floor(Math.random() * 5);
+        player.coins += take;
+        sfx.coin();
+        skillXp('sneak', 3);
+        stats.pockets = (stats.pockets || 0) + 1;
+        if (stats.pockets >= 5) unlockAch('cutpurse');
+        toast(`🤫 得手!从${v.id.name}兜里摸走 ${take} 金币。(没人看见……吧?)`, 2.5);
+      } else {
+        v.fleeT = 6;
+        showBubble(v, v.id.name, '有贼!我的钱袋!!', 3);
+        crime(1, '🫲 扒窃失手,被当场抓包!');
+      }
+      return;
+    }
+    toast('附近没有下手的对象。(蹲着走过去,贴到背后)', 2);
+    return;
+  }
   for (const v of villagers) {
     if (v.sleeping || v.downT > 0 || (v.robbedT || 0) > 0) continue;
     if (dist2(player.pos.x, player.pos.z, v.pos.x, v.pos.z) > 6) continue;
@@ -7907,6 +7955,55 @@ DIRECTOR_EVENTS.push({
       },
     };
     return h;
+  },
+});
+
+// 黑石劫掠战:骑砍式守城——战鼓一响,匪帮成波扑向南门,佣兵与你并肩守到底
+DIRECTOR_EVENTS.push({
+  key: 'siege', w: 4,
+  cond: () => quest.idx >= 3 && dist2(player.pos.x, player.pos.z, 0, 40) < 8100,
+  start() {
+    const raiders = [];
+    const spawnWave = (n, zBase) => {
+      for (let i = 0; i < n; i++) {
+        const b = addBandit(-8 + i * 4 + (Math.random() * 2 - 1), zBase + Math.random() * 4, { hp: 3, dmg: 1 });
+        b.eventFoe = true;
+        raiders.push(b);
+      }
+    };
+    spawnWave(4, 74);
+    sfx.wanted();
+    sfx.stomp();
+    camShake = 0.4;
+    toast('🥁 战鼓!!黑石兄弟会大举攻打南门——守住!!', 5);
+    remember('黑石兄弟会攻打南门那天,你在城墙下', 'siege-day');
+    let wave2 = false;
+    return {
+      t: 130,
+      update() {
+        if (!wave2 && this.t < 95) {
+          wave2 = true;
+          spawnWave(3, 78);
+          sfx.wanted();
+          toast('🥁 第二波!他们从苇丛里又冒出来一队!', 3.5);
+        }
+        if (wave2 && raiders.every((b) => b.dead)) {
+          player.coins += 40;
+          sfx.fanfare();
+          stats.sieges = (stats.sieges || 0) + 1;
+          unlockAch('walldef');
+          remember('打退了黑石兄弟会对南门的劫掠,全城都看见了');
+          seedLegend(); // 守城之战当场进传说基因池
+          toast('🏰 劫掠被击退!罗莎在旅店门口带头喝彩——赏金 40 枚,全城记你一功!', 6);
+          this.t = 0;
+        }
+      },
+      end() {
+        for (const b of raiders) {
+          if (!b.dead) { scene.remove(b.group); const i = bandits.indexOf(b); if (i >= 0) bandits.splice(i, 1); }
+        }
+      },
+    };
   },
 });
 
