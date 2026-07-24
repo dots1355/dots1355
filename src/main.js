@@ -98,6 +98,9 @@ scene.add(sun);
 scene.add(sun.target);
 const moon = new THREE.DirectionalLight(0x8899cc, 0.0);
 scene.add(moon);
+// 随身提灯:夜里跟着玩家的一团暖光(强度在 updateDayNight 里按夜色调)
+const lantern = new THREE.PointLight(0xffd9a0, 0, 17, 1.6);
+scene.add(lantern);
 
 // 大气天空穹顶(程序化渐变 + 太阳光晕)
 const skyUniforms = {
@@ -371,6 +374,9 @@ const EVO = {
   legends: [],                 // 传说基因池:{src, base, extra, gen, heat}
   wolfGen: 1, wolfPressure: 0, wolfSpeed: 0, // 狼群世代/猎杀压力/累计提速
   eventFit: {},                // 导演事件适应度:参与 +1,冷场 -0.3
+  tactics: { block: 0, dodge: 0 }, // 敌人战术演化:被砍多了学格挡,被射多了学闪身
+  kills: { melee: 0, arrow: 0 },   // 当日击杀方式统计(选择压力的原料)
+  corpus: [],                  // 活语料:世界自己写的新台词,永久入库(上限 40)
 };
 const LEGEND_EMBELLISH = ['——亲眼所见的人都这么说', ',连卫兵都点了头', ',那天风都停了半刻',
   ',据说月亮探出头看了一眼', ',酒馆里为这个干了三杯', ',吟游诗人已经在编曲子了'];
@@ -403,6 +409,51 @@ function evolveLegends() { // 每过一夜,总有一条传闻长出新的枝节
   if (EVO.legends.length < 3) seedLegend();
   if (!EVO.legends.length) return;
   mutateLegend(EVO.legends[Math.floor(Math.random() * EVO.legends.length)]);
+}
+// 敌人战术演化:匪帮复盘自己怎么死的,学出针对性的反制(智能自进化)
+function evolveTactics() {
+  const { melee, arrow } = EVO.kills;
+  const total = melee + arrow;
+  if (total >= 3) {
+    const b0 = EVO.tactics.block, d0 = EVO.tactics.dodge;
+    EVO.tactics.block = Math.min(0.6, EVO.tactics.block + 0.1 * (melee / total));
+    EVO.tactics.dodge = Math.min(0.6, EVO.tactics.dodge + 0.1 * (arrow / total));
+    if (b0 < 0.25 && EVO.tactics.block >= 0.25) {
+      toast('🧠 黑石兄弟会学乖了——他们开始格挡刀剑!(重击和跳劈可以破防)', 5);
+      remember('盗贼们学会了格挡,和从前不一样了');
+    }
+    if (d0 < 0.25 && EVO.tactics.dodge >= 0.25) {
+      toast('🧠 黑石兄弟会学乖了——他们开始侧身闪箭!(贴近了射,或换法术)', 5);
+      remember('盗贼们学会了闪箭,和从前不一样了');
+    }
+  } else {
+    EVO.tactics.block = Math.max(0, EVO.tactics.block - 0.02); // 没人打他们,手艺也会生疏
+    EVO.tactics.dodge = Math.max(0, EVO.tactics.dodge - 0.02);
+  }
+  EVO.kills = { melee: 0, arrow: 0 };
+}
+// 语料自生长:世界每天给自己写一句新传闻,写进永久语料库(联网 AI 执笔;离线拼接变异)
+function growCorpus() {
+  const push = (t) => {
+    if (!t || t.length < 6 || t.length > 60 || EVO.corpus.includes(t)) return;
+    EVO.corpus.push(t);
+    if (EVO.corpus.length > 40) EVO.corpus.shift();
+  };
+  if (!AI_TEXT_OFF) {
+    const sp = todaySpecial();
+    aiLine(
+      `你是中世纪王国艾尔德里亚的市井谣言本身。现在是${SEASONS[seasonIdx()]}季第${seasonDay()}日` +
+      `${sp ? '·' + sp.name : ''}。${wsReport().slice(0, 60)}` +
+      `写一条25字以内全新的市井传闻(不要提绿衣游侠),要有画面感。只输出传闻本身。`, null, 8000,
+    ).then((t) => { if (t) { push(t.replace(/[「」"']/g, '')); saveGame(); } });
+  } else {
+    // 离线:把两条既有传闻剪开重新缝(拼接变异)
+    const a = BANKS.RUMORS[Math.floor(Math.random() * BANKS.RUMORS.length)];
+    const b = BANKS.RUMORS[Math.floor(Math.random() * BANKS.RUMORS.length)];
+    const cut = (s) => { const i = s.search(/[,,]/); return i > 0 ? [s.slice(0, i + 1), s.slice(i + 1)] : [s, '']; };
+    const [a1] = cut(a), [, b2] = cut(b);
+    if (b2) push(a1 + b2);
+  }
 }
 
 let wolfKills = 0;
@@ -619,6 +670,129 @@ const ARMORS = [
 ];
 player.weapon = 'sword';
 player.weaponsOwned = ['sword'];
+
+// ================= 魔法系统 =================
+// 四门法术分别来自四处地标:女巫卖火球、教堂授治愈、湖心祭坛赠冰霜、回响之镜予闪现。
+// R 施放 · V 切换 · 数字键 1-4 直选;法力自然回复,自家安眠/庇佑时回得更快。
+const SPELLS = {
+  fire:  { name: '火球术', icon: '🔥', mp: 3, cd: 1.1 },
+  heal:  { name: '治愈术', icon: '✨', mp: 4, cd: 2.5 },
+  frost: { name: '冰霜新星', icon: '❄️', mp: 4, cd: 6 },
+  blink: { name: '闪现', icon: '💠', mp: 2, cd: 2.5 },
+};
+player.mp = 6;
+player.maxMp = 6;
+player.spells = [];
+player.spellIdx = 0;
+player.castT = 0;
+function learnSpell(key) {
+  if (player.spells.includes(key)) return false;
+  player.spells.push(key);
+  player.spellIdx = player.spells.length - 1;
+  sfx.fanfare();
+  toast(`${SPELLS[key].icon} 习得法术「${SPELLS[key].name}」!R 施放 · V 切换`, 5);
+  remember(`习得了法术「${SPELLS[key].name}」`, `spell-${key}`);
+  saveGame();
+  return true;
+}
+function cycleSpell() {
+  if (player.spells.length < 2) return;
+  player.spellIdx = (player.spellIdx + 1) % player.spells.length;
+  const k = player.spells[player.spellIdx];
+  sfx.equip();
+  toast(`${SPELLS[k].icon} ${SPELLS[k].name}`, 1.2);
+}
+// 范围爆破:火球命中点的 AoE(打卫兵照样算犯罪)
+function explodeAt(x, z, dmg = 3, radius = 3.4) {
+  camShake = Math.max(camShake, 0.35);
+  sfx.stomp();
+  spawnDust(x, 0.5, z, 16, radius * 0.5, 2.2);
+  const boom = (list, onDead) => {
+    for (const e of list) {
+      if (e.dead || e.downT > 0) continue;
+      if (dist2(x, z, e.pos.x, e.pos.z) > radius * radius) continue;
+      e.hp -= dmg;
+      hitFX(e, 1.2);
+      showDamage(e.pos, dmg, true);
+      if (e.hp <= 0) onDead(e);
+    }
+  };
+  boom(bandits, (b) => {
+    b.dead = true; startFall(b); registerKill(); choreProgress('bandits');
+    dropCoins(b.pos, b.boss ? 20 : 5);
+    if (b.boss) dismissMinions();
+  });
+  boom(wolves, (w) => killWolf(w));
+  boom(guards, (g) => {
+    g.downT = 14; g.stunT = 0; g.group.rotation.z = 0; g.wantedHit = false;
+    startFall(g); registerKill(); dropCoins(g.pos, 3);
+  });
+  for (const g of guards) {
+    if (!g.dead && g.downT <= 0 && dist2(x, z, g.pos.x, g.pos.z) < radius * radius && !g.wantedHit) {
+      g.wantedHit = true;
+      crime(2, '你的火球炸到了卫兵!');
+      break;
+    }
+  }
+}
+function castSpell() {
+  if (!started || player.dead || player.castT > 0 || !player.spells.length ||
+      player.carrying || dialog.open) return;
+  const key = player.spells[player.spellIdx];
+  const def = SPELLS[key];
+  if (player.mp < def.mp) { toast(`💧 法力不足(${SPELLS[key].name}需要 ${def.mp} 点)`, 1.6); return; }
+  player.mp -= def.mp;
+  player.castT = def.cd;
+  stats.casts = (stats.casts || 0) + 1;
+  if (stats.casts >= 30) unlockAch('mage');
+  const fx = Math.sin(player.yaw), fz = Math.cos(player.yaw);
+  if (key === 'fire') {
+    sfx.arrow();
+    const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.22, 8, 6),
+      new THREE.MeshBasicMaterial({ color: 0xff8830 }));
+    const pos = new THREE.Vector3(player.pos.x + fx * 0.8, 1.3, player.pos.z + fz * 0.8);
+    mesh.position.copy(pos);
+    scene.add(mesh);
+    arrows.push({ mesh, pos, vel: new THREE.Vector3(fx, 0.06, fz).multiplyScalar(22), ttl: 2.2, stuck: false, fire: true });
+  } else if (key === 'heal') {
+    sfx.heart();
+    player.hp = Math.min(player.maxHp, player.hp + 4);
+    spawnDust(player.pos.x, 1.2, player.pos.z, 10, 0.8, 2.6);
+    toast('✨ 暖流漫过伤口。(回复 ❤×2)', 2);
+  } else if (key === 'frost') {
+    sfx.clear();
+    camShake = Math.max(camShake, 0.25);
+    spawnDust(player.pos.x, 0.4, player.pos.z, 22, 3.2, 1.6);
+    const freeze = (list) => {
+      for (const e of list) {
+        if (e.dead || e.downT > 0 || e.stunT === undefined) continue;
+        if (dist2(player.pos.x, player.pos.z, e.pos.x, e.pos.z) > 49) continue;
+        e.stunT = Math.max(e.stunT || 0, 3.5);
+        e.hp -= 1;
+        showDamage(e.pos, 1);
+        if (e.hp <= 0 && list === wolves) killWolf(e);
+        else if (e.hp <= 0 && list === bandits) { e.dead = true; startFall(e); registerKill(); dropCoins(e.pos, 5); }
+      }
+    };
+    freeze(bandits);
+    freeze(wolves);
+    freeze(guards);
+    toast('❄️ 寒气炸开,周围的敌人冻在了原地!', 2);
+  } else if (key === 'blink') {
+    sfx.roll();
+    spawnDust(player.pos.x, 0.6, player.pos.z, 8, 0.5, 1.8);
+    player.pos.x += fx * 7;
+    player.pos.z += fz * 7;
+    resolveCollisions(player.pos, 0.45, colliders);
+    player.invulnT = Math.max(player.invulnT, 0.35);
+    spawnDust(player.pos.x, 0.6, player.pos.z, 8, 0.5, 1.8);
+  }
+}
+function updateMagic(dt) {
+  if (player.castT > 0) player.castT -= dt;
+  const regen = 0.32 * (player.homeDay === calendar.day ? 1.5 : 1) * (player.blessT > 0 ? 1.4 : 1);
+  player.mp = Math.min(player.maxMp, player.mp + regen * dt);
+}
 player.armor = 0;
 player.blocking = false;
 player.rollT = 0;
@@ -736,9 +910,16 @@ function arrowHitEntities(a) {
     } else g.state = 'chase';
   })) return true;
   if (tryHit(bandits, (b) => {
+    // 战术演化:被射多了的匪帮学会侧身闪箭(贴脸射/法术不受影响)
+    if (Math.random() < EVO.tactics.dodge * 0.45) {
+      showDamage(b.pos, 0);
+      hitFX(b, 0.15);
+      return;
+    }
     b.hp -= dmg; sfx.hit(); hitFX(b, 0.4); showDamage(b.pos, dmg);
     if (b.hp <= 0) {
       b.dead = true; startFall(b); registerKill(); choreProgress('bandits');
+      EVO.kills.arrow++;
       if (b.boss) dismissMinions();
       dropCoins(b.pos, b.boss ? 20 : 5);
       if (quest.active && missions[quest.idx].type === 'bandits' && !b.boss && !b.escort && !b.bountyHead && !b.robber && !b.arena && !b.ambient && !b.duel && !b.convict && !b.eventFoe) {
@@ -768,10 +949,22 @@ function updateArrows(dt) {
     a.ttl -= dt;
     if (a.ttl <= 0) { scene.remove(a.mesh); arrows.splice(i, 1); continue; }
     if (a.stuck) continue;
-    a.vel.y -= 7 * dt;
+    if (!a.fire) a.vel.y -= 7 * dt; // 火球直线飞行
     a.pos.addScaledVector(a.vel, dt);
     a.mesh.position.copy(a.pos);
     a.mesh.lookAt(a.pos.x + a.vel.x, a.pos.y + a.vel.y, a.pos.z + a.vel.z);
+    if (a.fire) {
+      // 火球:贴近任何敌人 / 落地 / 撞墙 / 燃尽 → 爆炸
+      const near = (list) => list.some((e) => !e.dead && !(e.downT > 0) &&
+        dist2(a.pos.x, a.pos.z, e.pos.x, e.pos.z) < 1.6);
+      if (near(bandits) || near(wolves) || near(guards) ||
+          a.pos.y <= 0.1 || pointBlocked(a.pos.x, a.pos.z) || a.ttl <= 0.05) {
+        explodeAt(a.pos.x, a.pos.z);
+        scene.remove(a.mesh);
+        arrows.splice(i, 1);
+      }
+      continue;
+    }
     if (arrowHitEntities(a)) { scene.remove(a.mesh); arrows.splice(i, 1); continue; }
     if (a.pos.y <= 0.05 || pointBlocked(a.pos.x, a.pos.z)) {
       a.stuck = true;
@@ -1380,6 +1573,9 @@ function openJournal() {
   {
     const topLeg = EVO.legends.reduce((b, x) => (!b || x.heat > b.heat ? x : b), null);
     const evoBits = [`🐺 狼群第 ${EVO.wolfGen} 代${EVO.wolfSpeed > 0.3 ? '(比从前更快)' : ''}`];
+    if (EVO.tactics.block >= 0.25) evoBits.push('匪帮学会了格挡');
+    if (EVO.tactics.dodge >= 0.25) evoBits.push('匪帮学会了闪箭');
+    if (EVO.corpus.length) evoBits.push(`活语料 +${EVO.corpus.length} 条(世界自己写的)`);
     if (topLeg && topLeg.gen > 1) evoBits.push(`最响的传说已传出第 ${topLeg.gen} 种说法:「${legendText(topLeg)}」`);
     pages.push(`🧬 自进化的世界:${evoBits.join(' · ')}`);
   }
@@ -1427,7 +1623,7 @@ function prayAltar() {
     '(你把手放上月光祭坛。水下极深处,有什么东西缓缓睁开了眼,又缓缓阖上。)',
     '(一股凉意顺着掌心漫上来,像月光灌进了骨头——却并不冷。)',
     '💙 湖神的恩赐:生命上限 +2!',
-  ], () => saveGame());
+  ], () => { learnSpell('frost'); saveGame(); });
 }
 
 // ================= 赛马计时赛(马厩旁的赛旗,无限重复) =================
@@ -2716,6 +2912,7 @@ const ACH_DEFS = {
   ironarm:  { name: '铁臂之上', desc: '掰手腕赢下铁臂加隆 3 次' },
   homeowner:{ name: '置业成家', desc: '买下苇岸边的湖畔小屋' },
   wishkeeper:{ name: '代它看世界', desc: '替这颗心实现 3 个心愿(夜里有萤火谢你)' },
+  mage:     { name: '半路出家的法师', desc: '施放 30 次法术' },
   elder:    { name: '长住者', desc: '在艾尔德里亚度过 30 日' },
   navigator:{ name: '远行者', desc: '走到离王都一万步之外' },
 };
@@ -3072,7 +3269,9 @@ function dbLine(key) {
       const other = pick(others);
       text = `${mood()}${pick(BANKS.GOSSIP_FRAMES).replace('{name}', BANKS.NAMES[other]).replace('{fact}', pick(BANKS.FACTS[other]))}${tail()}`;
     } else if (cat === 'rumor') {
-      text = `${mood()}${pick(BANKS.RUMOR_FRAMES).replace('{r}', pick(BANKS.RUMORS))}${tail()}`;
+      // 活语料:世界自己写的传闻混进既有语料一起流传
+      const rpool = EVO.corpus.length && rnd() < 0.35 ? EVO.corpus : BANKS.RUMORS;
+      text = `${mood()}${pick(BANKS.RUMOR_FRAMES).replace('{r}', clean(pick(rpool)))}${tail()}`;
     } else if (cat === 'place') {
       const p = pick(Object.keys(BANKS.PLACES));
       text = `${pick(BANKS.PLACE_FRAMES).replace('{p}', p).replace('{f}', pick(BANKS.PLACES[p]))}${tail()}`;
@@ -3653,6 +3852,8 @@ function newDay() {
     } else {
       EVO.wolfPressure = Math.max(0, EVO.wolfPressure - 1); // 压力隔夜消退
     }
+    evolveTactics(); // 匪帮复盘昨天的死法,学出反制
+    growCorpus();    // 世界自己给自己写一句新台词,永久入库
     saveGame();
   }
 }
@@ -3757,6 +3958,9 @@ async function mirrorTalkInner() {
   const mem1 = recallLine();
   const mem2 = recallLine();
   unlockAch('mirror');
+  if (!player.spells.includes('blink')) {
+    setTimeout(() => learnSpell('blink'), 1500); // 镜子的赠礼:让你也能像念头一样瞬移
+  }
   const openLine = MIRROR_OPEN[Math.floor(Math.random() * MIRROR_OPEN.length)];
   toast('🪞 镜面泛起涟漪……', 2);
   const ai = await aiLine(
@@ -4286,7 +4490,9 @@ function saveGame() {
       home: player.home, homeDay: player.homeDay, firefly: player.firefly,
       mind: mindSave(),
       evo: { legends: EVO.legends, wolfGen: EVO.wolfGen, wolfPressure: EVO.wolfPressure,
-        wolfSpeed: EVO.wolfSpeed, eventFit: EVO.eventFit },
+        wolfSpeed: EVO.wolfSpeed, eventFit: EVO.eventFit,
+        tactics: EVO.tactics, corpus: EVO.corpus },
+      spells: player.spells,
     }));
   } catch { /* 隐私模式等 */ }
 }
@@ -4345,8 +4551,13 @@ function loadGame() {
       EVO.wolfPressure = s.evo.wolfPressure || 0;
       EVO.wolfSpeed = s.evo.wolfSpeed || 0;
       if (s.evo.eventFit && typeof s.evo.eventFit === 'object') EVO.eventFit = s.evo.eventFit;
+      if (s.evo.tactics) EVO.tactics = { block: +s.evo.tactics.block || 0, dodge: +s.evo.tactics.dodge || 0 };
+      if (Array.isArray(s.evo.corpus)) EVO.corpus = s.evo.corpus.filter((t) => typeof t === 'string');
       for (const w of wolves) if (!w.dead) w.speed = 7.2 + EVO.wolfSpeed; // 在世的狼也是这一代的
     }
+    if (Array.isArray(s.spells)) player.spells = s.spells.filter((k) => SPELLS[k]);
+    if (lakeBlessed && !player.spells.includes('frost')) player.spells.push('frost'); // 旧档补授
+    player.spellIdx = Math.min(player.spellIdx, Math.max(0, player.spells.length - 1));
     if (s.armor && ARMORS[s.armor]) {
       player.armor = s.armor;
       player.maxHp = 10 + ARMORS[s.armor].bonus + (lakeBlessed ? 2 : 0);
@@ -4471,6 +4682,16 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyT' && dialog.open) deepTalk();
   if (e.code === 'KeyH') toggleHint();
   if (e.code === 'KeyQ') cycleWeapon();
+  if (e.code === 'KeyR' && !dialog.open) castSpell();
+  if (e.code === 'KeyV' && !dialog.open) cycleSpell();
+  if (/^Digit[1-4]$/.test(e.code) && !dialog.open) {
+    const idx = +e.code.slice(5) - 1;
+    if (idx < player.spells.length && idx !== player.spellIdx) {
+      player.spellIdx = idx;
+      sfx.equip();
+      toast(`${SPELLS[player.spells[idx]].icon} ${SPELLS[player.spells[idx]].name}`, 1.2);
+    }
+  }
   if ((e.code === 'KeyC' || e.code === 'ControlLeft') && !dialog.open) doRoll();
   if (e.code === 'KeyG' && !dialog.open) tryRob();
 });
@@ -4822,6 +5043,14 @@ function tryInteract() {
       return;
     }
     if (n.key === 'witch') {
+      if (!player.spells.includes('fire') && player.coins >= 30) {
+        player.coins -= 30;
+        sfx.chest();
+        openDialog(['玛尔戈:(从袖子里抽出一卷焦边的羊皮纸)《火球术》。三十金币,童叟无欺。',
+          '玛尔戈:念的时候手别抖——上一个手抖的,眉毛长了半年。'],
+        () => learnSpell('fire'));
+        return;
+      }
       if (player.hp < player.maxHp) {
         if (player.coins >= 8) {
           player.coins -= 8;
@@ -5071,7 +5300,8 @@ function tryInteract() {
         choreProgress('pray');
         sfx.fanfare();
         openDialog(['(你在断壁间的石坛前低头片刻。风从缺了顶的殿堂穿过,像一声很轻的应答。)',
-          '✨ 获得庇佑:脚下生风(移动加速,120 秒)']);
+          '✨ 获得庇佑:脚下生风(移动加速,120 秒)'],
+        () => learnSpell('heal'));
       } else {
         openDialog(['(石坛安静。神明今日已听过你的祷告——祂也需要歇一歇。)']);
       }
@@ -5350,10 +5580,18 @@ function meleeSweep(dmg, range, arcDot, knock) {
     } else g.state = 'chase';
   });
   hitOne(bandits, (b) => {
+    // 战术演化:被砍多了的匪帮学会举盾——普通斩击有概率被格挡(重击/跳劈 dmg 高,破格挡)
+    if (dmg > 0 && dmg < 3 && !b.stunT && Math.random() < EVO.tactics.block * 0.5) {
+      sfx.clank();
+      hitFX(b, knock * 0.3);
+      showDamage(b.pos, 0);
+      return;
+    }
     b.hp -= dmg; sfx.hit(); hitFX(b, b.boss ? knock * 0.4 : knock);
     showDamage(b.pos, dmg, dmg >= 3);
     if (b.hp <= 0) {
       b.dead = true; startFall(b); registerKill(); choreProgress('bandits');
+      EVO.kills.melee++;
       dropCoins(b.pos, b.boss ? 20 : 5);
       addPickup('heart', b.pos.x, b.pos.z + 1, 30);
       if (b.boss) { toast('⚔️ 血斧巴罗克倒下了!黑石兄弟会土崩瓦解!', 5); dismissMinions(); }
@@ -5385,17 +5623,58 @@ function meleeSweep(dmg, range, arcDot, knock) {
 }
 
 function tryAttack() {
+  // 盾击:举盾状态下出手——不掉血,但把面前的敌人撞个踉跄
+  if (started && !player.dead && player.blocking && !(player.rollT > 0) &&
+      !(player.attackT > 0) && !player.mounted && player.weapon !== 'bow') {
+    player.attackT = 0.7;
+    player.attackDur = 0.7;
+    sfx.clank();
+    camShake = Math.max(camShake, 0.2);
+    // 先定踉跄再撞飞——击退会把人推出判定圈
+    for (const list of [bandits, guards, wolves]) {
+      for (const e of list) {
+        if (e.dead || e.downT > 0 || e.stunT === undefined) continue;
+        const dx = e.pos.x - player.pos.x, dz = e.pos.z - player.pos.z;
+        const d = Math.hypot(dx, dz);
+        if (d < 2.4 && (dx * Math.sin(player.yaw) + dz * Math.cos(player.yaw)) / (d || 1) > 0.25) {
+          e.stunT = Math.max(e.stunT || 0, 1.3);
+        }
+      }
+    }
+    meleeSweep(0, 2.2, 0.25, 1.6);
+    return;
+  }
   // 骑射:马背上可以开弓(其余武器仍需下马)
   if (!started || player.dead || player.attackT > 0 || player.carrying ||
       player.blocking || player.rollT > 0) return;
   if (player.mounted && player.weapon !== 'bow') return;
   const def = WEAPONS[player.weapon];
+  // 跳劈:空中出手——砸向地面,落点四方溅开一圈冲击
+  if (!player.onGround && !player.mounted && player.weapon !== 'bow' && !player.plunging) {
+    player.plunging = true;
+    player.vy = -16;
+    player.attackT = def.cd;
+    player.attackDur = def.cd * 1.4;
+    sfx.sword();
+    return;
+  }
   player.attackT = def.cd;
   player.attackDur = def.cd;
   if (player.weapon === 'bow') { shootArrow(); return; }
   sfx.sword();
   if (dist2(player.pos.x, player.pos.z, 140, 20) < 80) unlockAch('windmill');
-  meleeSweep(def.dmg + (player.swordLv >= 2 ? 1 : 0) + (player.relic ? 1 : 0), def.range, 0.35, def.knock);
+  // 三连斩:0.9 秒内连续出手,第三剑更重、附带大击退
+  const now = performance.now();
+  player.chainN = (now - (player.chainT || 0) < 900) ? (player.chainN || 0) + 1 : 1;
+  player.chainT = now;
+  const third = player.chainN >= 3;
+  if (third) {
+    player.chainN = 0;
+    sfx.combo();
+    camShake = Math.max(camShake, 0.22);
+  }
+  meleeSweep(def.dmg + (player.swordLv >= 2 ? 1 : 0) + (player.relic ? 1 : 0) + (third ? 1 : 0),
+    def.range + (third ? 0.4 : 0), 0.35, def.knock * (third ? 1.8 : 1));
 }
 
 // 蓄力重击:按住 F 约 0.7 秒自动挥出 —— 双倍伤害、超广角横扫、大击退
@@ -6053,6 +6332,17 @@ function updatePlayer(dt) {
     // 先重置着地状态,再判定踩踏——checkStomp 的弹跳(onGround=false)才能保留,支持连环踩踏
     player.onGround = true;
     player.jumps = 0;
+    if (player.plunging) {
+      // 跳劈落地:全方位冲击波
+      player.plunging = false;
+      const def = WEAPONS[player.weapon];
+      sfx.stomp();
+      camShake = Math.max(camShake, 0.4);
+      hitStopT = Math.max(hitStopT, 0.05);
+      spawnDust(player.pos.x, 0.1, player.pos.z, 14, 2.4, 2);
+      meleeSweep(def.dmg + (player.swordLv >= 2 ? 1 : 0) + (player.relic ? 1 : 0) + 1, 3.4, -1, def.knock * 1.6);
+      stats.plunges = (stats.plunges || 0) + 1;
+    }
     if (wasAirborne && fallSpeed < -3) checkStomp();
     if (wasAirborne && fallSpeed < -10) camShake = 0.22;
     if (wasAirborne && fallSpeed < -6) spawnDust(player.pos.x, 0.06, player.pos.z, 6, 0.9, 1.5);
@@ -6403,9 +6693,12 @@ function updateDayNight(dt) {
   sun.intensity = 3.2 * day * rainDim * dgnDim;
   sun.color.copy(C_SUN_DUSK).lerp(C_SUN_DAY, Math.min(1, Math.max(0, elev * 2.2)));
   moon.position.set(-sx, Math.max(30, -sy), -sz);
-  moon.intensity = 0.3 * night;
-  hemi.intensity = (0.12 + 0.38 * day) * (1 - 0.3 * weather.rain) * dgnDim;
-  envIntensity = (0.05 + 0.3 * day) * rainDim * (inDungeon() ? 0.25 : 1);
+  moon.intensity = 0.55 * night; // 月色提亮:夜里也看得清路
+  hemi.intensity = (0.22 + 0.28 * day) * (1 - 0.3 * weather.rain) * dgnDim;
+  envIntensity = (0.1 + 0.25 * day) * rainDim * (inDungeon() ? 0.25 : 1);
+  // 随身提灯:入夜自动点起一圈暖光(地窖里已有火把,不重复)
+  lantern.intensity = night * 1.2 * (inDungeon() ? 0 : 1);
+  lantern.position.set(player.pos.x, 2.4, player.pos.z);
 
   // 天空穹顶
   _sunDir.set(sx, sy, sz).normalize();
@@ -6563,7 +6856,7 @@ function updateHUD() {
   const sp = todaySpecial();
   const calText = `${SEASON_ICON[seasonIdx()]}${SEASONS[seasonIdx()]}·${seasonDay()}日${sp ? '·' + sp.name : ''}`;
   const bossHp = questRT.boss && !questRT.boss.dead && quest.active ? questRT.boss.hp : -1;
-  const key = hearts + '|' + player.coins + '|' + player.weapon + player.armor + (player.relic ? 'R' : '') + '|' + stars + '|' + missionText + '|' + timer + '|' + promptText + '|' + wIcon + phaseIcon + calText + '|' + bossHp;
+  const key = hearts + '|' + player.coins + '|' + player.weapon + player.armor + (player.relic ? 'R' : '') + '|' + stars + '|' + missionText + '|' + timer + '|' + promptText + '|' + wIcon + phaseIcon + calText + '|' + bossHp + '|' + Math.floor(player.mp) + player.spellIdx + player.spells.length;
   if (key === hudCache) return;
   hudCache = key;
   weatherEl.textContent = `${calText} ${phaseIcon} ${wIcon}`;
@@ -6576,7 +6869,11 @@ function updateHUD() {
   equipEl.textContent =
     `${wDef.icon} ${wDef.name}${player.swordLv >= 2 ? '+1' : ''}${player.relic ? '·☀️' : ''}` +
     (player.armor ? ` · 🛡️ ${ARMORS[player.armor].name}` : '') +
-    (player.weaponsOwned.length > 1 ? '(Q 切换)' : '');
+    (player.weaponsOwned.length > 1 ? '(Q 切换)' : '') +
+    (player.spells.length
+      ? ` · ${SPELLS[player.spells[player.spellIdx]].icon}${SPELLS[player.spells[player.spellIdx]].name}` +
+        ` ${'🔹'.repeat(Math.floor(player.mp))}${'▫'.repeat(player.maxMp - Math.floor(player.mp))}`
+      : '');
   promptEl.textContent = promptText;
   promptEl.style.display = promptText ? 'block' : 'none';
   // Boss 血条(仅 Boss 战期间)
@@ -6627,6 +6924,7 @@ function computePrompt() {
     if (n.key === 'innkeep' && player.venison > 0) { promptText = `按 E 卖鹿肉 ×${player.venison}(每块 5 金币)`; return; }
     if (n.key === 'innkeep' && player.hp < player.maxHp) { promptText = '按 E 住店休息,回满生命(10 金币)'; return; }
     if (n.key === 'innkeep' && dayPhase() === 'night') { promptText = '按 E 住店过夜,睡到天亮(10 金币)'; return; }
+    if (n.key === 'witch' && !player.spells.includes('fire') && player.coins >= 30) { promptText = '按 E 买《火球术》卷轴(30 金币)'; return; }
     if (n.key === 'witch' && player.hp < player.maxHp) { promptText = '按 E 买回魂汤(8 金币)'; return; }
     if (n.key === 'witch' && player.herbs > 0) { promptText = `按 E 卖蘑菇 ×${player.herbs}(每朵 3 金币)`; return; }
     if (n.key === 'witch' && player.coins >= 5) { promptText = '按 E 求一卦(5 金币,她真算得准)'; return; }
@@ -7385,7 +7683,8 @@ window.__gtm = {
   workspace, wsReport, moodWord, consolidate, tickWorkspace: () => { workspace.t = 0; updateWorkspace(0); },
   MIND, mindReport, mindTick, habitFactor, mindSave, mindMakeWish, MIND_WISHES, mindFavorite,
   getFirefly: () => ({ owned: !!player.firefly, visible: fireflyMesh.visible }),
-  EVO, seedLegend, mutateLegend, evolveLegends, legendText,
+  EVO, seedLegend, mutateLegend, evolveLegends, legendText, evolveTactics, growCorpus,
+  SPELLS, castSpell, learnSpell, cycleSpell, explodeAt, tryAttack,
   testBlocked: (x, z, r = 0.45) => {
     const p = { x, z };
     resolveCollisions(p, r, colliders);
@@ -7516,6 +7815,7 @@ function loop(now) {
   updateArm(dt);
   updateHome();
   updateFirefly();
+  updateMagic(dt);
   updateWeather(dt);
   // 环境氛围音:按季节 × 时辰 × 天气切换(4 秒判一次)
   ambienceT -= dt;
