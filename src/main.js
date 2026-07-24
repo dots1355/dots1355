@@ -793,6 +793,7 @@ function castSpell() {
 }
 function updateMagic(dt) {
   if (player.castT > 0) player.castT -= dt;
+  if (player.riposteT > 0) player.riposteT -= dt;
   const regen = 0.32 * (player.homeDay === calendar.day ? 1.5 : 1) * (player.blessT > 0 ? 1.4 : 1);
   player.mp = Math.min(player.maxMp, player.mp + regen * dt);
   if (shout.cd > 0) shout.cd -= dt;
@@ -1097,13 +1098,18 @@ function shootArrow() {
   sfx.arrow();
 }
 function arrowHitEntities(a) {
-  const dmg = arrowBonus(WEAPONS.bow.dmg + (player.swordLv >= 2 ? 1 : 0));
+  const dmg = a.dmg || arrowBonus(WEAPONS.bow.dmg + (player.swordLv >= 2 ? 1 : 0));
   const tryHit = (list, onHit) => {
     for (const e of list) {
       if (e.dead || e.downT > 0) continue;
+      if (a._hits && a._hits.includes(e)) continue; // 贯穿箭:一箭对同一目标只算一次
       const dy = a.pos.y - 0.9;
       if (dy > 1.4 || dy < -0.9) continue;
-      if (dist2(a.pos.x, a.pos.z, e.pos.x, e.pos.z) < 0.8) { onHit(e); return true; }
+      if (dist2(a.pos.x, a.pos.z, e.pos.x, e.pos.z) < 0.8) {
+        if (a._hits) a._hits.push(e);
+        onHit(e);
+        return true;
+      }
     }
     return false;
   };
@@ -1171,7 +1177,13 @@ function updateArrows(dt) {
       }
       continue;
     }
-    if (arrowHitEntities(a)) { skillXp('archery', 2); scene.remove(a.mesh); arrows.splice(i, 1); continue; }
+    if (arrowHitEntities(a)) {
+      skillXp('archery', 2);
+      if (a.pierce > 0) { a.pierce--; continue; } // 满月箭:穿过去接着飞
+      scene.remove(a.mesh);
+      arrows.splice(i, 1);
+      continue;
+    }
     if (a.pos.y <= 0.05 || pointBlocked(a.pos.x, a.pos.z)) {
       a.stuck = true;
       a.ttl = Math.min(a.ttl, 2);
@@ -3125,6 +3137,7 @@ const ACH_DEFS = {
   dovah:    { name: '龙之传人', desc: '在龙骨之地的龙颅前学会冲击战吼' },
   cutpurse: { name: '三只手', desc: '扒窃得手 5 次' },
   walldef:  { name: '南门之盾', desc: '击退黑石兄弟会的劫掠' },
+  executioner: { name: '断头台的同行', desc: '处决 10 个踉跄中的敌人' },
   elder:    { name: '长住者', desc: '在艾尔德里亚度过 30 日' },
   navigator:{ name: '远行者', desc: '走到离王都一万步之外' },
 };
@@ -5800,6 +5813,12 @@ function completeMission() {
 // 近战横扫判定:普通挥击与蓄力重击共用(dmg/范围/角度/击退可调)
 function meleeSweep(dmg, range, arcDot, knock) {
   const fx = Math.sin(player.yaw), fz = Math.cos(player.yaw);
+  // 处决:对踉跄中的敌人(弹反/盾击/冰冻后)出手 = ×5 终结,配慢动作
+  let executed = false;
+  const execDmg = (e) => {
+    if (dmg > 0 && e.stunT > 0.3) { executed = true; return dmg * 5; }
+    return dmg;
+  };
   const hitOne = (list, onHit) => {
     for (const e of list) {
       if (e.downT > 0 || e.dead) continue;
@@ -5809,6 +5828,7 @@ function meleeSweep(dmg, range, arcDot, knock) {
     }
   };
   hitOne(guards, (g) => {
+    const dmg = execDmg(g);
     g.hp -= dmg; sfx.hit(); hitFX(g, knock); showDamage(g.pos, dmg, dmg >= 3);
     if (!g.wantedHit) { g.wantedHit = true; crime(1, '你袭击了卫兵!'); }
     if (g.hp <= 0) {
@@ -5826,8 +5846,9 @@ function meleeSweep(dmg, range, arcDot, knock) {
       showDamage(b.pos, 0);
       return;
     }
-    b.hp -= dmg; sfx.hit(); hitFX(b, b.boss ? knock * 0.4 : knock);
-    showDamage(b.pos, dmg, dmg >= 3);
+    const dmg2 = execDmg(b);
+    b.hp -= dmg2; sfx.hit(); hitFX(b, b.boss ? knock * 0.4 : knock);
+    showDamage(b.pos, dmg2, dmg2 >= 3);
     if (b.hp <= 0) {
       b.dead = true; startFall(b); registerKill(); choreProgress('bandits');
       EVO.kills.melee++;
@@ -5842,9 +5863,18 @@ function meleeSweep(dmg, range, arcDot, knock) {
     }
   });
   hitOne(wolves, (w) => {
-    w.hp -= dmg; sfx.hit(); hitFX(w, knock); showDamage(w.pos, dmg, dmg >= 3);
+    const dmg3 = execDmg(w);
+    w.hp -= dmg3; sfx.hit(); hitFX(w, knock); showDamage(w.pos, dmg3, dmg3 >= 3);
     if (w.hp <= 0) killWolf(w);
   });
+  if (executed) { // 处决演出:时停 + 震屏
+    hitStopT = Math.max(hitStopT, 0.22);
+    camShake = Math.max(camShake, 0.45);
+    sfx.kill();
+    toast('⚔️ 处决!(×5)', 1.6);
+    stats.executions = (stats.executions || 0) + 1;
+    if (stats.executions >= 10) unlockAch('executioner');
+  }
   hitOne(deers, (d) => {
     sfx.hit();
     killDeer(d);
@@ -5922,20 +5952,49 @@ function tryAttack() {
   const third = player.chainN >= 3;
   if (third) {
     player.chainN = 0;
-    sfx.combo();
+    sfx.combo(3);
     camShake = Math.max(camShake, 0.22);
+  }
+  // 冲刺突斩:疾跑中出手——整个人扑出去,带尘土与额外一分力
+  const sprinting = (keys['ShiftLeft'] || keys['ShiftRight']) && player.onGround && !player.sneaking &&
+    (keys['KeyW'] || keys['KeyA'] || keys['KeyS'] || keys['KeyD']);
+  if (sprinting) {
+    const fx = Math.sin(player.yaw), fz = Math.cos(player.yaw);
+    player.pos.x += fx * 2.8;
+    player.pos.z += fz * 2.8;
+    resolveCollisions(player.pos, 0.45, colliders);
+    spawnDust(player.pos.x - fx, 0.1, player.pos.z - fz, 8, 1.2, 1.4);
+    camShake = Math.max(camShake, 0.15);
+    sfx.roll();
+  }
+  // 弹反还击:完美弹反后 1.5 秒内的这一击 ×2.5
+  let riposteMul = 1;
+  if (player.riposteT > 0) {
+    riposteMul = 2.5;
+    player.riposteT = 0;
+    sfx.combo(5);
+    hitStopT = Math.max(hitStopT, 0.1);
+    toast('⚡ 还击!(×2.5)', 1.4);
   }
   // 潜行偷袭:蹲行状态近身出手 ×3(短匕是行家家伙,×4)
   const sneakMul = player.sneaking ? (player.weapon === 'dagger' ? 4 : 3) : 1;
   if (player.sneaking) toast(`🗡️ 偷袭!(×${sneakMul})`, 1.2);
-  meleeSweep(meleeBonus(def.dmg + (player.swordLv >= 2 ? 1 : 0) + (player.relic ? 1 : 0) + (third ? 1 : 0)) * sneakMul,
-    def.range + (third ? 0.4 : 0), 0.35, def.knock * (third ? 1.8 : 1));
+  // 旋风斩:武艺 5 级起,三连斩的第三剑变成全周横扫
+  const whirl = third && skillLv('onehand') >= 5;
+  meleeSweep(Math.round(meleeBonus(def.dmg + (player.swordLv >= 2 ? 1 : 0) + (player.relic ? 1 : 0) +
+    (third ? 1 : 0) + (sprinting ? 1 : 0)) * sneakMul * riposteMul),
+  def.range + (third ? 0.4 : 0) + (sprinting ? 0.4 : 0), whirl ? -1.01 : 0.35,
+  def.knock * (third ? 1.8 : 1) * (sprinting ? 1.3 : 1));
+  if (whirl) { camShake = Math.max(camShake, 0.2); spawnDust(player.pos.x, 0.5, player.pos.z, 10, 2, 1.6); }
   skillXp('onehand', 1);
   if (player.sneaking) skillXp('sneak', 2);
 }
 
 // 蓄力重击:按住 F 约 0.7 秒自动挥出 —— 双倍伤害、超广角横扫、大击退
 function heavyAttack() {
+  // 蓄力技按武器分家:短匕掷飞刀,猎弓开满月,刀剑抡重击
+  if (player.weapon === 'dagger') { throwKnife(); return; }
+  if (player.weapon === 'bow') { chargedShot(); return; }
   const def = WEAPONS[player.weapon];
   player.attackT = def.cd * 1.6;
   player.attackDur = def.cd * 1.6;
@@ -5949,6 +6008,40 @@ function heavyAttack() {
     def.range + 0.7, wide ? -0.6 : -0.1, def.knock * (wide ? 2.3 : 1.8));
   skillXp('onehand', 1);
   stats.heavies = (stats.heavies || 0) + 1;
+}
+
+// 飞刀(短匕蓄力):平直高速,一刀一命换着算
+function throwKnife() {
+  player.attackT = 0.5;
+  player.attackDur = 0.5;
+  sfx.arrow();
+  sfx.clank();
+  const dir = new THREE.Vector3(Math.sin(player.yaw), 0.02, Math.cos(player.yaw)).normalize();
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, 0.5),
+    new THREE.MeshStandardMaterial({ color: 0xc8ccd2, metalness: 0.85, roughness: 0.25 }));
+  const pos = new THREE.Vector3(player.pos.x + dir.x * 0.6, player.pos.y + 1.2, player.pos.z + dir.z * 0.6);
+  mesh.position.copy(pos);
+  scene.add(mesh);
+  arrows.push({ mesh, pos, vel: dir.multiplyScalar(34), ttl: 2, stuck: false,
+    dmg: meleeBonus(2 + (player.swordLv >= 2 ? 1 : 0)), knife: true });
+  skillXp('onehand', 1);
+}
+// 满月强弓(猎弓蓄力):×2 伤害、破空疾飞、可贯穿三人
+function chargedShot() {
+  player.attackT = WEAPONS.bow.cd * 1.4;
+  player.attackDur = WEAPONS.bow.cd * 1.4;
+  sfx.arrow();
+  camShake = Math.max(camShake, 0.12);
+  const dir = new THREE.Vector3(Math.sin(player.yaw), 0.03, Math.cos(player.yaw)).normalize();
+  const mesh = new THREE.Mesh(arrowGeo, arrowMat);
+  const pos = new THREE.Vector3(player.pos.x + dir.x * 0.6, player.pos.y + 1.15, player.pos.z + dir.z * 0.6);
+  mesh.position.copy(pos);
+  mesh.scale.set(1.4, 1.4, 1.4);
+  scene.add(mesh);
+  arrows.push({ mesh, pos, vel: dir.multiplyScalar(42), ttl: 2.5, stuck: false,
+    dmg: arrowBonus((WEAPONS.bow.dmg + (player.swordLv >= 2 ? 1 : 0)) * 2), pierce: 2, _hits: [] });
+  skillXp('archery', 2);
+  toast('🏹 满月!', 1);
 }
 
 function dropCoins(pos, n) {
@@ -5969,10 +6062,11 @@ function damagePlayer(n, attacker = null) {
       camShake = Math.max(camShake, 0.25);
       sfx.clank();
       sfx.clear();
-      toast('⚡ 完美弹反!', 1.4);
+      toast('⚡ 完美弹反!(1.5 秒内出手=还击 ×2.5)', 1.6);
       stats.parries = (stats.parries || 0) + 1;
       if (stats.parries >= 5) unlockAch('parry');
       player.invulnT = 0.5;
+      player.riposteT = 1.5; // 还击窗口
       return;
     }
     sfx.clank();
@@ -6626,7 +6720,7 @@ function updatePlayer(dt) {
       camShake = Math.max(camShake, 0.4);
       hitStopT = Math.max(hitStopT, 0.05);
       spawnDust(player.pos.x, 0.1, player.pos.z, 14, 2.4, 2);
-      meleeSweep(def.dmg + (player.swordLv >= 2 ? 1 : 0) + (player.relic ? 1 : 0) + 1, 3.4, -1, def.knock * 1.6);
+      meleeSweep(def.dmg + (player.swordLv >= 2 ? 1 : 0) + (player.relic ? 1 : 0) + 1, 3.4, -1.01, def.knock * 1.6);
       stats.plunges = (stats.plunges || 0) + 1;
     }
     if (wasAirborne && fallSpeed < -3) checkStomp();
@@ -8105,7 +8199,7 @@ function loop(now) {
   updatePlayer(dt);
   // 蓄力重击:按住 F 约 0.7 秒自动挥出(松手清零)
   if (keys['KeyF'] && !player.dead && !player.mounted && !player.carrying &&
-      player.weapon !== 'bow' && player.rollT <= 0 && !dialog.open) {
+      player.rollT <= 0 && !dialog.open) { // 弓也能蓄力:满月强弓
     player.chargeT = (player.chargeT || 0) + dt;
     if (player.chargeT >= 0.7 && player.attackT <= 0) {
       player.chargeT = 0;
