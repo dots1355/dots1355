@@ -564,6 +564,7 @@ function updateWolves(dt) {
     if (w.stunT > 0) { w.stunT -= dt; continue; }
     w.attackCd = Math.max(0, w.attackCd - dt);
     w.lungeCd = Math.max(0, (w.lungeCd || 0) - dt);
+    if (w._trampleCd > 0) w._trampleCd -= dt;
     const pd = Math.hypot(player.pos.x - w.pos.x, player.pos.z - w.pos.z);
     let moving = false;
     // 扑咬:蹲伏蓄力 0.3s → 猛扑
@@ -607,7 +608,7 @@ function updateWolves(dt) {
       w.parts.legs[3].rotation.x = sw2;
       continue;
     }
-    if (pd < 20 && !player.dead) {
+    if (pd < 20 * sneakFactor() && !player.dead) {
       if (pd < 6 && pd > 1.6 && w.lungeCd <= 0) {
         // 起跳预警
         w.lunging = 0.58;
@@ -740,11 +741,13 @@ function castSpell() {
       player.carrying || dialog.open) return;
   const key = player.spells[player.spellIdx];
   const def = SPELLS[key];
-  if (player.mp < def.mp) { toast(`💧 法力不足(${SPELLS[key].name}需要 ${def.mp} 点)`, 1.6); return; }
-  player.mp -= def.mp;
+  const cost = Math.max(1, Math.round(def.mp * (1 - 0.04 * (skillLv('destruction') - 1)))); // 法术专精:省蓝
+  if (player.mp < cost) { toast(`💧 法力不足(${SPELLS[key].name}需要 ${cost} 点)`, 1.6); return; }
+  player.mp -= cost;
   player.castT = def.cd;
   stats.casts = (stats.casts || 0) + 1;
   if (stats.casts >= 30) unlockAch('mage');
+  skillXp('destruction', 2);
   const fx = Math.sin(player.yaw), fz = Math.cos(player.yaw);
   if (key === 'fire') {
     sfx.arrow();
@@ -792,6 +795,195 @@ function updateMagic(dt) {
   if (player.castT > 0) player.castT -= dt;
   const regen = 0.32 * (player.homeDay === calendar.day ? 1.5 : 1) * (player.blessT > 0 ? 1.4 : 1);
   player.mp = Math.min(player.maxMp, player.mp + regen * dt);
+  if (shout.cd > 0) shout.cd -= dt;
+  updateSneakXp(dt);
+}
+
+// ================= 技能熟练度(上古卷轴式:用什么,涨什么) =================
+const SKILL_DEFS = {
+  onehand:     { name: '武艺', icon: '⚔️', perk: '近战伤害 +6%/级' },
+  archery:     { name: '弓术', icon: '🏹', perk: '箭矢伤害 +6%/级' },
+  destruction: { name: '法术', icon: '🔮', perk: '法力消耗 -4%/级' },
+  riding:      { name: '骑术', icon: '🐴', perk: '骑乘速度 +2%/级' },
+  sneak:       { name: '潜行', icon: '🤫', perk: '警觉圈再缩 3%/级' },
+};
+player.skills = Object.fromEntries(Object.keys(SKILL_DEFS).map((k) => [k, { lv: 1, xp: 0 }]));
+function skillXp(k, n) {
+  const s = player.skills[k];
+  if (!s || s.lv >= 10) return;
+  s.xp += n;
+  const need = s.lv * 20;
+  if (s.xp >= need) {
+    s.xp -= need;
+    s.lv++;
+    sfx.fanfare();
+    toast(`${SKILL_DEFS[k].icon} ${SKILL_DEFS[k].name}提升到 ${s.lv} 级!(${SKILL_DEFS[k].perk})`, 3.5);
+    if (s.lv === 10) remember(`把${SKILL_DEFS[k].name}练到了炉火纯青`, `skill-${k}`);
+    saveGame();
+  }
+}
+const skillLv = (k) => (player.skills[k] ? player.skills[k].lv : 1);
+const meleeBonus = (base) => Math.round(base * (1 + 0.06 * (skillLv('onehand') - 1)));
+const arrowBonus = (base) => Math.round(base * (1 + 0.06 * (skillLv('archery') - 1)));
+
+// ================= 潜行(Z 键蹲行:靠近不惊、背刺三倍) =================
+function sneakFactor() {
+  return player.sneaking ? Math.max(0.22, 0.45 - 0.03 * (skillLv('sneak') - 1)) : 1;
+}
+function toggleSneak() {
+  if (player.mounted || player.dead) return;
+  player.sneaking = !player.sneaking;
+  player.group.scale.y = player.sneaking ? 0.8 : 1;
+  toast(player.sneaking ? '🤫 潜行(移动放缓,敌人警觉圈大幅缩小;近身出手=偷袭 ×3)' : '(起身)', 2);
+}
+let sneakXpT = 0;
+function updateSneakXp(dt) {
+  if (!player.sneaking) return;
+  sneakXpT += dt;
+  if (sneakXpT < 2) return;
+  sneakXpT = 0;
+  // 在活着的敌人眼皮底下潜着,才算练功
+  const near = (list, r2) => list.some((e) => !e.dead && !(e.downT > 0) &&
+    dist2(player.pos.x, player.pos.z, e.pos.x, e.pos.z) < r2);
+  if (near(bandits, 400) || near(wolves, 400)) skillXp('sneak', 1);
+}
+
+// ================= 龙吼(龙骨之地的龙颅所授,X 键释放) =================
+const DRAGON_SKULL = { x: 298, z: -152 };
+const shout = { learned: false, cd: 0 };
+function learnShout() {
+  if (shout.learned) {
+    openDialog(['(龙颅空洞的眼窝深处,有风声盘旋。它已无话可教——去吼吧。)']);
+    return;
+  }
+  shout.learned = true;
+  sfx.fanfare();
+  camShake = 0.5;
+  unlockAch('dovah');
+  remember('把手放上龙骨之地的龙颅,学会了先古的战吼', 'shout');
+  openDialog([
+    '(你把手放上龙颅。骨头是凉的,却在你掌心底下嗡嗡作响,像一头还没散尽的雷。)',
+    '(三个不属于任何语言的音节,自己滚进了你的胸腔。)',
+    '🐉 习得「冲击战吼」!按 X 释放——把周围的一切掀翻在地(45 秒回气)。',
+  ], () => saveGame());
+}
+function doShout() {
+  if (!shout.learned || shout.cd > 0 || player.dead || dialog.open) return;
+  shout.cd = 45;
+  sfx.stomp();
+  sfx.clear();
+  camShake = 0.6;
+  hitStopT = Math.max(hitStopT, 0.08);
+  spawnDust(player.pos.x, 0.4, player.pos.z, 26, 4, 2.6);
+  const wave = (list, onDead) => {
+    for (const e of list) {
+      if (e.dead || e.downT > 0) continue;
+      if (dist2(player.pos.x, player.pos.z, e.pos.x, e.pos.z) > 100) continue;
+      e.hp -= 1;
+      if (e.stunT !== undefined) e.stunT = Math.max(e.stunT || 0, 2);
+      hitFX(e, 4); // FUS RO DAH:掀飞
+      showDamage(e.pos, 1);
+      if (e.hp <= 0) onDead(e);
+    }
+  };
+  wave(bandits, (b) => { b.dead = true; startFall(b); registerKill(); dropCoins(b.pos, 5); });
+  wave(wolves, (w) => killWolf(w));
+  wave(guards, (g) => { g.downT = 14; startFall(g); registerKill(); dropCoins(g.pos, 3); });
+  for (const g of guards) {
+    if (!g.dead && dist2(player.pos.x, player.pos.z, g.pos.x, g.pos.z) < 100 && !g.wantedHit) {
+      g.wantedHit = true;
+      crime(1, '你的战吼掀翻了卫兵!');
+      break;
+    }
+  }
+  toast('🐉 冲击战吼!!', 2);
+}
+
+// ================= 佣兵(骑砍式:旅店雇剑士随行,按日发饷) =================
+const mercs = [];
+const MERC_NAMES = ['石手雷戈', '断鼻威尔', '老兵科尔', '快腿芬恩'];
+function hireMerc() {
+  if (mercs.length >= 2) {
+    openDialog(['佣兵队长布兰:(摊手)我手下能打的都跟你走了。两个还不够?你是要去屠城吗?']);
+    return;
+  }
+  if (player.coins < 40) {
+    openDialog(['佣兵队长布兰:一名剑士 40 金币,外加每天 5 金币饷钱。买卖归买卖——赊账免谈。']);
+    return;
+  }
+  player.coins -= 40;
+  const name = MERC_NAMES[Math.floor(Math.random() * MERC_NAMES.length)];
+  const m = { ...makeHumanoid({ shirt: 0x555b66, pants: 0x33363c, helmet: true, sword: true }),
+    pos: new THREE.Vector3(player.pos.x + 1.5, 0, player.pos.z + 1.5),
+    yaw: 0, walkT: 0, hp: 8, attackCd: 0, swingT: 0, name };
+  m.group.position.copy(m.pos);
+  scene.add(m.group);
+  mercs.push(m);
+  sfx.accept();
+  stats.mercsHired = (stats.mercsHired || 0) + 1;
+  remember(`在旅店雇下了佣兵${name}`, `merc-${calendar.day}`);
+  openDialog([`佣兵队长布兰:${name}!收拾家伙,跟这位老板走。`, `${name}:(抱拳)雇主,刀锋朝哪边?`]);
+  saveGame();
+}
+function updateMercs(dt) {
+  for (const m of mercs) {
+    m.attackCd = Math.max(0, m.attackCd - dt);
+    // 找最近的活敌(盗贼/恶狼)
+    let target = null, td = 196; // 14^2
+    for (const list of [bandits, wolves]) {
+      for (const e of list) {
+        if (e.dead || e.downT > 0) continue;
+        const d2v = dist2(m.pos.x, m.pos.z, e.pos.x, e.pos.z);
+        if (d2v < td) { td = d2v; target = e; }
+      }
+    }
+    let moving = false;
+    if (target) {
+      const d = Math.sqrt(td);
+      if (d > 1.7) { moveEntity(m, target.pos.x, target.pos.z, 6.4, dt); moving = true; }
+      else if (m.attackCd <= 0) {
+        m.attackCd = 1.0;
+        m.swingT = 0.32;
+        sfx.sword();
+        target.hp -= 1;
+        showDamage(target.pos, 1);
+        hitFX(target, 0.5);
+        if (target.hp <= 0) {
+          if (wolves.includes(target)) killWolf(target);
+          else { target.dead = true; startFall(target); registerKill(); dropCoins(target.pos, 5); }
+        }
+      }
+    } else {
+      const pd = Math.hypot(player.pos.x - m.pos.x, player.pos.z - m.pos.z);
+      if (pd > 3.4) { moveEntity(m, player.pos.x, player.pos.z, pd > 14 ? 9 : 6, dt); moving = true; }
+    }
+    m.group.position.copy(m.pos);
+    m.group.rotation.y = m.yaw;
+    m.parts._attackAnim = (m.swingT || 0) > 0;
+    animateLimbs(m.parts, m.walkT, moving, m.group, 0.9);
+    if (m.swingT > 0) { m.swingT -= dt; meleeSwing(m.parts, Math.min(1, 1 - m.swingT / 0.32)); }
+  }
+}
+function hireMercSilent() { // 读档时无声归队
+  const name = MERC_NAMES[mercs.length % MERC_NAMES.length];
+  const m = { ...makeHumanoid({ shirt: 0x555b66, pants: 0x33363c, helmet: true, sword: true }),
+    pos: new THREE.Vector3(world.playerSpawn.x + 2 + mercs.length, 0, world.playerSpawn.z + 2),
+    yaw: 0, walkT: 0, hp: 8, attackCd: 0, swingT: 0, name };
+  m.group.position.copy(m.pos);
+  scene.add(m.group);
+  mercs.push(m);
+}
+function payMercs() { // 每日饷钱:发不出就散伙
+  if (!mercs.length) return;
+  const wage = mercs.length * 5;
+  if (player.coins >= wage) {
+    player.coins -= wage;
+    toast(`💰 发放佣兵饷钱 ${wage} 金币(${mercs.map((m) => m.name).join('、')})`, 3);
+  } else {
+    for (const m of mercs) scene.remove(m.group);
+    toast(`💸 发不出饷钱,佣兵${mercs.map((m) => m.name).join('、')}卷铺盖走了。`, 4);
+    mercs.length = 0;
+  }
 }
 player.armor = 0;
 player.blocking = false;
@@ -891,7 +1083,7 @@ function shootArrow() {
   sfx.arrow();
 }
 function arrowHitEntities(a) {
-  const dmg = WEAPONS.bow.dmg + (player.swordLv >= 2 ? 1 : 0);
+  const dmg = arrowBonus(WEAPONS.bow.dmg + (player.swordLv >= 2 ? 1 : 0));
   const tryHit = (list, onHit) => {
     for (const e of list) {
       if (e.dead || e.downT > 0) continue;
@@ -965,7 +1157,7 @@ function updateArrows(dt) {
       }
       continue;
     }
-    if (arrowHitEntities(a)) { scene.remove(a.mesh); arrows.splice(i, 1); continue; }
+    if (arrowHitEntities(a)) { skillXp('archery', 2); scene.remove(a.mesh); arrows.splice(i, 1); continue; }
     if (a.pos.y <= 0.05 || pointBlocked(a.pos.x, a.pos.z)) {
       a.stuck = true;
       a.ttl = Math.min(a.ttl, 2);
@@ -1565,6 +1757,9 @@ function openJournal() {
     `📜 委托 ${Math.min(quest.idx, missions.length)}/${missions.length} · 🛡️ 纹章 ${crestsFound.length}/${world.crestSpots.length} · 📖 铭文 ${loreRead.length}/${LORE.length} · 🏆 成就 ${achUnlocked.length}/${Object.keys(ACH_DEFS).length}`,
     `🐺 猎狼 ${wolfKills} · 🦌 猎鹿 ${stats.deer || 0} · 🍄 采菇 ${stats.mushrooms || 0} · 🎣 钓鱼 ${stats.fishCaught || 0} · ⚡ 弹反 ${stats.parries || 0}`,
     `🏟️ 竞技场最佳 ${stats.arenaBest || 0} 波 · 🏁 赛马纪录 ${bestRace} · 💀 倒下 ${stats.deaths || 0} 次`,
+    `📈 技艺(用什么涨什么):${Object.entries(SKILL_DEFS).map(([k, d]) =>
+      `${d.icon}${d.name} ${player.skills[k].lv} 级`).join(' · ')}` +
+      `${shout.learned ? ' · 🐉 冲击战吼' : ''}${mercs.length ? ` · 🪖 佣兵 ×${mercs.length}` : ''}`,
   ];
   const mems = chronicle.slice(-3);
   if (mems.length) {
@@ -2913,6 +3108,7 @@ const ACH_DEFS = {
   homeowner:{ name: '置业成家', desc: '买下苇岸边的湖畔小屋' },
   wishkeeper:{ name: '代它看世界', desc: '替这颗心实现 3 个心愿(夜里有萤火谢你)' },
   mage:     { name: '半路出家的法师', desc: '施放 30 次法术' },
+  dovah:    { name: '龙之传人', desc: '在龙骨之地的龙颅前学会冲击战吼' },
   elder:    { name: '长住者', desc: '在艾尔德里亚度过 30 日' },
   navigator:{ name: '远行者', desc: '走到离王都一万步之外' },
 };
@@ -2972,6 +3168,16 @@ const FUNNY = {
       '我眼睛瞎了,故事反倒看得更清了。',
       '旅店的酒是引子,故事才是正菜。',
       '想听哪段?龙骨?湖底?还是……你自己的?',
+    ],
+  },
+  merccap: {
+    name: '佣兵队长布兰', spot: [20, 84, -2.2],
+    style: { shirt: 0x4a4f58, pants: 0x2e3138, hair: 0x3a2e20, helmet: true, sword: true },
+    idle: [
+      '刀口上讨生活,讲的就是个明码标价。',
+      '我的人不问雇主要去哪,只问多少钱。',
+      '狼牙关那仗以后,我就再没为"大义"两个字拔过刀。',
+      '想雇人?40 金币一位,每天 5 金币饷。战场上见真章。',
     ],
   },
   strongman: {
@@ -3854,6 +4060,7 @@ function newDay() {
     }
     evolveTactics(); // 匪帮复盘昨天的死法,学出反制
     growCorpus();    // 世界自己给自己写一句新台词,永久入库
+    payMercs();      // 佣兵饷钱,发不出就散伙
     saveGame();
   }
 }
@@ -4493,6 +4700,7 @@ function saveGame() {
         wolfSpeed: EVO.wolfSpeed, eventFit: EVO.eventFit,
         tactics: EVO.tactics, corpus: EVO.corpus },
       spells: player.spells,
+      skills: player.skills, shout: shout.learned, mercN: mercs.length,
     }));
   } catch { /* 隐私模式等 */ }
 }
@@ -4558,6 +4766,13 @@ function loadGame() {
     if (Array.isArray(s.spells)) player.spells = s.spells.filter((k) => SPELLS[k]);
     if (lakeBlessed && !player.spells.includes('frost')) player.spells.push('frost'); // 旧档补授
     player.spellIdx = Math.min(player.spellIdx, Math.max(0, player.spells.length - 1));
+    if (s.skills) {
+      for (const k of Object.keys(SKILL_DEFS)) {
+        if (s.skills[k] && s.skills[k].lv >= 1) player.skills[k] = { lv: Math.min(10, s.skills[k].lv), xp: s.skills[k].xp || 0 };
+      }
+    }
+    shout.learned = !!s.shout;
+    for (let i = 0; i < Math.min(2, s.mercN || 0); i++) hireMercSilent(); // 佣兵跟着存档回来
     if (s.armor && ARMORS[s.armor]) {
       player.armor = s.armor;
       player.maxHp = 10 + ARMORS[s.armor].bonus + (lakeBlessed ? 2 : 0);
@@ -4684,6 +4899,8 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyQ') cycleWeapon();
   if (e.code === 'KeyR' && !dialog.open) castSpell();
   if (e.code === 'KeyV' && !dialog.open) cycleSpell();
+  if (e.code === 'KeyZ' && !dialog.open) toggleSneak();
+  if (e.code === 'KeyX' && !dialog.open) doShout();
   if (/^Digit[1-4]$/.test(e.code) && !dialog.open) {
     const idx = +e.code.slice(5) - 1;
     if (idx < player.spells.length && idx !== player.spellIdx) {
@@ -5145,6 +5362,7 @@ function tryInteract() {
     if (dist2(player.pos.x, player.pos.z, n.pos.x, n.pos.z) > 7) continue;
     if (n.key === 'gambler') { gamble(); return; }
     if (n.key === 'strongman') { armWrestle(); return; }
+    if (n.key === 'merccap') { hireMerc(); return; }
     if (n.key === 'bard') { bardSong(); return; }
     if (n.key === 'storyteller') { tellStory(); return; }
     if (n.key === 'prophet') {
@@ -5175,6 +5393,11 @@ function tryInteract() {
     remember(`在自家信箱收到了${L.from}的一封信`);
     sfx.chest();
     openDialog(['(你掀开自家信箱的盖子,把小红旗放平——里面躺着一封信)', `(${L.from}的信)${L.text}`]);
+    return;
+  }
+  // 龙骨之地的龙颅:习得战吼
+  if (dist2(player.pos.x, player.pos.z, DRAGON_SKULL.x, DRAGON_SKULL.z) < 9) {
+    learnShout();
     return;
   }
   // 湖畔小屋:买房 / 回家安眠
@@ -5644,10 +5867,23 @@ function tryAttack() {
     meleeSweep(0, 2.2, 0.25, 1.6);
     return;
   }
-  // 骑射:马背上可以开弓(其余武器仍需下马)
+  // 骑射 + 骑砍:马背上开弓,或直接挥剑(骑砍式马上近战,伤害 +1、范围加长)
   if (!started || player.dead || player.attackT > 0 || player.carrying ||
       player.blocking || player.rollT > 0) return;
-  if (player.mounted && player.weapon !== 'bow') return;
+  if (player.mounted && player.weapon !== 'bow' && !player.mounted.sheep) {
+    const defM = WEAPONS[player.weapon];
+    player.attackT = defM.cd * 1.1;
+    player.attackDur = defM.cd * 1.1;
+    sfx.sword();
+    meleeSweep(meleeBonus(defM.dmg + (player.swordLv >= 2 ? 1 : 0) + (player.relic ? 1 : 0) + 1),
+      defM.range + 1.0, 0.1, defM.knock * 1.4);
+    skillXp('onehand', 1);
+    skillXp('riding', 1);
+    return;
+  }
+  if (player.mounted) {
+    if (player.weapon !== 'bow') return; // 羊背上还是算了
+  }
   const def = WEAPONS[player.weapon];
   // 跳劈:空中出手——砸向地面,落点四方溅开一圈冲击
   if (!player.onGround && !player.mounted && player.weapon !== 'bow' && !player.plunging) {
@@ -5673,8 +5909,13 @@ function tryAttack() {
     sfx.combo();
     camShake = Math.max(camShake, 0.22);
   }
-  meleeSweep(def.dmg + (player.swordLv >= 2 ? 1 : 0) + (player.relic ? 1 : 0) + (third ? 1 : 0),
+  // 潜行偷袭:蹲行状态近身出手 ×3(天际的背刺)
+  const sneakMul = player.sneaking ? 3 : 1;
+  if (player.sneaking) toast('🗡️ 偷袭!(×3)', 1.2);
+  meleeSweep(meleeBonus(def.dmg + (player.swordLv >= 2 ? 1 : 0) + (player.relic ? 1 : 0) + (third ? 1 : 0)) * sneakMul,
     def.range + (third ? 0.4 : 0), 0.35, def.knock * (third ? 1.8 : 1));
+  skillXp('onehand', 1);
+  if (player.sneaking) skillXp('sneak', 2);
 }
 
 // 蓄力重击:按住 F 约 0.7 秒自动挥出 —— 双倍伤害、超广角横扫、大击退
@@ -5891,6 +6132,7 @@ function updateRobber(b, dt) {
   const v = streetEvent.villager;
   if (b.fleeing || !v) return; // 逃跑移动由事件管理器驱动
   b.attackCd = Math.max(0, b.attackCd - dt);
+  if (b._trampleCd > 0) b._trampleCd -= dt;
   let moving = false;
   if (v.downT > 0) {
     b.fleeing = true;
@@ -5959,6 +6201,7 @@ function updateBandits(dt) {
     }
     if (b.stunT > 0) { b.stunT -= dt; continue; }
     b.attackCd = Math.max(0, b.attackCd - dt);
+    if (b._trampleCd > 0) b._trampleCd -= dt;
     const pd = Math.hypot(player.pos.x - b.pos.x, player.pos.z - b.pos.z);
     let moving = false;
     // 护送任务的埋伏盗贼优先攻击商人(除非玩家贴脸)
@@ -5973,7 +6216,7 @@ function updateBandits(dt) {
         sfx.hit();
         toast(`商人受袭!❤ ${Math.max(0, mc.hp)}/5`, 1.5);
       }
-    } else if (pd < 30 && !player.dead) {
+    } else if (pd < 30 * sneakFactor() && !player.dead) {
       if (b.windupT > 0) {
         b.windupT -= dt;
         if (b.windupT <= 0) {
@@ -6209,7 +6452,29 @@ function updatePlayer(dt) {
     const h = player.mounted;
     const speed = h.sheep
       ? (keys['ShiftLeft'] || keys['ShiftRight'] ? 4.6 : 3.2)
-      : (keys['ShiftLeft'] || keys['ShiftRight'] ? 17 : 11) * (h.fast ? 1.2 : 1);
+      : (keys['ShiftLeft'] || keys['ShiftRight'] ? 17 : 11) * (h.fast ? 1.2 : 1) *
+        (1 + 0.02 * (skillLv('riding') - 1)); // 骑术:人马合一
+    // 骑砍冲锋践踏:疾驰状态撞上敌人,连人带马把他掀翻
+    if (!h.sheep && speed >= 16 && moving) {
+      for (const list of [bandits, wolves]) {
+        for (const e of list) {
+          if (e.dead || e.downT > 0 || (e._trampleCd || 0) > 0) continue;
+          if (dist2(h.pos.x, h.pos.z, e.pos.x, e.pos.z) > 3.2) continue;
+          e._trampleCd = 2;
+          e.hp -= 2;
+          if (e.stunT !== undefined) e.stunT = Math.max(e.stunT || 0, 1.6);
+          hitFX(e, 2.6);
+          showDamage(e.pos, 2, true);
+          sfx.hoof();
+          camShake = Math.max(camShake, 0.25);
+          skillXp('riding', 2);
+          if (e.hp <= 0) {
+            if (wolves.includes(e)) killWolf(e);
+            else { e.dead = true; startFall(e); registerKill(); dropCoins(e.pos, 5); }
+          }
+        }
+      }
+    }
     if (moving) {
       h.pos.x += mv.x * speed * dt;
       h.pos.z += mv.y * speed * dt;
@@ -6284,7 +6549,8 @@ function updatePlayer(dt) {
   }
   const speed = (keys['ShiftLeft'] || keys['ShiftRight'] ? 8.4 : 5.0) * (player.blocking ? 0.45 : 1) *
     (player.blessT > 0 ? 1.15 : 1) * // 教堂庇佑:脚下生风
-    (player.homeDay === calendar.day ? 1.08 : 1); // 在自家床上睡过:安眠增益
+    (player.homeDay === calendar.day ? 1.08 : 1) * // 在自家床上睡过:安眠增益
+    (player.sneaking ? 0.5 : 1); // 潜行:压着步子
   const prevYaw = player.yaw;
   if (moving) {
     player.pos.x += mv.x * speed * dt;
@@ -6974,6 +7240,7 @@ function computePrompt() {
       quixote: '按 E 与风车骑士交谈',
       storyteller: '按 E 听苟叔说书(AI 现编)',
       strongman: `按 E 掰手腕(赌 15 赢 30${stats.arms ? `,战绩 ${stats.arms} 胜` : ''})`,
+      merccap: `按 E 雇佣剑士(40 金币+每日 5 饷,随行 ${mercs.length}/2)`,
     }[n.key];
     return;
   }
@@ -7083,6 +7350,11 @@ function computePrompt() {
   if (player.home && letter && dist2(player.pos.x, player.pos.z, HOME.x + 3.4, HOME.z + 3.2) < 5) {
     mark(HOME.x + 3.4, HOME.z + 3.2, 1.8);
     promptText = '按 E 开信箱(小红旗立着——有信!)';
+    return;
+  }
+  if (dist2(player.pos.x, player.pos.z, DRAGON_SKULL.x, DRAGON_SKULL.z) < 9) {
+    mark(DRAGON_SKULL.x, DRAGON_SKULL.z, 2.5);
+    promptText = shout.learned ? '(龙颅无话可教了。去吼吧——X 键)' : '按 E 把手放上龙颅';
     return;
   }
   if (dist2(player.pos.x, player.pos.z, HOME.doorX, HOME.doorZ) < 6) {
@@ -7685,6 +7957,8 @@ window.__gtm = {
   getFirefly: () => ({ owned: !!player.firefly, visible: fireflyMesh.visible }),
   EVO, seedLegend, mutateLegend, evolveLegends, legendText, evolveTactics, growCorpus,
   SPELLS, castSpell, learnSpell, cycleSpell, explodeAt, tryAttack,
+  SKILL_DEFS, skillXp, toggleSneak, sneakFactor, shout, learnShout, doShout,
+  mercs, hireMerc, payMercs, DRAGON_SKULL,
   testBlocked: (x, z, r = 0.45) => {
     const p = { x, z };
     resolveCollisions(p, r, colliders);
@@ -7816,6 +8090,7 @@ function loop(now) {
   updateHome();
   updateFirefly();
   updateMagic(dt);
+  updateMercs(dt);
   updateWeather(dt);
   // 环境氛围音:按季节 × 时辰 × 天气切换(4 秒判一次)
   ambienceT -= dt;
