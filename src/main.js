@@ -193,7 +193,7 @@ const aiLoaded = await preloadAIAssets();
 if (aiLoaded.length) console.info('AI 贴图已加载:', aiLoaded.join(', '));
 // 本地标题键艺术优先(assets/ai/title.jpg,可选)
 let localTitleArt = false;
-fetch('./assets/ai/title.jpg').then((r) => {
+if (location.protocol !== 'file:') fetch('./assets/ai/title.jpg').then((r) => {
   if (r.ok) r.blob().then((b) => {
     localTitleArt = true;
     const t = document.getElementById('title');

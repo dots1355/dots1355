@@ -7,11 +7,13 @@
   "scripts": {
     "start": "electron .",
     "dist": "electron-builder",
-    "web": "python3 -m http.server 8000"
+    "web": "python3 -m http.server 8000",
+    "dist:web": "node tools/build-desktop.mjs"
   },
   "devDependencies": {
     "electron": "^28.2.0",
-    "electron-builder": "^24.13.3"
+    "electron-builder": "^24.13.3",
+    "esbuild": "^0.24.0"
   },
   "build": {
     "appId": "com.eldoria.grandthefthorse",
@@ -23,8 +25,14 @@
       "electron/**",
       "docs/**"
     ],
-    "win": { "target": "portable" },
-    "mac": { "target": "dmg" },
-    "linux": { "target": "AppImage" }
+    "win": {
+      "target": "portable"
+    },
+    "mac": {
+      "target": "dmg"
+    },
+    "linux": {
+      "target": "AppImage"
+    }
   }
 }

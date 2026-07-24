@@ -101,6 +101,7 @@ export async function generateRemoteAITextures({ onStatus, onTexture, onTitle } 
 }
 
 export async function preloadAIAssets() {
+  if (location.protocol === 'file:') return []; // 单文件桌面版:无外部素材目录,直接走程序化贴图
   await Promise.all(AI_NAMES.map(async (n) => {
     for (const ext of ['jpg', 'png', 'webp']) {
       try {

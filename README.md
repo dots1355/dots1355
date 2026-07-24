@@ -19,7 +19,15 @@ python3 -m http.server 8000    # 仓库根目录
 # 浏览器打开 http://localhost:8000
 ```
 
-**桌面版**(独立窗口,可打包成 exe/dmg/AppImage 文件):
+**单文件桌面版**(⭐ 最省事:一个 HTML,放到桌面双击即玩,零安装):
+```bash
+npm i -D esbuild
+npm run dist:web   # 产出 dist/侠盗猎马人-中世纪王国.html(约 1MB)
+```
+把这个文件放到桌面,双击用浏览器打开就是完整游戏——存档自动保存在浏览器里,
+联网时 AI 功能(对话/肖像/梦境/公告)自动生效,离线也能完整游玩。
+
+**桌面版**(Electron 独立窗口,可打包成 exe/dmg/AppImage 文件):
 ```bash
 npm install     # 首次安装 Electron
 npm start       # 启动桌面版(F11 全屏)
