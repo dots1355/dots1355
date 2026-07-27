@@ -4,6 +4,7 @@
 //  - 树干带弯曲与根部张开,树冠由多个压扁的碎球簇成,自带明暗层次
 //  - 材质按颜色缓存共享,数千棵树只占几十个材质
 import * as THREE from 'three';
+import { nordicColor } from './entities.js';
 
 // ---- 可复现随机(素材池用固定种子,形状稳定) ----
 function makeRng(seed) {
@@ -18,7 +19,7 @@ export function sharedMat(hex, opts = {}) {
   let m = matCache.get(key);
   if (!m) {
     m = new THREE.MeshStandardMaterial({
-      color: hex, roughness: opts.roughness ?? 0.95, metalness: 0,
+      color: nordicColor(hex), roughness: opts.roughness ?? 0.95, metalness: 0,
       flatShading: opts.flatShading ?? false,
     });
     m.userData.shared = true;

@@ -231,11 +231,11 @@ export function makeTextures() {
     const big = n1(u * 8, v * 8, 3);
     const fine = n2(u * 60, v * 60, 3);
     const patch = n3(u * 4, v * 4, 2);
-    let r = mix(72, 110, big) + fine * 26 - 13;
-    let g = mix(130, 168, big) + fine * 30 - 15;
-    let b = mix(52, 78, big) + fine * 18 - 9;
-    if (patch > 0.62) { r += 22; g += 12; b -= 6; }       // 枯草斑
-    if (patch < 0.34) { r -= 12; g -= 6; }                 // 深绿斑
+    let r = mix(84, 112, big) + fine * 24 - 12;   // 北境草甸:压绿提灰,掺枯黄
+    let g = mix(112, 142, big) + fine * 26 - 13;
+    let b = mix(62, 84, big) + fine * 16 - 8;
+    if (patch > 0.58) { r += 26; g += 14; b -= 4; }       // 大片枯草
+    if (patch < 0.34) { r -= 10; g -= 8; }                 // 深苔斑
     return [r, g, b, fine * 0.6 + big * 0.4];
   }, 1.2);
 

@@ -694,21 +694,39 @@ export function buildWorld(scene) {
     feat('road', -95, -34, 12, 5);
   }
 
-  // ---- 北境群山(雪顶) ----
-  const rockMat = lambert(0x6e6a72, { roughness: 0.95 });
-  const snowMat = lambert(0xf2f4f8, { roughness: 0.85 });
+  // ---- 北境群山(雪顶,噪声侵蚀出真山脊) ----
+  const rockMat = lambert(0x6e6a72, { roughness: 0.98, flatShading: true });
+  const snowMat = lambert(0xf2f4f8, { roughness: 0.85, flatShading: true });
+  // 圆锥太"玩具":对顶点做径向噪声位移,劈出岩脊与沟壑(平直着色让棱线立起来)
+  const ridgedCone = (r, h, seed) => {
+    const geo = new THREE.ConeGeometry(r, h, 28, 6);
+    const pos = geo.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+      const rad = Math.hypot(x, z);
+      if (rad < 0.01) continue; // 峰顶不动
+      const a = Math.atan2(z, x);
+      // 两个频率的伪噪声叠加:大沟壑 + 碎岩理,越到山脚越明显
+      const n = Math.sin(a * 5 + seed) * 0.5 + Math.sin(a * 11 + y * 0.13 + seed * 2.7) * 0.3 +
+        Math.sin(a * 23 + seed * 5.1) * 0.2;
+      const k = 1 + n * 0.16 * (1 - (y / h + 0.5) * 0.55);
+      pos.setX(i, x * k);
+      pos.setZ(i, z * k);
+    }
+    geo.computeVertexNormals();
+    return geo;
+  };
   for (const [mx, mz, mr, mh] of [
     [-220, -220, 55, 85], [-140, -235, 48, 70], [-60, -215, 42, 60], [20, -230, 55, 90],
     [100, -215, 45, 65], [180, -235, 55, 80], [255, -215, 45, 62], [-290, -200, 50, 70], [300, -230, 55, 75],
   ]) {
-    const m = new THREE.Mesh(new THREE.ConeGeometry(mr, mh, 7), rockMat);
+    const seed = mx * 0.013 + mz * 0.007;
+    const m = new THREE.Mesh(ridgedCone(mr, mh, seed), rockMat);
     m.position.set(mx, mh / 2 - 2, mz);
-    m.rotation.y = Math.random();
     m.castShadow = true;
     scene.add(m);
-    const cap = new THREE.Mesh(new THREE.ConeGeometry(mr * 0.34, mh * 0.3, 7), snowMat);
-    cap.position.set(mx, mh - 2 - mh * 0.14, mz);
-    cap.rotation.y = m.rotation.y;
+    const cap = new THREE.Mesh(ridgedCone(mr * 0.36, mh * 0.32, seed), snowMat);
+    cap.position.set(mx, mh - 2 - mh * 0.15, mz);
     scene.add(cap);
     circle(mx, mz, mr * 0.72);
     feat('tower', mx, mz, mr, mr);

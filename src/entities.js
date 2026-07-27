@@ -2,8 +2,16 @@
 import * as THREE from 'three';
 
 // 名字沿用 lambert,实际已升级为 PBR 标准材质
+// 北境写实调:所有过手的颜色饱和度砍半、整体沉一分——把糖果色世界拉回大地色系
+const _hsl = {};
+export function nordicColor(c) {
+  const col = new THREE.Color(c);
+  col.getHSL(_hsl);
+  col.setHSL(_hsl.h, _hsl.s * 0.5, _hsl.l * 0.94);
+  return col;
+}
 export function lambert(c, opts = {}) {
-  return new THREE.MeshStandardMaterial({ color: c, roughness: 0.82, metalness: 0.04, ...opts });
+  return new THREE.MeshStandardMaterial({ color: nordicColor(c), roughness: 0.88, metalness: 0.04, ...opts });
 }
 
 // ---- 人形角色(面朝 +Z)----
