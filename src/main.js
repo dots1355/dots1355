@@ -378,6 +378,7 @@ const EVO = {
   kills: { melee: 0, arrow: 0 },   // 当日击杀方式统计(选择压力的原料)
   corpus: [],                  // 活语料:世界自己写的新台词,永久入库(上限 40)
 };
+const vendetta = { stage: 0, boss: null }; // 黑石的报复:0 无仇 → 1 记仇 → 2 伏击上膛 → 3 两清
 const LEGEND_EMBELLISH = ['——亲眼所见的人都这么说', ',连卫兵都点了头', ',那天风都停了半刻',
   ',据说月亮探出头看了一眼', ',酒馆里为这个干了三杯', ',吟游诗人已经在编曲子了'];
 const LEGEND_SWAPS = [['独自', '单枪匹马'], ['赢了', '不费吹灰之力赢了'], ['救回', '徒手救回'],
@@ -1162,34 +1163,42 @@ function updateArrows(dt) {
     if (a.ttl <= 0) { scene.remove(a.mesh); arrows.splice(i, 1); continue; }
     if (a.stuck) continue;
     if (!a.fire) a.vel.y -= 7 * dt; // 火球直线飞行
-    a.pos.addScaledVector(a.vel, dt);
-    a.mesh.position.copy(a.pos);
-    a.mesh.lookAt(a.pos.x + a.vel.x, a.pos.y + a.vel.y, a.pos.z + a.vel.z);
-    if (a.fire) {
-      // 火球:贴近任何敌人 / 落地 / 撞墙 / 燃尽 → 爆炸
-      const near = (list) => list.some((e) => !e.dead && !(e.downT > 0) &&
-        dist2(a.pos.x, a.pos.z, e.pos.x, e.pos.z) < 1.6);
-      if (near(bandits) || near(wolves) || near(guards) ||
-          a.pos.y <= 0.1 || pointBlocked(a.pos.x, a.pos.z) || a.ttl <= 0.05) {
-        explodeAt(a.pos.x, a.pos.z);
+    // 子步进:快箭(满月 42/秒)在低帧率下一帧能跨 2 个身位,不切细会从判定圈中间穿过去
+    const stepN = Math.max(1, Math.ceil((a.vel.length() * dt) / 0.6));
+    let removed = false;
+    for (let s = 0; s < stepN && !removed; s++) {
+      a.pos.addScaledVector(a.vel, dt / stepN);
+      if (a.fire) {
+        // 火球:贴近任何敌人 / 落地 / 撞墙 / 燃尽 → 爆炸
+        const near = (list) => list.some((e) => !e.dead && !(e.downT > 0) &&
+          dist2(a.pos.x, a.pos.z, e.pos.x, e.pos.z) < 1.6);
+        if (near(bandits) || near(wolves) || near(guards) ||
+            a.pos.y <= 0.1 || pointBlocked(a.pos.x, a.pos.z) || a.ttl <= 0.05) {
+          explodeAt(a.pos.x, a.pos.z);
+          scene.remove(a.mesh);
+          arrows.splice(i, 1);
+          removed = true;
+        }
+        continue;
+      }
+      if (arrowHitEntities(a)) {
+        skillXp('archery', 2);
+        if (a.pierce > 0) { a.pierce--; continue; } // 满月箭:穿过去接着飞
         scene.remove(a.mesh);
         arrows.splice(i, 1);
+        removed = true;
+        continue;
       }
-      continue;
+      if (a.pos.y <= 0.05 || pointBlocked(a.pos.x, a.pos.z)) {
+        a.stuck = true;
+        a.ttl = Math.min(a.ttl, 2);
+        a.pos.y = Math.max(0.05, a.pos.y);
+        break;
+      }
     }
-    if (arrowHitEntities(a)) {
-      skillXp('archery', 2);
-      if (a.pierce > 0) { a.pierce--; continue; } // 满月箭:穿过去接着飞
-      scene.remove(a.mesh);
-      arrows.splice(i, 1);
-      continue;
-    }
-    if (a.pos.y <= 0.05 || pointBlocked(a.pos.x, a.pos.z)) {
-      a.stuck = true;
-      a.ttl = Math.min(a.ttl, 2);
-      a.pos.y = Math.max(0.05, a.pos.y);
-      a.mesh.position.copy(a.pos);
-    }
+    if (removed) continue;
+    a.mesh.position.copy(a.pos);
+    a.mesh.lookAt(a.pos.x + a.vel.x, a.pos.y + a.vel.y, a.pos.z + a.vel.z);
   }
 }
 
@@ -2475,6 +2484,16 @@ function refreshTrophies() {
     m.position.set(0, 2.25, 2.06);
     t.add(m);
   }
+  if (player.blackstoneToken) { // 黑石断刀徽记:报复之战的凭证
+    const plaque = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.6, 0.05), lambert(0x2a2a30, { roughness: 0.9 }));
+    plaque.position.set(0.7, 2.3, 2.05);
+    t.add(plaque);
+    const blade = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.42, 0.04),
+      new THREE.MeshStandardMaterial({ color: 0x8a8f96, metalness: 0.85, roughness: 0.3 }));
+    blade.rotation.z = 0.5;
+    blade.position.set(0.7, 2.3, 2.09);
+    t.add(blade);
+  }
   if (has('bigfish')) {
     const plank = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.45, 0.05), lambert(0x5a3a20, { roughness: 0.95 }));
     plank.position.set(-1.6, 1.75, 2.05);
@@ -3138,6 +3157,8 @@ const ACH_DEFS = {
   cutpurse: { name: '三只手', desc: '扒窃得手 5 次' },
   walldef:  { name: '南门之盾', desc: '击退黑石兄弟会的劫掠' },
   executioner: { name: '断头台的同行', desc: '处决 10 个踉跄中的敌人' },
+  vendetta:  { name: '斩草除根', desc: '了结黑石兄弟会的报复(斩杀刻刀维克)' },
+  blackmkt:  { name: '黑市常客', desc: '向玛尔戈销赃 10 件' },
   elder:    { name: '长住者', desc: '在艾尔德里亚度过 30 日' },
   navigator:{ name: '远行者', desc: '走到离王都一万步之外' },
 };
@@ -4073,6 +4094,7 @@ function newDay() {
       (sp ? ` — 今日${sp.name}:${sp.desc}` : ''), sp ? 5.5 : 3.2);
     if (sp) startSpecialDay(sp.key);
     refreshProclaim();
+    if (vendetta.stage === 1 && !letter) vendettaLetter(); // 黑石的恐吓信,天不亮就塞进来了
     if (!letter && Math.random() < 0.35) composeLetter();
     if (!MIND.wish && Math.random() < 0.6) mindMakeWish(); // 新的一天,新的好奇
     evolveLegends(); // 谣言过了一夜,又长出新枝节
@@ -4730,6 +4752,7 @@ function saveGame() {
         tactics: EVO.tactics, corpus: EVO.corpus },
       spells: player.spells,
       skills: player.skills, shout: shout.learned, mercN: mercs.length,
+      loot: player.loot, vendetta: vendetta.stage, bsToken: player.blackstoneToken,
     }));
   } catch { /* 隐私模式等 */ }
 }
@@ -4802,6 +4825,9 @@ function loadGame() {
     }
     shout.learned = !!s.shout;
     for (let i = 0; i < Math.min(2, s.mercN || 0); i++) hireMercSilent(); // 佣兵跟着存档回来
+    player.loot = s.loot || 0;
+    vendetta.stage = [0, 1, 2, 3].includes(s.vendetta) ? s.vendetta : 0;
+    player.blackstoneToken = !!s.bsToken;
     if (s.armor && ARMORS[s.armor]) {
       player.armor = s.armor;
       player.maxHp = 10 + ARMORS[s.armor].bonus + (lakeBlessed ? 2 : 0);
@@ -5252,6 +5278,7 @@ function tryInteract() {
         '罗莎:(在围裙上擦了擦手,从兜里掏出一封信)喏,有人留给你的。',
         `(${L.from}的信)${L.text}`,
       ], null, { key: 'innkeep', name: '老板娘罗莎', desc: NPC_DESC_EN.innkeep, ent: n });
+      if (L.from === '黑石兄弟会') vendettaRead();
       return;
     }
     if (n.key === 'innkeep' && player.venison > 0) {
@@ -5295,6 +5322,17 @@ function tryInteract() {
         openDialog(['玛尔戈:(从袖子里抽出一卷焦边的羊皮纸)《火球术》。三十金币,童叟无欺。',
           '玛尔戈:念的时候手别抖——上一个手抖的,眉毛长了半年。'],
         () => learnSpell('fire'));
+        return;
+      }
+      if (player.loot > 0) { // 销赃:她掂了掂,不问来路
+        const pay = player.loot * 8;
+        stats.fenced = (stats.fenced || 0) + player.loot;
+        if (stats.fenced >= 10) unlockAch('blackmkt');
+        player.coins += pay;
+        sfx.coin();
+        openDialog([`玛尔戈:(把${player.loot}件东西逐一对着月光掂了掂,金币从袖口滑出来)${pay} 枚。东西哪来的,我不问;钱哪去了,你也别说。`]);
+        player.loot = 0;
+        saveGame();
         return;
       }
       if (player.hp < player.maxHp) {
@@ -5422,6 +5460,7 @@ function tryInteract() {
     remember(`在自家信箱收到了${L.from}的一封信`);
     sfx.chest();
     openDialog(['(你掀开自家信箱的盖子,把小红旗放平——里面躺着一封信)', `(${L.from}的信)${L.text}`]);
+    if (L.from === '黑石兄弟会') vendettaRead();
     return;
   }
   // 龙骨之地的龙颅:习得战吼
@@ -6116,8 +6155,9 @@ function gameOver() {
     clearWanted();
     player.dead = false;
     gameoverEl.style.display = 'none';
+    if (player.jailed && player.loot > 0) { player.loot = 0; } // 赃物人赃并获,全数充公
     toast(player.jailed
-      ? '⛓️ 你在王都地牢蹲了一夜,罚没一半金币后被踢了出来。'
+      ? '⛓️ 你在王都地牢蹲了一夜,罚没一半金币后被踢了出来。' + (player.loot === 0 ? '(兜里的赃物也被搜走了)' : '')
       : stats.deaths >= 3
         ? `你第 ${stats.deaths} 次在喷泉旁醒来。水声轻得……像是有谁悄悄调小了。`
         : '你在喷泉旁醒来,一半金币被没收充公…', 4);
@@ -6850,13 +6890,20 @@ function tryRob() {
       const chance = Math.min(0.92, (behind ? 0.55 : 0.25) + 0.05 * (skillLv('sneak') - 1));
       v.robbedT = 90;
       if (Math.random() < chance) {
-        const take = 2 + Math.floor(Math.random() * 5);
-        player.coins += take;
-        sfx.coin();
         skillXp('sneak', 3);
         stats.pockets = (stats.pockets || 0) + 1;
         if (stats.pockets >= 5) unlockAch('cutpurse');
-        toast(`🤫 得手!从${v.id.name}兜里摸走 ${take} 金币。(没人看见……吧?)`, 2.5);
+        if (Math.random() < 0.4) { // 摸到的不是钱,是赃物——城里没人敢收
+          player.loot = (player.loot || 0) + 1;
+          sfx.chest();
+          const item = ['一支银簪', '一块怀表', '一只铜烛台', '一枚刻名的戒指', '半串珍珠'][Math.floor(Math.random() * 5)];
+          toast(`🫲 摸到${item}(赃物 ×${player.loot})。城里没人敢收——听说沼泽那位不问来路。`, 3.5);
+        } else {
+          const take = 2 + Math.floor(Math.random() * 5);
+          player.coins += take;
+          sfx.coin();
+          toast(`🤫 得手!从${v.id.name}兜里摸走 ${take} 金币。(没人看见……吧?)`, 2.5);
+        }
       } else {
         v.fleeT = 6;
         showBubble(v, v.id.name, '有贼!我的钱袋!!', 3);
@@ -7333,6 +7380,7 @@ function computePrompt() {
     if (n.key === 'innkeep' && player.hp < player.maxHp) { promptText = '按 E 住店休息,回满生命(10 金币)'; return; }
     if (n.key === 'innkeep' && dayPhase() === 'night') { promptText = '按 E 住店过夜,睡到天亮(10 金币)'; return; }
     if (n.key === 'witch' && !player.spells.includes('fire') && player.coins >= 30) { promptText = '按 E 买《火球术》卷轴(30 金币)'; return; }
+    if (n.key === 'witch' && player.loot > 0) { promptText = `按 E 销赃 ×${player.loot}(每件 8 金币,不问来路)`; return; }
     if (n.key === 'witch' && player.hp < player.maxHp) { promptText = '按 E 买回魂汤(8 金币)'; return; }
     if (n.key === 'witch' && player.herbs > 0) { promptText = `按 E 卖蘑菇 ×${player.herbs}(每朵 3 金币)`; return; }
     if (n.key === 'witch' && player.coins >= 5) { promptText = '按 E 求一卦(5 金币,她真算得准)'; return; }
@@ -8052,6 +8100,56 @@ DIRECTOR_EVENTS.push({
   },
 });
 
+// ================= 黑石的报复(守城胜利的后续剧情链) =================
+// 守住南门(stage 1)→ 次日收到恐吓信(stage 2)→ 出城遭独眼刻刀维克伏击(stage 3 完结)
+// (vendetta 常量声明在 EVO 旁,loadGame 初始化时就要读它)
+function vendettaLetter() {
+  letter = {
+    from: '黑石兄弟会',
+    text: '南门那笔账,兄弟会记下了。城墙护得了你一时,护不了你一世——出城的路上,留神你的后颈。(信纸背面用炭画着一把断刀)',
+  };
+  toast(player.home ? '📮 信箱里插着一封没署名的信。小红旗立着,像面招魂幡。' : '📮 罗莎那儿有你一封信。她说送信的人蒙着脸。', 4.5);
+}
+function vendettaRead() { // 读到恐吓信:伏击上膛
+  vendetta.stage = 2;
+  workspace.mood.a = Math.min(1, workspace.mood.a + 0.3);
+  remember('收到了黑石兄弟会的恐吓信,他们在城外等着', 'vendetta-letter');
+  setTimeout(() => toast('(你把信折好。从今天起,出城的每一步都得带着眼睛。)', 4), 1500);
+}
+function updateVendetta() {
+  if (vendetta.boss && vendetta.boss.dead) { vendettaSlain(); return; } // 任何击杀路径都算数
+  if (vendetta.stage !== 2 || vendetta.boss || player.dead) return;
+  if (dist2(player.pos.x, player.pos.z, 0, 0) < 16900) return; // 出城 130 步才动手
+  const a = Math.atan2(player.pos.x, player.pos.z) + 0.6;
+  const bx = player.pos.x + Math.sin(a) * 14, bz = player.pos.z + Math.cos(a) * 14;
+  const boss = addBandit(bx, bz, { hp: 12, dmg: 2, speed: 7, scale: 1.15 });
+  boss.eventFoe = true;
+  boss.vendetta = true;
+  vendetta.boss = boss;
+  for (const s of [-1, 1]) {
+    const t = addBandit(bx + s * 3, bz + s * 2, { hp: 3, dmg: 1 });
+    t.eventFoe = true;
+    t.minion = true;
+  }
+  sfx.wanted();
+  camShake = 0.4;
+  telegraphFlash(boss);
+  toast('🗡️ 「南门的账,现在算。」——黑石副手·独眼刻刀维克,从道旁的阴影里走了出来!', 6);
+}
+function vendettaSlain() { // 在 meleeSweep/爆炸等击杀路径由 boss.vendetta 标记触发
+  vendetta.stage = 3;
+  vendetta.boss = null;
+  player.blackstoneToken = true;
+  dropCoins(player.pos, 8);
+  sfx.fanfare();
+  unlockAch('vendetta');
+  remember('斩杀了黑石副手刻刀维克,兄弟会的报复到此为止', 'vendetta-end');
+  seedLegend();
+  if (player.home) refreshTrophies();
+  toast('⚔️ 刻刀维克倒下了。你从他颈间摘下【黑石断刀徽记】——这笔账,两清了。(挂上了你家外墙)', 6);
+  saveGame();
+}
+
 // 黑石劫掠战:骑砍式守城——战鼓一响,匪帮成波扑向南门,佣兵与你并肩守到底
 DIRECTOR_EVENTS.push({
   key: 'siege', w: 4,
@@ -8088,6 +8186,7 @@ DIRECTOR_EVENTS.push({
           unlockAch('walldef');
           remember('打退了黑石兄弟会对南门的劫掠,全城都看见了');
           seedLegend(); // 守城之战当场进传说基因池
+          if (vendetta.stage === 0) vendetta.stage = 1; // 黑石记仇了:报复的种子就此埋下
           toast('🏰 劫掠被击退!罗莎在旅店门口带头喝彩——赏金 40 枚,全城记你一功!', 6);
           this.t = 0;
         }
@@ -8150,6 +8249,7 @@ window.__gtm = {
   SPELLS, castSpell, learnSpell, cycleSpell, explodeAt, tryAttack,
   SKILL_DEFS, skillXp, toggleSneak, sneakFactor, shout, learnShout, doShout,
   mercs, hireMerc, payMercs, DRAGON_SKULL,
+  vendetta, vendettaLetter, vendettaRead, updateVendetta, getLoot: () => player.loot || 0,
   testBlocked: (x, z, r = 0.45) => {
     const p = { x, z };
     resolveCollisions(p, r, colliders);
@@ -8282,6 +8382,7 @@ function loop(now) {
   updateFirefly();
   updateMagic(dt);
   updateMercs(dt);
+  updateVendetta();
   updateWeather(dt);
   // 环境氛围音:按季节 × 时辰 × 天气切换(4 秒判一次)
   ambienceT -= dt;
