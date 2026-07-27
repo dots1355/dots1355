@@ -1,7 +1,7 @@
 // 《侠盗猎马人:中世纪王国》主逻辑
 import * as THREE from 'three';
 import { buildWorld } from './world.js';
-import { makeHumanoid, makeHorse, makeWolf, makeChicken, makeSheep, resolveCollisions, angleLerp, dist2, lambert } from './entities.js';
+import { makeHumanoid, makeHorse, makeWolf, makeChicken, makeSheep, resolveCollisions, angleLerp, dist2, lambert, setHumanModel } from './entities.js';
 import { INTRO, REGIONS, GUARD_LINES, NPCS, MISSIONS, VILLAGERS, DIALOGS, TIME_GREETINGS, LORE } from './story.js';
 import { initAudio, sfx, startMusic, toggleMusic, weatherAudio, setAmbience } from './audio.js';
 import { preloadAIAssets, generateRemoteAITextures } from './textures.js';
@@ -262,7 +262,8 @@ try {
   const b64buf = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)).buffer;
   await Promise.all(Object.entries(MODELS_B64).map(([kind, b64]) =>
     new Promise((res) => gltfLoader.parse(b64buf(b64), '', (gltf) => {
-      setTreeModel(kind, gltf.scene);
+      if (kind === 'human') setHumanModel(gltf.scene);
+      else setTreeModel(kind, gltf.scene);
       res();
     }, () => res()))));
 } catch (e) { console.warn('树模型解析失败,回退程序化树:', e); }

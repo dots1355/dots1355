@@ -15,11 +15,124 @@ export function lambert(c, opts = {}) {
 }
 
 // ---- 人形角色(面朝 +Z)----
+// ---- Blender 写实人体模板(GLB 解析后注入;无模板时回退积木人)----
+let HUMAN_TPL = null;
+export function setHumanModel(scene) {
+  const f = (n) => scene.getObjectByName(n);
+  const t = { torso: f('Torso'), belt: f('Belt'), head: f('Head'), nose: f('Nose'),
+    eyeL: f('EyeL'), eyeR: f('EyeR'), earL: f('EarL'), earR: f('EarR'),
+    leg: f('Leg'), arm: f('Arm') };
+  if (t.torso && t.head && t.leg && t.arm) HUMAN_TPL = t;
+}
+// 染色材质缓存:同色同件全场共享,几十个 NPC 只产出一小撮材质
+const humMats = new Map();
+function humMat(slot, hex) {
+  const key = slot + '|' + hex;
+  let m = humMats.get(key);
+  if (!m) {
+    m = lambert(hex, { roughness: slot === 'skin' ? 0.62 : slot === 'boots' ? 0.55 : 0.9 });
+    humMats.set(key, m);
+  }
+  return m;
+}
+function humClone(tpl, colors) {
+  const c = tpl.clone();
+  c.traverse((o) => {
+    if (!o.isMesh) return;
+    o.castShadow = true;
+    const remap = (mm) => {
+      const slot = mm.name;
+      return colors[slot] !== undefined ? humMat(slot, colors[slot]) : mm;
+    };
+    o.material = Array.isArray(o.material) ? o.material.map(remap) : remap(o.material);
+  });
+  return c;
+}
+// 帽盔/兜帽/头发/佩剑:两条构建路径共用
+function applyHumanProps(g, parts, opts) {
+  const { hair = 0x3a2a1a, helmet = false, cap = false, hood = false, sword = false } = opts;
+  const head = parts.head;
+  if (helmet) {
+    const metal = lambert(0x9aa4ad, { roughness: 0.32, metalness: 0.85 });
+    const h = new THREE.Mesh(new THREE.SphereGeometry(0.22, 10, 8, 0, Math.PI * 2, 0, Math.PI * 0.62), metal);
+    h.position.y = 0.02;
+    head.add(h);
+    const brim = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.26, 0.04, 10), metal);
+    brim.position.y = 0.05;
+    head.add(brim);
+    const spike = new THREE.Mesh(new THREE.ConeGeometry(0.04, 0.16, 6), metal);
+    spike.position.y = 0.28;
+    head.add(spike);
+  } else if (cap) {
+    const c = new THREE.Mesh(new THREE.ConeGeometry(0.23, 0.48, 8), lambert(0x1f7a3d, { roughness: 0.9 }));
+    c.position.set(0, 0.26, -0.05);
+    c.rotation.x = -0.3;
+    head.add(c);
+  } else if (hood) {
+    const h = new THREE.Mesh(new THREE.ConeGeometry(0.27, 0.42, 8), lambert(0x3b3b46, { roughness: 0.95 }));
+    h.position.y = 0.14;
+    head.add(h);
+  } else {
+    const h = new THREE.Mesh(new THREE.SphereGeometry(0.215, 10, 7, 0, Math.PI * 2, 0, Math.PI * 0.55), lambert(hair, { roughness: 0.95 }));
+    h.position.y = 0.015;
+    head.add(h);
+  }
+  if (sword) {
+    const swordGroup = new THREE.Group();
+    const blade = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.75, 0.03), lambert(0xd8dde2));
+    blade.position.y = -0.62;
+    const guard = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.05, 0.06), lambert(0xc9a227));
+    guard.position.y = -0.26;
+    swordGroup.add(blade, guard);
+    swordGroup.position.y = -0.2;
+    parts.armR.add(swordGroup);
+    parts.sword = swordGroup;
+  }
+}
+
 export function makeHumanoid(opts = {}) {
   const {
     skin = 0xf1c27d, shirt = 0x2f8f4e, pants = 0x4a3320,
     hair = 0x3a2a1a, helmet = false, cap = false, hood = false, sword = false,
   } = opts;
+  // Blender 写实人体路径:细分曲面部件 + 染色共享材质,枢轴与积木人逐位一致
+  if (HUMAN_TPL) {
+    const g = new THREE.Group();
+    const parts = {};
+    const colors = { skin, shirt, pants, boots: 0x2e2318 };
+    for (const side of [-1, 1]) {
+      const pivot = new THREE.Group();
+      pivot.position.set(0.12 * side, 0.5, 0);
+      pivot.add(humClone(HUMAN_TPL.leg, colors));
+      g.add(pivot);
+      parts[side === -1 ? 'legL' : 'legR'] = pivot;
+    }
+    const body = humClone(HUMAN_TPL.torso, colors);
+    body.position.y = 0.78;
+    g.add(body);
+    parts.body = body;
+    const belt = humClone(HUMAN_TPL.belt || HUMAN_TPL.torso, colors);
+    if (HUMAN_TPL.belt) {
+      belt.position.y = 0.78;
+      g.add(belt);
+    }
+    for (const side of [-1, 1]) {
+      const pivot = new THREE.Group();
+      pivot.position.set(0.32 * side, 1.0, 0);
+      pivot.add(humClone(HUMAN_TPL.arm, colors));
+      g.add(pivot);
+      parts[side === -1 ? 'armL' : 'armR'] = pivot;
+    }
+    const headG = new THREE.Group();
+    for (const k of ['head', 'nose', 'eyeL', 'eyeR', 'earL', 'earR']) {
+      if (HUMAN_TPL[k]) headG.add(humClone(HUMAN_TPL[k], colors));
+    }
+    headG.position.y = 1.32;
+    g.add(headG);
+    parts.head = headG;
+    applyHumanProps(g, parts, opts);
+    return { group: g, parts };
+  }
   const g = new THREE.Group();
   const parts = {};
   const skinMat = lambert(skin, { roughness: 0.6 });
@@ -93,44 +206,7 @@ export function makeHumanoid(opts = {}) {
   nose.position.set(0, -0.03, 0.19);
   head.add(nose);
 
-  if (helmet) {
-    const metal = lambert(0x9aa4ad, { roughness: 0.32, metalness: 0.85 });
-    const h = new THREE.Mesh(new THREE.SphereGeometry(0.22, 10, 8, 0, Math.PI * 2, 0, Math.PI * 0.62), metal);
-    h.position.y = 0.02;
-    head.add(h);
-    const brim = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.26, 0.04, 10), metal);
-    brim.position.y = 0.05;
-    head.add(brim);
-    const spike = new THREE.Mesh(new THREE.ConeGeometry(0.04, 0.16, 6), metal);
-    spike.position.y = 0.28;
-    head.add(spike);
-  } else if (cap) {
-    // 绿色尖顶帽(致敬某位林克)
-    const c = new THREE.Mesh(new THREE.ConeGeometry(0.23, 0.48, 8), lambert(0x1f7a3d, { roughness: 0.9 }));
-    c.position.set(0, 0.26, -0.05);
-    c.rotation.x = -0.3;
-    head.add(c);
-  } else if (hood) {
-    const h = new THREE.Mesh(new THREE.ConeGeometry(0.27, 0.42, 8), lambert(0x3b3b46, { roughness: 0.95 }));
-    h.position.y = 0.14;
-    head.add(h);
-  } else {
-    const h = new THREE.Mesh(new THREE.SphereGeometry(0.215, 10, 7, 0, Math.PI * 2, 0, Math.PI * 0.55), lambert(hair, { roughness: 0.95 }));
-    h.position.y = 0.015;
-    head.add(h);
-  }
-
-  if (sword) {
-    const swordGroup = new THREE.Group();
-    const blade = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.75, 0.03), lambert(0xd8dde2));
-    blade.position.y = -0.62;
-    const guard = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.05, 0.06), lambert(0xc9a227));
-    guard.position.y = -0.26;
-    swordGroup.add(blade, guard);
-    swordGroup.position.y = -0.2;
-    parts.armR.add(swordGroup);
-    parts.sword = swordGroup;
-  }
+  applyHumanProps(g, parts, opts);
 
   return { group: g, parts };
 }
