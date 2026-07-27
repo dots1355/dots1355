@@ -96,18 +96,18 @@ def make_tree(name, kind, seed, trunk_len, trunk_r, depth, leaf_color, bark_colo
     if kind == 'pine':
         # 松:塔状鳞层锥台叠层
         h = trunk_len
-        tiers = 6
+        tiers = 8
         for i in range(tiers):
             t = i / (tiers - 1)
-            rr = leaf_scale * (1.35 - t * 1.0) * rng.uniform(0.92, 1.08)
+            rr = leaf_scale * (1.5 - t * 1.25) * rng.uniform(0.92, 1.08)
             ret = bmesh.ops.create_cone(bm2, cap_ends=True, segments=9,
                                         radius1=rr, radius2=rr * 0.12,
-                                        depth=trunk_len * 0.42)
+                                        depth=trunk_len * 0.30)
             vs = ret['verts']
             for v in vs:
                 v.co.x *= rng.uniform(0.9, 1.1)
                 v.co.y *= rng.uniform(0.9, 1.1)
-            bmesh.ops.translate(bm2, vec=(0, 0, h * (0.34 + t * 0.72)), verts=vs)
+            bmesh.ops.translate(bm2, vec=(0, 0, h * (0.26 + t * 0.80)), verts=vs)
     if len(bm2.verts):
         mesh2 = bpy.data.meshes.new(name + '_leaf')
         bm2.to_mesh(mesh2)
@@ -127,9 +127,9 @@ def make_tree(name, kind, seed, trunk_len, trunk_r, depth, leaf_color, bark_colo
 
 
 make_tree('oak', 'oak', 7, trunk_len=2.6, trunk_r=0.34, depth=3,
-          leaf_color=(0.16, 0.24, 0.10), bark_color=(0.23, 0.17, 0.12), leaf_scale=1.15)
+          leaf_color=(0.12, 0.15, 0.07), bark_color=(0.20, 0.15, 0.11), leaf_scale=1.15)
 make_tree('birch', 'oak', 23, trunk_len=3.1, trunk_r=0.22, depth=3,
-          leaf_color=(0.24, 0.30, 0.12), bark_color=(0.55, 0.54, 0.48), leaf_scale=0.9)
-make_tree('pine', 'pine', 11, trunk_len=3.4, trunk_r=0.26, depth=0,
-          leaf_color=(0.10, 0.17, 0.11), bark_color=(0.26, 0.19, 0.13), leaf_scale=1.5)
+          leaf_color=(0.45, 0.32, 0.10), bark_color=(0.58, 0.57, 0.52), leaf_scale=0.9)
+make_tree('pine', 'pine', 11, trunk_len=4.8, trunk_r=0.24, depth=0,
+          leaf_color=(0.07, 0.11, 0.09), bark_color=(0.22, 0.16, 0.11), leaf_scale=1.05)
 print('DONE')

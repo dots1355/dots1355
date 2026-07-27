@@ -1,6 +1,6 @@
 // 中世纪开放世界构建:城墙王国、城堡主堡、村庄、集市、风车、农田、森林、湖泊、盗贼营地
 import * as THREE from 'three';
-import { buildTree, buildPine, buildDeadTree, buildCactus, buildRock, buildBush } from './flora.js';
+import { buildTree, buildPine, buildDeadTree, buildCactus, buildRock, buildBush, getBuildingModel } from './flora.js';
 import { lambert } from './entities.js';
 import { makeTextures } from './textures.js';
 
@@ -189,6 +189,30 @@ export function buildWorld(scene) {
   let houseIdx = 0;
   function house(x, z, rotDeg = 0, w = 6, d = 5, h = 3.2) {
     const rot = (rotDeg * Math.PI) / 180;
+    // Blender 诺德木架屋模板:按户型缩放克隆(石基/梁架/叠瓦/烟囱一应俱全)
+    const tpl = getBuildingModel('house');
+    if (tpl) {
+      const g = new THREE.Group();
+      const hs = tpl.clone();
+      hs.scale.set(w / 6, h / 3.2, d / 5);
+      g.add(hs);
+      hs.traverse((o) => { if (o.isMesh) occluders.push(o); });
+      // 夜里发暖光的窗(沿用火光注册表)
+      for (const sx of [-1, 1]) {
+        const win = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.7, 0.06),
+          new THREE.MeshStandardMaterial({ color: 0x3a2d1a, emissive: 0xffb84d, emissiveIntensity: 0 }));
+        win.position.set(sx * 1.9 * (w / 6), 2.05 * (h / 3.2), d / 2 + 0.04);
+        g.add(win);
+        torches.push({ light: null, flame: win, base: 0, window: true });
+      }
+      g.position.set(x, 0, z);
+      g.rotation.y = rot;
+      scene.add(g);
+      const swap = rotDeg % 180 !== 0;
+      box(x, z, (swap ? d : w) + 0.4, (swap ? w : d) + 0.4);
+      feat('house', x, z, swap ? d : w, swap ? w : d);
+      return g;
+    }
     const g = new THREE.Group();
     const walls = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), plasterMat);
     walls.position.y = h / 2;

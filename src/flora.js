@@ -119,6 +119,28 @@ export function setTreeModel(kind, group) {
   });
   TREE_MODELS[kind] = group;
 }
+// 建筑模板(house 等)与岩石几何池注入
+const BUILDING_MODELS = {};
+export function setBuildingModel(kind, group) {
+  group.traverse((o) => {
+    if (o.isMesh) {
+      o.castShadow = o.receiveShadow = true;
+      o.geometry.userData.shared = true;
+      if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach((m) => { m.userData.shared = true; });
+    }
+  });
+  BUILDING_MODELS[kind] = group;
+}
+export function getBuildingModel(kind) { return BUILDING_MODELS[kind] || null; }
+export function setRockGeos(geos) {
+  if (!geos.length) return;
+  ROCKS.length = 0;
+  for (const g of geos) {
+    g.userData.shared = true;
+    ROCKS.push(g);
+  }
+}
+
 function cloneTreeModel(kind, rng, scale = 1) {
   const tpl = TREE_MODELS[kind];
   if (!tpl) return null;

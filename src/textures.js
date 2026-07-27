@@ -9,14 +9,14 @@ const aiImages = {};
 // 运行时 AI 生成:在玩家浏览器里调用 Pollinations(免费、无需密钥)生成照片级无缝贴图。
 // 固定 seed 保证每次生成结果一致,并用 Cache API 本地缓存,只有首次需要联网等待。
 const AI_PROMPTS = {
-  grass:   'seamless tileable photorealistic lush green grass lawn texture, top-down view, game asset, PBR albedo, no shadows',
+  grass:   'seamless tileable photorealistic dry nordic tundra grassland texture, golden brown tussock grass with grey-green moss patches, top-down view, game asset, PBR albedo, muted colors',
   dirt:    'seamless tileable photorealistic dirt road texture with wheel ruts, dry mud, top-down view, game asset, PBR albedo',
   stone:   'seamless tileable photorealistic medieval castle stone brick wall texture, weathered gray blocks, game asset, PBR albedo',
-  roof:    'seamless tileable photorealistic medieval terracotta roof tiles texture, overlapping clay shingles, game asset, PBR albedo',
-  plaster: 'seamless tileable photorealistic old white plaster wall texture, medieval house facade, subtle stains, game asset, PBR albedo',
+  roof:    'seamless tileable photorealistic weathered dark wooden roof shingles texture, nordic medieval, overlapping grey-brown shakes, game asset, PBR albedo',
+  plaster: 'seamless tileable photorealistic weathered grey daub and timber wall texture, nordic medieval longhouse facade, muted, game asset, PBR albedo',
   wood:    'seamless tileable photorealistic weathered oak wood planks texture, medieval, game asset, PBR albedo',
   cobble:  'seamless tileable photorealistic medieval cobblestone street texture, worn round stones, top-down view, game asset, PBR albedo',
-  title:   'epic cinematic medieval kingdom at golden sunset, majestic castle on a hill above a walled town, lone knight in green tunic on horseback on a cobblestone road, GTA style loading screen key art, dramatic volumetric light, ultra detailed',
+  title:   'epic cinematic nordic medieval kingdom, snow-capped jagged mountains in mist, stone keep above a timber town on golden tussock plains, lone warrior on horseback, skyrim style key art, cold desaturated palette, volumetric fog, ultra detailed',
 };
 
 function aiURL(name) {
@@ -231,11 +231,11 @@ export function makeTextures() {
     const big = n1(u * 8, v * 8, 3);
     const fine = n2(u * 60, v * 60, 3);
     const patch = n3(u * 4, v * 4, 2);
-    let r = mix(84, 112, big) + fine * 24 - 12;   // 北境草甸:压绿提灰,掺枯黄
-    let g = mix(112, 142, big) + fine * 26 - 13;
-    let b = mix(62, 84, big) + fine * 16 - 8;
-    if (patch > 0.58) { r += 26; g += 14; b -= 4; }       // 大片枯草
-    if (patch < 0.34) { r -= 10; g -= 8; }                 // 深苔斑
+    let r = mix(118, 148, big) + fine * 22 - 11;  // Tussock 金棕草原(天际白漫谷地的底色)
+    let g = mix(102, 126, big) + fine * 22 - 11;
+    let b = mix(64, 80, big) + fine * 14 - 7;
+    if (patch > 0.58) { r += 18; g += 8; b -= 6; }        // 更枯的金斑
+    if (patch < 0.34) { r -= 26; g -= 12; b -= 4; }        // 灰绿苔斑
     return [r, g, b, fine * 0.6 + big * 0.4];
   }, 1.2);
 

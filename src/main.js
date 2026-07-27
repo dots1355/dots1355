@@ -9,7 +9,7 @@ import { initWilderness, updateWilderness, wildRegionName, CORE } from './wilder
 import * as BANKS from './dialogue-banks.js';
 import { ShaderPass } from '../lib/jsm/postprocessing/ShaderPass.js';
 import { GLTFLoader } from '../lib/jsm/loaders/GLTFLoader.js';
-import { setTreeModel } from './flora.js';
+import { setTreeModel, setBuildingModel, setRockGeos } from './flora.js';
 import { MODELS_B64 } from './models-data.js';
 import { EffectComposer } from '../lib/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from '../lib/jsm/postprocessing/RenderPass.js';
@@ -31,7 +31,7 @@ renderer.toneMappingExposure = 1.05;
 container.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
-scene.fog = new THREE.Fog(0x9fb0ba, 105, 420); // 北境雾:灰蓝、更早起雾,远山吃进大气里
+scene.fog = new THREE.Fog(0x99a8b2, 90, 390); // 北境雾:灰蓝厚重,远山半隐在大气里
 
 const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 1600);
 
@@ -96,7 +96,7 @@ const gradePass = new ShaderPass({
 });
 // ---- 画风预设:油画(默认)/ 电影 / 动画 / 复古,一键切换、独立持久化 ----
 const STYLE_PRESETS = {
-  nordic: { name: '天际', contrast: 1.12, sat: 0.88, lift: -0.008, split: [0.028, 0.01, -0.05], vig: 0.26, grain: 0.02, sepia: 0, bloom: 0.24, exposure: 0.98 },
+  nordic: { name: '天际', contrast: 1.14, sat: 0.8, lift: -0.008, split: [0.028, 0.01, -0.05], vig: 0.26, grain: 0.02, sepia: 0, bloom: 0.24, exposure: 0.98 },
   oil:    { name: '油画', contrast: 1.07, sat: 1.16, lift: 0, split: [0.04, 0.014, -0.04], vig: 0.18, grain: 0, sepia: 0, bloom: 0.32, exposure: 1.0 },
   film:   { name: '电影', contrast: 1.15, sat: 1.02, lift: -0.012, split: [0.065, 0.012, -0.06], vig: 0.34, grain: 0.028, sepia: 0, bloom: 0.26, exposure: 1.04 },
   anime:  { name: '动画', contrast: 1.03, sat: 1.36, lift: 0.03, split: [0.02, 0.012, -0.015], vig: 0.08, grain: 0, sepia: 0, bloom: 0.46, exposure: 1.07 },
@@ -263,7 +263,12 @@ try {
   await Promise.all(Object.entries(MODELS_B64).map(([kind, b64]) =>
     new Promise((res) => gltfLoader.parse(b64buf(b64), '', (gltf) => {
       if (kind === 'human') setHumanModel(gltf.scene);
-      else setTreeModel(kind, gltf.scene);
+      else if (kind === 'house') setBuildingModel('house', gltf.scene);
+      else if (kind === 'rocks') {
+        const geos = [];
+        gltf.scene.traverse((o) => { if (o.isMesh) geos.push(o.geometry); });
+        setRockGeos(geos);
+      } else setTreeModel(kind, gltf.scene);
       res();
     }, () => res()))));
 } catch (e) { console.warn('树模型解析失败,回退程序化树:', e); }
@@ -4071,7 +4076,7 @@ function todaySpecial() {
 }
 
 // 季节换装:地表与草皮随季节改色,冬季积雪盖地
-const SEASON_GROUND = [0xffffff, 0xeef8d2, 0xdca55c, 0xdfe6ec];
+const SEASON_GROUND = [0xf2ead8, 0xe8e2c8, 0xd8a860, 0xdfe6ec]; // tussock 调:春秋金棕,夏钝卡其
 function applySeason() {
   const s = seasonIdx();
   const gm = world.ground.material;
@@ -4085,10 +4090,10 @@ function applySeason() {
   const c = new THREE.Color();
   for (let i = 0; i < grass.count; i++) {
     const r = Math.abs(Math.sin(i * 12.9898) * 43758.5453) % 1; // 每株草稳定的伪随机
-    if (s === 0) c.setHSL(0.23 + r * 0.06, 0.26, 0.36 + r * 0.13);      // 春:苔原绿(北境不长糖果草)
-    else if (s === 1) c.setHSL(0.26 + r * 0.05, 0.3, 0.33 + r * 0.12);  // 夏:沉绿
-    else if (s === 2) c.setHSL(0.07 + r * 0.05, 0.34, 0.38 + r * 0.12); // 秋:枯金
-    else c.setHSL(0.56 + r * 0.04, 0.06, 0.58 + r * 0.14);              // 冬:霜白
+    if (s === 0) c.setHSL(0.14 + r * 0.05, 0.22, 0.38 + r * 0.12);      // 春:灰卡其草甸(tussock)
+    else if (s === 1) c.setHSL(0.17 + r * 0.05, 0.24, 0.35 + r * 0.11); // 夏:钝橄榄
+    else if (s === 2) c.setHSL(0.08 + r * 0.04, 0.32, 0.4 + r * 0.11);  // 秋:金棕
+    else c.setHSL(0.56 + r * 0.04, 0.05, 0.6 + r * 0.13);               // 冬:霜白
     grass.setColorAt(i, c);
   }
   grass.instanceColor.needsUpdate = true;
@@ -7195,7 +7200,7 @@ const _UP = new THREE.Vector3(0, 1, 0);
 const _topC = new THREE.Color();
 const _horC = new THREE.Color();
 // 北境天空:压掉糖果蓝,换成高纬度的灰蓝与雾白(天际的天从来不艳)
-const C_DAY_TOP = new THREE.Color(0x5d80a6), C_DAY_HOR = new THREE.Color(0xccd6da);
+const C_DAY_TOP = new THREE.Color(0x4f6e90), C_DAY_HOR = new THREE.Color(0xc4cdd0);
 const C_DUSK_TOP = new THREE.Color(0x3a3550), C_DUSK_HOR = new THREE.Color(0xd2773c);
 const C_NIGHT_TOP = new THREE.Color(0x040814), C_NIGHT_HOR = new THREE.Color(0x0e1830);
 const C_SUN_DAY = new THREE.Color(0xf7ecd4), C_SUN_DUSK = new THREE.Color(0xe86a30);
