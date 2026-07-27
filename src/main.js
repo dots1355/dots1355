@@ -50,24 +50,82 @@ const bloom = new UnrealBloomPass(
   new THREE.Vector2(window.innerWidth, window.innerHeight), 0.32, 0.6, 0.85);
 bloom.enabled = !LOWFX;
 composer.addPass(bloom);
-// GTA 风格电影调色:对比度 + 饱和 + 暖高光/冷阴影分离色调
+// 参数化电影调色:对比/饱和/分离色调/暗角/胶片颗粒/怀旧褪色——画风预设的载体
 const gradePass = new ShaderPass({
-  uniforms: { tDiffuse: { value: null } },
+  uniforms: {
+    tDiffuse: { value: null },
+    uContrast: { value: 1.07 },
+    uSat: { value: 1.16 },
+    uLift: { value: 0.0 },
+    uSplit: { value: new THREE.Vector3(0.04, 0.014, -0.04) },
+    uVig: { value: 0.18 },
+    uGrain: { value: 0.0 },
+    uSepia: { value: 0.0 },
+    uTime: { value: 0 },
+  },
   vertexShader: `
     varying vec2 vUv;
     void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
   fragmentShader: `
     uniform sampler2D tDiffuse;
+    uniform float uContrast, uSat, uLift, uVig, uGrain, uSepia, uTime;
+    uniform vec3 uSplit;
     varying vec2 vUv;
     void main() {
       vec4 c = texture2D(tDiffuse, vUv);
-      vec3 col = (c.rgb - 0.5) * 1.06 + 0.5;
+      vec3 col = (c.rgb - 0.5) * uContrast + 0.5 + uLift;
       float l = dot(col, vec3(0.299, 0.587, 0.114));
-      col = mix(vec3(l), col, 1.13);
-      col += (l - 0.5) * vec3(0.035, 0.012, -0.035);
+      col = mix(vec3(l), col, uSat);
+      col += (l - 0.5) * uSplit;
+      // 怀旧褪色(sepia)
+      vec3 sep = vec3(dot(col, vec3(0.393, 0.769, 0.189)),
+                      dot(col, vec3(0.349, 0.686, 0.168)),
+                      dot(col, vec3(0.272, 0.534, 0.131)));
+      col = mix(col, sep, uSepia);
+      // 暗角
+      float d = distance(vUv, vec2(0.5));
+      col *= 1.0 - uVig * smoothstep(0.32, 0.86, d);
+      // 胶片颗粒
+      float n = fract(sin(dot(vUv * (uTime + 1.0), vec2(12.9898, 78.233))) * 43758.5453) - 0.5;
+      col += n * uGrain;
       gl_FragColor = vec4(clamp(col, 0.0, 1.0), c.a);
     }`,
 });
+// ---- 画风预设:油画(默认)/ 电影 / 动画 / 复古,一键切换、独立持久化 ----
+const STYLE_PRESETS = {
+  oil:    { name: '油画', contrast: 1.07, sat: 1.16, lift: 0, split: [0.04, 0.014, -0.04], vig: 0.18, grain: 0, sepia: 0, bloom: 0.32, exposure: 1.0 },
+  film:   { name: '电影', contrast: 1.15, sat: 1.02, lift: -0.012, split: [0.065, 0.012, -0.06], vig: 0.34, grain: 0.028, sepia: 0, bloom: 0.26, exposure: 1.04 },
+  anime:  { name: '动画', contrast: 1.03, sat: 1.36, lift: 0.03, split: [0.02, 0.012, -0.015], vig: 0.08, grain: 0, sepia: 0, bloom: 0.46, exposure: 1.07 },
+  retro:  { name: '复古', contrast: 1.08, sat: 0.82, lift: 0.01, split: [0.03, 0.01, -0.02], vig: 0.42, grain: 0.06, sepia: 0.45, bloom: 0.2, exposure: 0.97 },
+};
+const STYLE_ORDER = ['oil', 'film', 'anime', 'retro'];
+let styleKey = 'oil';
+try { if (STYLE_PRESETS[localStorage.getItem('gth-style')]) styleKey = localStorage.getItem('gth-style'); } catch { /* 隐私模式 */ }
+function applyStyle(key) {
+  const p = STYLE_PRESETS[key];
+  if (!p) return;
+  styleKey = key;
+  const u = gradePass.uniforms;
+  u.uContrast.value = p.contrast;
+  u.uSat.value = p.sat;
+  u.uLift.value = p.lift;
+  u.uSplit.value.set(...p.split);
+  u.uVig.value = p.vig;
+  u.uGrain.value = p.grain;
+  u.uSepia.value = p.sepia;
+  bloom.strength = p.bloom;
+  renderer.toneMappingExposure = p.exposure;
+  styleExp = p.exposure;          // 昼夜循环每帧重算曝光/泛光,预设作为基准乘子参与
+  styleBloomMul = p.bloom / 0.32;
+  try { localStorage.setItem('gth-style', key); } catch { /* 隐私模式 */ }
+}
+let styleExp = 1, styleBloomMul = 1;
+function cycleStyle() {
+  const next = STYLE_ORDER[(STYLE_ORDER.indexOf(styleKey) + 1) % STYLE_ORDER.length];
+  applyStyle(next);
+  return STYLE_PRESETS[next].name;
+}
+applyStyle(styleKey); // 上次选的画风,开局就生效
 // OutputPass(ACES 色调映射 + sRGB)先行,调色与 SMAA 作用于显示域 LDR,避免裁剪 HDR 高光
 composer.addPass(new OutputPass());
 gradePass.enabled = !LOWFX;
@@ -3869,6 +3927,10 @@ document.getElementById('btn-resume').onclick = () => {
   renderer.domElement.requestPointerLock();
 };
 document.getElementById('btn-quality').onclick = () => setQuality(!fxHigh);
+document.getElementById('btn-style').textContent = `画风:${STYLE_PRESETS[styleKey].name}`;
+document.getElementById('btn-style').onclick = () => {
+  document.getElementById('btn-style').textContent = `画风:${cycleStyle()}`;
+};
 document.getElementById('btn-music').onclick = (ev) => {
   ev.target.textContent = `音乐:${toggleMusic() ? '开' : '关'}`;
 };
@@ -7197,8 +7259,8 @@ function updateDayNight(dt) {
   starMat.opacity = Math.max(0, -elev * 2.2);
 
   // 曝光与泛光随昼夜变化
-  renderer.toneMappingExposure = 0.85 + day * 0.25;
-  bloom.strength = 0.28 + night * 0.4;
+  renderer.toneMappingExposure = (0.85 + day * 0.25) * styleExp;
+  bloom.strength = (0.28 + night * 0.4) * styleBloomMul;
 
   // 火把与窗户
   for (const t of world.torches) {
@@ -8250,6 +8312,9 @@ window.__gtm = {
   SKILL_DEFS, skillXp, toggleSneak, sneakFactor, shout, learnShout, doShout,
   mercs, hireMerc, payMercs, DRAGON_SKULL,
   vendetta, vendettaLetter, vendettaRead, updateVendetta, getLoot: () => player.loot || 0,
+  applyStyle, cycleStyle, STYLE_PRESETS, getStyle: () => styleKey,
+  getGrade: () => ({ sat: gradePass.uniforms.uSat.value, vig: gradePass.uniforms.uVig.value,
+    sepia: gradePass.uniforms.uSepia.value, bloom: bloom.strength, exp: renderer.toneMappingExposure }),
   testBlocked: (x, z, r = 0.45) => {
     const p = { x, z };
     resolveCollisions(p, r, colliders);
@@ -8498,6 +8563,7 @@ function loop(now) {
   if (frameNo % 3 === 0 || fishing.active || player.carrying || player.mounted) computePrompt();
   updateHUD();
   if (frameNo++ % 2 === 0) drawMinimap(); // 小地图 30Hz 足够
+  gradePass.uniforms.uTime.value = now * 0.00025; // 胶片颗粒的抖动时钟
   composer.render();
 }
 requestAnimationFrame(loop);
