@@ -8,6 +8,9 @@ import { preloadAIAssets, generateRemoteAITextures } from './textures.js';
 import { initWilderness, updateWilderness, wildRegionName, CORE } from './wilderness.js';
 import * as BANKS from './dialogue-banks.js';
 import { ShaderPass } from '../lib/jsm/postprocessing/ShaderPass.js';
+import { GLTFLoader } from '../lib/jsm/loaders/GLTFLoader.js';
+import { setTreeModel } from './flora.js';
+import { MODELS_B64 } from './models-data.js';
 import { EffectComposer } from '../lib/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from '../lib/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from '../lib/jsm/postprocessing/UnrealBloomPass.js';
@@ -253,6 +256,16 @@ scene.add(stars);
 // 先加载 AI 素材(assets/ai/ 下的无缝贴图会覆盖程序化贴图)
 const aiLoaded = await preloadAIAssets();
 if (aiLoaded.length) console.info('AI 贴图已加载:', aiLoaded.join(', '));
+// Blender 资产工厂:解析内嵌 GLB 树模板,建世界前注入 flora(失败则静默回退程序化树)
+try {
+  const gltfLoader = new GLTFLoader();
+  const b64buf = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)).buffer;
+  await Promise.all(Object.entries(MODELS_B64).map(([kind, b64]) =>
+    new Promise((res) => gltfLoader.parse(b64buf(b64), '', (gltf) => {
+      setTreeModel(kind, gltf.scene);
+      res();
+    }, () => res()))));
+} catch (e) { console.warn('树模型解析失败,回退程序化树:', e); }
 // 本地标题键艺术优先(assets/ai/title.jpg,可选)
 let localTitleArt = false;
 if (location.protocol !== 'file:') fetch('./assets/ai/title.jpg').then((r) => {

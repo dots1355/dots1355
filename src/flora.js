@@ -107,7 +107,34 @@ const pick = (rng, arr) => arr[Math.floor(rng() * arr.length)];
 const shade = (hex, f) => new THREE.Color(hex).multiplyScalar(Math.round(f * 16) / 16).getHex();
 
 // ---- 阔叶树:弯干 + 根部张开 + 3~5 个碎球树冠(下暗上亮) ----
+// ---- Blender 资产工厂:写实树模板(GLB 解析后注入;克隆共享几何/材质,零额外显存) ----
+const TREE_MODELS = { oak: null, pine: null, birch: null };
+export function setTreeModel(kind, group) {
+  group.traverse((o) => {
+    if (o.isMesh) {
+      o.castShadow = true;
+      o.geometry.userData.shared = true; // 区块卸载时不 dispose 共享资源
+      if (o.material) o.material.userData.shared = true;
+    }
+  });
+  TREE_MODELS[kind] = group;
+}
+function cloneTreeModel(kind, rng, scale = 1) {
+  const tpl = TREE_MODELS[kind];
+  if (!tpl) return null;
+  const g = tpl.clone();
+  const s = scale * (0.85 + rng() * 0.4);
+  g.scale.set(s, s, s);
+  g.rotation.y = rng() * Math.PI * 2;
+  return g;
+}
+
 export function buildTree(rng, opts = {}) {
+  // 有 Blender 写实模型就用它(桦木三成概率换换口味);没有则回退程序化积木树
+  if (!opts.leaf && !opts.bark) {
+    const real = cloneTreeModel(rng() < 0.3 ? 'birch' : 'oak', rng, 1.15);
+    if (real) return { group: real, r: 0.5 };
+  }
   const g = new THREE.Group();
   const leaf = opts.leaf ?? 0x4a9153;
   const bark = opts.bark ?? 0x6b4a2f;
@@ -146,6 +173,10 @@ export function buildTree(rng, opts = {}) {
 
 // ---- 针叶松:4 层扰动松塔,层间错位微倾,可加积雪 ----
 export function buildPine(rng, opts = {}) {
+  if (!opts.leaf && !opts.snow) {
+    const real = cloneTreeModel('pine', rng, 1.2);
+    if (real) return { group: real, r: 0.45 };
+  }
   const g = new THREE.Group();
   const leaf = opts.leaf ?? 0x2d6b3f;
   const snow = !!opts.snow;
