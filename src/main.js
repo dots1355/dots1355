@@ -1,7 +1,7 @@
 // 《侠盗猎马人:中世纪王国》主逻辑
 import * as THREE from 'three';
 import { buildWorld } from './world.js';
-import { makeHumanoid, makeHorse, makeWolf, makeChicken, makeSheep, resolveCollisions, angleLerp, dist2, lambert, setHumanModel } from './entities.js';
+import { makeHumanoid, makeHorse, makeWolf, makeChicken, makeSheep, resolveCollisions, angleLerp, dist2, lambert, setHumanModel, setFaunaModel } from './entities.js';
 import { INTRO, REGIONS, GUARD_LINES, NPCS, MISSIONS, VILLAGERS, DIALOGS, TIME_GREETINGS, LORE } from './story.js';
 import { initAudio, sfx, startMusic, toggleMusic, weatherAudio, setAmbience } from './audio.js';
 import { preloadAIAssets, generateRemoteAITextures } from './textures.js';
@@ -263,6 +263,7 @@ try {
   await Promise.all(Object.entries(MODELS_B64).map(([kind, b64]) =>
     new Promise((res) => gltfLoader.parse(b64buf(b64), '', (gltf) => {
       if (kind === 'human') setHumanModel(gltf.scene);
+      else if (kind === 'horse' || kind === 'wolf') setFaunaModel(kind, gltf.scene);
       else if (kind === 'house') setBuildingModel('house', gltf.scene);
       else if (kind === 'rocks') {
         const geos = [];

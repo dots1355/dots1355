@@ -211,8 +211,55 @@ export function makeHumanoid(opts = {}) {
   return { group: g, parts };
 }
 
+// ---- Blender 动物模板(马/狼;鹿=马+角) ----
+let HORSE_TPL = null, WOLF_TPL = null;
+export function setFaunaModel(kind, scene) {
+  scene.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+  if (kind === 'horse') HORSE_TPL = scene;
+  else if (kind === 'wolf') WOLF_TPL = scene;
+}
+function tintClone(node, slots) {
+  const c = node.clone();
+  c.traverse((o) => {
+    if (!o.isMesh) return;
+    o.castShadow = true;
+    const remap = (mm) => (slots[mm.name] !== undefined ? humMatPublic(mm.name, slots[mm.name]) : mm);
+    o.material = Array.isArray(o.material) ? o.material.map(remap) : remap(o.material);
+  });
+  return c;
+}
+function humMatPublic(slot, hex) { return humMat(slot, hex); }
+
 // ---- 马(面朝 +Z)----
 export function makeHorse(color = 0x8b5a2b, saddled = true, opts = {}) {
+  // Blender 写实马:脊柱放样整体身躯,腿为模板克隆挂进原枢轴
+  if (HORSE_TPL) {
+    const g = new THREE.Group();
+    const parts = { legs: [] };
+    const darkHex = new THREE.Color(color).multiplyScalar(0.66).getHex();
+    const maneHex2 = opts.antlers ? darkHex : (opts.mane ?? 0x2e2018);
+    const slots = { coat: color, dark: darkHex, mane: maneHex2 };
+    const body = tintClone(HORSE_TPL, slots);
+    const legTpl = body.getObjectByName('HorseLeg');
+    if (legTpl) legTpl.parent.remove(legTpl);
+    const toRemove = [];
+    body.traverse((o) => {
+      if (o.name.startsWith('Antlers') && !opts.antlers) toRemove.push(o);
+      if (o.name === 'Saddle' && !saddled) toRemove.push(o);
+      if (o.name === 'Mane' && opts.antlers) toRemove.push(o);
+      if (o.name === 'Blaze' && (opts.antlers || Math.random() >= 0.3)) toRemove.push(o);
+    });
+    for (const o of toRemove) o.parent && o.parent.remove(o);
+    g.add(body);
+    for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+      const pivot = new THREE.Group();
+      pivot.position.set(0.24 * sx, 0.85, 0.62 * sz);
+      if (legTpl) pivot.add(tintClone(legTpl, slots));
+      g.add(pivot);
+      parts.legs.push(pivot);
+    }
+    return { group: g, parts };
+  }
   const g = new THREE.Group();
   const parts = { legs: [] };
   const dark = new THREE.Color(color).multiplyScalar(0.7).getHex();
@@ -325,6 +372,30 @@ export function makeHorse(color = 0x8b5a2b, saddled = true, opts = {}) {
 
 // ---- 狼(面朝 +Z)----
 export function makeWolf(furHex = 0x5a5a62, eyeHex = 0xff3322, eyeGlow = 0xaa1100) {
+  // Blender 写实狼:耸肩薄腰的兽形放样,双眼替换为发光材质
+  if (WOLF_TPL) {
+    const g = new THREE.Group();
+    const parts = { legs: [] };
+    const darkHex = new THREE.Color(furHex).multiplyScalar(0.66).getHex();
+    const slots = { fur: furHex, dfur: darkHex };
+    const body = tintClone(WOLF_TPL, slots);
+    const legTpl = body.getObjectByName('WolfLeg');
+    if (legTpl) legTpl.parent.remove(legTpl);
+    body.traverse((o) => {
+      if (o.isMesh && o.name.startsWith('Eye')) {
+        o.material = new THREE.MeshStandardMaterial({ color: eyeHex, emissive: eyeGlow, emissiveIntensity: 1.2 });
+      }
+    });
+    g.add(body);
+    for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+      const pivot = new THREE.Group();
+      pivot.position.set(0.15 * sx, 0.5, 0.32 * sz);
+      if (legTpl) pivot.add(tintClone(legTpl, slots));
+      g.add(pivot);
+      parts.legs.push(pivot);
+    }
+    return { group: g, parts };
+  }
   const g = new THREE.Group();
   const parts = { legs: [] };
   const fur = lambert(furHex, { roughness: 0.95 });
