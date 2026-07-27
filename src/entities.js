@@ -79,12 +79,19 @@ function applyHumanProps(g, parts, opts) {
   }
   if (sword) {
     const swordGroup = new THREE.Group();
-    const blade = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.75, 0.03), lambert(0xd8dde2));
-    blade.position.y = -0.62;
-    const guard = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.05, 0.06), lambert(0xc9a227));
-    guard.position.y = -0.26;
-    swordGroup.add(blade, guard);
-    swordGroup.position.y = -0.2;
+    const real = getWeaponModel('Sword');
+    if (real) {
+      real.position.set(0, 0, 0);
+      swordGroup.add(real);
+      swordGroup.position.y = -0.4;
+    } else {
+      const blade = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.75, 0.03), lambert(0xd8dde2));
+      blade.position.y = -0.62;
+      const guard = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.05, 0.06), lambert(0xc9a227));
+      guard.position.y = -0.26;
+      swordGroup.add(blade, guard);
+      swordGroup.position.y = -0.2;
+    }
     parts.armR.add(swordGroup);
     parts.sword = swordGroup;
   }
@@ -229,6 +236,17 @@ function tintClone(node, slots) {
   return c;
 }
 function humMatPublic(slot, hex) { return humMat(slot, hex); }
+// ---- Blender 武器模板(铁剑/巨剑/短匕/猎弓) ----
+let WEAPONS_TPL = null;
+export function setWeaponModels(scene) {
+  scene.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+  WEAPONS_TPL = scene;
+}
+export function getWeaponModel(name) {
+  if (!WEAPONS_TPL) return null;
+  const src = WEAPONS_TPL.getObjectByName(name);
+  return src ? src.clone() : null;
+}
 
 // ---- 马(面朝 +Z)----
 export function makeHorse(color = 0x8b5a2b, saddled = true, opts = {}) {

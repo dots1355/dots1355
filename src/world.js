@@ -103,6 +103,23 @@ export function buildWorld(scene) {
       merlon.castShadow = true;
       scene.add(merlon);
     }
+    // 底部收分基座(墙脚外扩,天际城墙的厚重感)
+    const plinth = new THREE.Mesh(
+      new THREE.BoxGeometry(horizontal ? len : 2.6, 1.4, horizontal ? 2.6 : len), wallMat);
+    plinth.position.set((x1 + x2) / 2, 0.7, (z1 + z2) / 2);
+    plinth.receiveShadow = true;
+    scene.add(plinth);
+    // 外侧扶壁(每 12 步一垛)
+    const bn = Math.floor(len / 12);
+    for (let i = 1; i < bn; i++) {
+      const t = i / bn;
+      const bx = x1 + dx * t, bz = z1 + dz * t;
+      const out = horizontal ? Math.sign(z1) : Math.sign(x1); // 朝城外
+      const but = new THREE.Mesh(new THREE.BoxGeometry(horizontal ? 1.1 : 1.5, 4.2, horizontal ? 1.5 : 1.1), wallMat);
+      but.position.set(bx + (horizontal ? 0 : out * 1.4), 2.1, bz + (horizontal ? out * 1.4 : 0));
+      but.castShadow = true;
+      scene.add(but);
+    }
     if (horizontal) { box((x1 + x2) / 2, z1, len, 1.8); feat('wall', (x1 + x2) / 2, z1, len, 1.8); }
     else { box(x1, (z1 + z2) / 2, 1.8, len); feat('wall', x1, (z1 + z2) / 2, 1.8, len); }
   }
@@ -115,16 +132,25 @@ export function buildWorld(scene) {
 
   const towerMat = texMat(TX.stone, 4, 2, { roughness: 0.92 });
   function tower(x, z, r = 4, h = 9) {
-    const t = new THREE.Mesh(new THREE.CylinderGeometry(r, r * 1.1, h, 12), towerMat);
+    // 天际式平顶石塔:底部收分 + 出挑护墙 + 垛口环(尖顶是法国人的,诺德不用)
+    const t = new THREE.Mesh(new THREE.CylinderGeometry(r, r * 1.22, h, 12), towerMat);
     t.position.set(x, h / 2, z);
     t.castShadow = true;
     scene.add(t);
     occluders.push(t);
-    const roof = new THREE.Mesh(new THREE.ConeGeometry(r * 1.25, r * 1.1, 12),
-      lambert(0x30425f, { roughness: 0.55, metalness: 0.25 }));
-    roof.position.set(x, h + r * 0.55, z);
-    roof.castShadow = true;
-    scene.add(roof);
+    const parapet = new THREE.Mesh(new THREE.CylinderGeometry(r * 1.14, r * 1.06, 0.9, 12), towerMat);
+    parapet.position.set(x, h + 0.45, z);
+    parapet.castShadow = true;
+    scene.add(parapet);
+    const merlons = 8;
+    for (let i = 0; i < merlons; i++) {
+      const a = (i / merlons) * Math.PI * 2;
+      const m = new THREE.Mesh(new THREE.BoxGeometry(r * 0.42, 0.8, 0.5), wallMat);
+      m.position.set(x + Math.cos(a) * r * 1.02, h + 1.2, z + Math.sin(a) * r * 1.02);
+      m.rotation.y = -a + Math.PI / 2;
+      m.castShadow = true;
+      scene.add(m);
+    }
     circle(x, z, r + 0.3);
     feat('tower', x, z, r * 2, r * 2);
     return t;
@@ -133,12 +159,21 @@ export function buildWorld(scene) {
   tower(-6, 55, 2.2, 7.5); tower(6, 55, 2.2, 7.5);   // 南门楼
   tower(70, -6, 2.2, 7.5); tower(70, 6, 2.2, 7.5);   // 东门楼
 
-  // ---- 城堡主堡 ----
-  const keep = new THREE.Mesh(new THREE.BoxGeometry(22, 13, 14), texMat(TX.stone, 2.6, 2.4));
-  keep.position.set(0, 6.5, -40);
-  keep.castShadow = keep.receiveShadow = true;
-  scene.add(keep);
-  occluders.push(keep);
+  // ---- 城堡主堡(Blender 天际式灰岩要塞;无模板则回退石盒) ----
+  const keepTpl = getBuildingModel('keep');
+  let keep;
+  if (keepTpl) {
+    keep = keepTpl.clone();
+    keep.position.set(0, 0, -40);
+    scene.add(keep);
+    keep.traverse((o) => { if (o.isMesh) occluders.push(o); });
+  } else {
+    keep = new THREE.Mesh(new THREE.BoxGeometry(22, 13, 14), texMat(TX.stone, 2.6, 2.4));
+    keep.position.set(0, 6.5, -40);
+    keep.castShadow = keep.receiveShadow = true;
+    scene.add(keep);
+    occluders.push(keep);
+  }
   box(0, -40, 22, 14);
   feat('keep', 0, -40, 22, 14);
   for (const [tx, tz] of [[-11, -33], [11, -33], [-11, -47], [11, -47]]) tower(tx, tz, 3, 16);

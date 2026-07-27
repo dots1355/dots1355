@@ -1,7 +1,7 @@
 // 《侠盗猎马人:中世纪王国》主逻辑
 import * as THREE from 'three';
 import { buildWorld } from './world.js';
-import { makeHumanoid, makeHorse, makeWolf, makeChicken, makeSheep, resolveCollisions, angleLerp, dist2, lambert, setHumanModel, setFaunaModel } from './entities.js';
+import { makeHumanoid, makeHorse, makeWolf, makeChicken, makeSheep, resolveCollisions, angleLerp, dist2, lambert, setHumanModel, setFaunaModel, setWeaponModels, getWeaponModel } from './entities.js';
 import { INTRO, REGIONS, GUARD_LINES, NPCS, MISSIONS, VILLAGERS, DIALOGS, TIME_GREETINGS, LORE } from './story.js';
 import { initAudio, sfx, startMusic, toggleMusic, weatherAudio, setAmbience } from './audio.js';
 import { preloadAIAssets, generateRemoteAITextures } from './textures.js';
@@ -264,7 +264,8 @@ try {
     new Promise((res) => gltfLoader.parse(b64buf(b64), '', (gltf) => {
       if (kind === 'human') setHumanModel(gltf.scene);
       else if (kind === 'horse' || kind === 'wolf') setFaunaModel(kind, gltf.scene);
-      else if (kind === 'house') setBuildingModel('house', gltf.scene);
+      else if (kind === 'weapons') setWeaponModels(gltf.scene);
+      else if (kind === 'house' || kind === 'keep') setBuildingModel(kind, gltf.scene);
       else if (kind === 'rocks') {
         const geos = [];
         gltf.scene.traverse((o) => { if (o.isMesh) geos.push(o.geometry); });
@@ -1083,10 +1084,40 @@ player.rollCd = 0;
 player.rollDir = new THREE.Vector2(0, 1);
 
 // 手中武器外观
+let _goldBladeMat = null;
 function setWeaponVisual(type) {
   const armR = player.parts.armR;
   if (player.weaponGroup) armR.remove(player.weaponGroup);
   if (player.bowGroup) { player.parts.armL.remove(player.bowGroup); player.bowGroup = null; }
+  // Blender 武器模板:血槽刃/缠柄/铁护手;淬火后刃身换金
+  {
+    const name = { dagger: 'Dagger', greatsword: 'Greatsword', bow: 'Bow', sword: 'Sword' }[type] || 'Sword';
+    const real = getWeaponModel(name);
+    if (real) {
+      if (player.swordLv >= 2 && type !== 'bow') {
+        if (!_goldBladeMat) _goldBladeMat = lambert(0xe8c34a, { metalness: 0.85, roughness: 0.25 });
+        real.traverse((o) => {
+          if (o.isMesh) {
+            const remap = (mm) => (mm.name === 'steel' ? _goldBladeMat : mm);
+            o.material = Array.isArray(o.material) ? o.material.map(remap) : remap(o.material);
+          }
+        });
+      }
+      if (type === 'bow') {
+        real.position.set(0, -0.42, 0.06);
+        player.parts.armL.add(real);
+        player.bowGroup = real;
+        player.weaponGroup = null;
+        return;
+      }
+      const g2 = new THREE.Group();
+      g2.add(real);
+      g2.position.y = -0.4;
+      armR.add(g2);
+      player.weaponGroup = g2;
+      return;
+    }
+  }
   const g = new THREE.Group();
   const steel = lambert(player.swordLv >= 2 ? 0xe8c34a : 0xd8dde2,
     { metalness: 0.85, roughness: 0.25 });
