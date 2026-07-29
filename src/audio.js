@@ -142,6 +142,7 @@ export const sfx = {
   lute()    { [392, 494, 587].forEach((f, i) => tone(f, 0.2, 'triangle', 0.09, i * 0.09)); },
   hiccup()  { tone(300, 0.07, 'square', 0.09, 0, 500); },
   arrow()   { tone(1400, 0.12, 'sawtooth', 0.06, 0, -900); },
+  whoosh()  { tone(320, 0.09, 'sawtooth', 0.05, 0, -160); tone(1100, 0.06, 'triangle', 0.035, 0.02, -600); },
   clank()   { tone(1800, 0.04, 'square', 0.12, 0, -300); tone(900, 0.09, 'triangle', 0.1, 0.03, -200); },
   roll()    { tone(220, 0.12, 'triangle', 0.08, 0, 150); },
   equip()   { tone(700, 0.06, 'triangle', 0.1); tone(1000, 0.08, 'triangle', 0.1, 0.06); },

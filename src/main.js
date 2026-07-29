@@ -4038,6 +4038,13 @@ let promptTargetPos = null;
 // ================= 命中反馈:白闪 + 击退 =================
 function hitFX(e, push = 0.55) {
   hitStop(0.035);
+  // 受击弹跳:横向鼓一下再弹回,肉眼可见的"挨了一记"
+  if (!e._popping) {
+    e._popping = true;
+    e.group.scale.x *= 1.14;
+    e.group.scale.z *= 1.14;
+    setTimeout(() => { e.group.scale.x /= 1.14; e.group.scale.z /= 1.14; e._popping = false; }, 90);
+  }
   const dx = e.pos.x - player.pos.x, dz = e.pos.z - player.pos.z;
   const d = Math.hypot(dx, dz) || 1;
   e.pos.x += (dx / d) * push;
@@ -5995,6 +6002,64 @@ function completeMission() {
 
 // ================= 攻击 =================
 // 近战横扫判定:普通挥击与蓄力重击共用(dmg/范围/角度/击退可调)
+// ================= 打击手感核心 =================
+// 攻击磁吸:出手瞬间吸附朝向前方最近的敌人,差一步自动垫步,人跟着刀走
+function faceNearestFoe(range) {
+  let best = null, bd = (range + 2.4) * (range + 2.4);
+  const fx = Math.sin(player.yaw), fz = Math.cos(player.yaw);
+  for (const list of [bandits, wolves, guards]) {
+    for (const e of list) {
+      if (e.dead || e.downT > 0) continue;
+      const dx = e.pos.x - player.pos.x, dz = e.pos.z - player.pos.z;
+      const d2v = dx * dx + dz * dz;
+      if (d2v > bd) continue;
+      const d = Math.sqrt(d2v) || 1;
+      if ((dx * fx + dz * fz) / d < 0.05) continue; // 只吸前方 ~±87°
+      bd = d2v;
+      best = { d, dx, dz };
+    }
+  }
+  if (!best) return;
+  player.yaw = Math.atan2(best.dx, best.dz); // 刀锋咬住目标
+  const gap = best.d - (range - 0.5);
+  const step = gap > 0 ? Math.min(gap, 1.5) : 0.3; // 够不着就垫步;够得着也向前压半步
+  player.pos.x += (best.dx / best.d) * step;
+  player.pos.z += (best.dz / best.d) * step;
+  resolveCollisions(player.pos, 0.45, colliders);
+}
+// 剑光拖尾:每次挥砍横扫出一道弧光,0.16 秒燃尽
+const trailFX = [];
+const trailMat = new THREE.MeshBasicMaterial({ color: 0xdfe9f5, transparent: true, opacity: 0.5,
+  side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending });
+function swingTrail(range, arc = 2.1) {
+  const g = new THREE.Group();
+  const ring = new THREE.Mesh(
+    new THREE.RingGeometry(Math.max(0.5, range * 0.45), range, 1, 10, Math.PI / 2 - arc / 2, arc),
+    trailMat.clone());
+  ring.rotation.x = Math.PI / 2;
+  g.add(ring);
+  g.position.set(player.pos.x, 1.05, player.pos.z);
+  g.rotation.y = player.yaw;
+  scene.add(g);
+  trailFX.push({ g, ring, t: 0 });
+}
+function updateTrails(dt) {
+  for (let i = trailFX.length - 1; i >= 0; i--) {
+    const f = trailFX[i];
+    f.t += dt;
+    const k = f.t / 0.16;
+    if (k >= 1) {
+      scene.remove(f.g);
+      f.ring.geometry.dispose();
+      f.ring.material.dispose();
+      trailFX.splice(i, 1);
+      continue;
+    }
+    f.ring.material.opacity = 0.5 * (1 - k);
+    f.g.scale.setScalar(1 + k * 0.5);
+  }
+}
+
 function meleeSweep(dmg, range, arcDot, knock) {
   const fx = Math.sin(player.yaw), fz = Math.cos(player.yaw);
   // 处决:对踉跄中的敌人(弹反/盾击/冰冻后)出手 = ×5 终结,配慢动作
@@ -6165,9 +6230,13 @@ function tryAttack() {
   if (player.sneaking) toast(`🗡️ 偷袭!(×${sneakMul})`, 1.2);
   // 旋风斩:武艺 5 级起,三连斩的第三剑变成全周横扫
   const whirl = third && skillLv('onehand') >= 5;
+  const reach = def.range + (third ? 0.4 : 0) + (sprinting ? 0.4 : 0);
+  if (!player.sneaking) faceNearestFoe(reach); // 攻击磁吸:刀锋咬住目标(潜行例外,别打草惊蛇)
+  sfx.whoosh();
+  swingTrail(reach, whirl ? Math.PI * 2 : 2.1);
   meleeSweep(Math.round(meleeBonus(def.dmg + (player.swordLv >= 2 ? 1 : 0) + (player.relic ? 1 : 0) +
     (third ? 1 : 0) + (sprinting ? 1 : 0)) * sneakMul * riposteMul),
-  def.range + (third ? 0.4 : 0) + (sprinting ? 0.4 : 0), whirl ? -1.01 : 0.35,
+  reach, whirl ? -1.01 : 0.35,
   def.knock * (third ? 1.8 : 1) * (sprinting ? 1.3 : 1));
   if (whirl) { camShake = Math.max(camShake, 0.2); spawnDust(player.pos.x, 0.5, player.pos.z, 10, 2, 1.6); }
   skillXp('onehand', 1);
@@ -6188,6 +6257,9 @@ function heavyAttack() {
   hitStopT = Math.max(hitStopT, 0.06);
   // 巨剑专属:蓄力横扫近乎全周,击退更狠(势大力沉的代价是它本来就慢)
   const wide = player.weapon === 'greatsword';
+  faceNearestFoe(def.range + 0.7);
+  sfx.whoosh();
+  swingTrail(def.range + 0.7, wide ? Math.PI * 1.7 : Math.PI);
   meleeSweep(meleeBonus((def.dmg + (player.swordLv >= 2 ? 1 : 0) + (player.relic ? 1 : 0)) * 2),
     def.range + 0.7, wide ? -0.6 : -0.1, def.knock * (wide ? 2.3 : 1.8));
   skillXp('onehand', 1);
@@ -6905,10 +6977,12 @@ function updatePlayer(dt) {
       camShake = Math.max(camShake, 0.4);
       hitStopT = Math.max(hitStopT, 0.05);
       spawnDust(player.pos.x, 0.1, player.pos.z, 14, 2.4, 2);
+      swingTrail(3.4, Math.PI * 2);
       meleeSweep(def.dmg + (player.swordLv >= 2 ? 1 : 0) + (player.relic ? 1 : 0) + 1, 3.4, -1.01, def.knock * 1.6);
       stats.plunges = (stats.plunges || 0) + 1;
     }
     if (wasAirborne && fallSpeed < -3) checkStomp();
+    if (wasAirborne && fallSpeed < -4) player.squashT = 0.16; // 落地挤压
     if (wasAirborne && fallSpeed < -10) camShake = 0.22;
     if (wasAirborne && fallSpeed < -6) spawnDust(player.pos.x, 0.06, player.pos.z, 6, 0.9, 1.5);
   }
@@ -8393,6 +8467,7 @@ window.__gtm = {
   getFirefly: () => ({ owned: !!player.firefly, visible: fireflyMesh.visible }),
   EVO, seedLegend, mutateLegend, evolveLegends, legendText, evolveTactics, growCorpus,
   SPELLS, castSpell, learnSpell, cycleSpell, explodeAt, tryAttack,
+  trailFX, faceNearestFoe, getSquash: () => player.squashT || 0,
   SKILL_DEFS, skillXp, toggleSneak, sneakFactor, shout, learnShout, doShout,
   mercs, hireMerc, payMercs, DRAGON_SKULL,
   vendetta, vendettaLetter, vendettaRead, updateVendetta, getLoot: () => player.loot || 0,
@@ -8532,6 +8607,12 @@ function loop(now) {
   vistaFar.position.set(player.pos.x, 0, player.pos.z);  // 远山永远在地平线上
   vistaNear.position.set(player.pos.x, 0, player.pos.z);
   updateMagic(dt);
+  updateTrails(dt);
+  if (player.squashT > 0) {   // 落地挤压回弹
+    player.squashT = Math.max(0, player.squashT - dt);
+    const base = player.sneaking ? 0.8 : 1;
+    player.group.scale.y = base * (1 - 0.18 * (player.squashT / 0.16));
+  }
   updateMercs(dt);
   updateVendetta();
   updateWeather(dt);
