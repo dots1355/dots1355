@@ -1467,9 +1467,10 @@ function updateFalls(dt) {
 const dangerFX = [];
 const dangerMat = new THREE.MeshBasicMaterial({ color: 0xff3220, transparent: true, opacity: 0.4,
   side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending });
-function telegraphFlash(e, dur = 0.45) {
+function telegraphFlash(e, dur = 0.45, heavy = false) {
   sfx.warn();
   const ring = new THREE.Mesh(new THREE.RingGeometry(0.55, 0.8, 1, 24), dangerMat.clone());
+  if (heavy) ring.material.color.setHex(0xb040ff); // 紫圈=破盾重击:别格挡,滚!
   ring.rotation.x = -Math.PI / 2;
   ring.position.set(e.pos.x, 0.07, e.pos.z);
   scene.add(ring);
@@ -5096,7 +5097,7 @@ if (player.royalHorse) {
 const keys = {};
 let camYaw = 0, camPitch = 0.35, locked = false;
 window.addEventListener('keydown', (e) => {
-  if (e.code === 'Space') e.preventDefault();
+  if (e.code === 'Space' || e.code === 'Tab') e.preventDefault(); // Tab 别把焦点切走
   idleT = 0; // 有输入,世界收回它的注视
   if (e.repeat) return; // 忽略系统按键自动重复,防止长按空格吞掉二段跳/长按 E 反复上下马
   if (paused || shopOpen) return;
@@ -5126,6 +5127,7 @@ window.addEventListener('keydown', (e) => {
     }
   }
   if ((e.code === 'KeyC' || e.code === 'ControlLeft') && !dialog.open) doRoll();
+  if (e.code === 'Tab' && !dialog.open) toggleLock();
   if (e.code === 'KeyG' && !dialog.open) tryRob();
 });
 // 右键格挡(按住)
@@ -6015,8 +6017,14 @@ function completeMission() {
 // 攻击磁吸:出手瞬间吸附朝向前方最近的敌人,差一步自动垫步,人跟着刀走
 function faceNearestFoe(range) {
   let best = null, bd = (range + 2.4) * (range + 2.4);
+  // 锁定中:刀只认锁定的目标,免得磁吸把人拽向别的敌人
+  if (lockFoe && !lockFoe.dead && !(lockFoe.downT > 0)) {
+    const dx = lockFoe.pos.x - player.pos.x, dz = lockFoe.pos.z - player.pos.z;
+    const d2v = dx * dx + dz * dz;
+    if (d2v < (range + 3.5) * (range + 3.5)) best = { d: Math.sqrt(d2v) || 1, dx, dz };
+  }
   const fx = Math.sin(player.yaw), fz = Math.cos(player.yaw);
-  for (const list of [bandits, wolves, guards]) {
+  if (!best) for (const list of [bandits, wolves, guards]) {
     for (const e of list) {
       if (e.dead || e.downT > 0) continue;
       const dx = e.pos.x - player.pos.x, dz = e.pos.z - player.pos.z;
@@ -6035,6 +6043,44 @@ function faceNearestFoe(range) {
   player.pos.x += (best.dx / best.d) * step;
   player.pos.z += (best.dz / best.d) * step;
   resolveCollisions(player.pos, 0.45, colliders);
+}
+// ================= 目标锁定(Tab)=================
+// 骑砍式对峙:镜头咬住敌人环绕,人始终面向目标侧移;死亡/倒地/拉开距离自动解除
+let lockFoe = null;
+const lockMark = new THREE.Mesh(new THREE.ConeGeometry(0.17, 0.36, 4),
+  new THREE.MeshBasicMaterial({ color: 0xff4433, transparent: true, opacity: 0.9, depthWrite: false }));
+lockMark.rotation.x = Math.PI; // 尖朝下悬在头顶
+lockMark.visible = false;
+lockMark.frustumCulled = false;
+scene.add(lockMark);
+function toggleLock() {
+  if (!started || player.dead) return;
+  if (lockFoe) { lockFoe = null; lockMark.visible = false; sfx.roll(); return; }
+  let best = null, bd = 20 * 20;
+  for (const list of [bandits, wolves, guards]) {
+    if (list === guards && wanted === 0) continue; // 没通缉就别锁卫兵
+    for (const e of list) {
+      if (e.dead || e.downT > 0) continue;
+      const d2v = dist2(player.pos.x, player.pos.z, e.pos.x, e.pos.z);
+      if (d2v < bd) { bd = d2v; best = e; }
+    }
+  }
+  if (best) { lockFoe = best; sfx.equip(); }
+  else toast('附近没有可锁定的目标', 1.2);
+}
+function updateLock(dt) {
+  if (!lockFoe) return;
+  if (lockFoe.dead || lockFoe.downT > 0 || player.dead ||
+      dist2(player.pos.x, player.pos.z, lockFoe.pos.x, lockFoe.pos.z) > 26 * 26) {
+    lockFoe = null;
+    lockMark.visible = false;
+    return;
+  }
+  lockMark.visible = true;
+  const h = lockFoe.parts && lockFoe.parts.head ? 2.45 : 1.5; // 人形头顶/狼背上方
+  lockMark.position.set(lockFoe.pos.x,
+    (lockFoe.pos.y || 0) + h + Math.sin(performance.now() * 0.006) * 0.07, lockFoe.pos.z);
+  lockMark.rotation.y += dt * 3;
 }
 // 剑光拖尾:每次挥砍横扫出一道弧光,0.16 秒燃尽
 const trailFX = [];
@@ -6321,7 +6367,7 @@ function dropCoins(pos, n) {
   }
 }
 
-function damagePlayer(n, attacker = null) {
+function damagePlayer(n, attacker = null, pierce = false) {
   if (player.invulnT > 0 || player.dead) return;
   if (player.blocking && player.rollT <= 0) {
     // 完美弹反:出手前 0.25 秒内举盾 → 攻击者踉跄 2 秒 + 时停
@@ -6337,6 +6383,18 @@ function damagePlayer(n, attacker = null) {
       if (stats.parries >= 5) unlockAch('parry');
       player.invulnT = 0.5;
       player.riposteT = 1.5; // 还击窗口
+      return;
+    }
+    if (pierce) { // 紫圈重击:格挡被砸碎,硬吃一记减伤——早该翻滚的
+      sfx.clank();
+      sfx.hurt();
+      camShake = Math.max(camShake, 0.4);
+      toast('🛡️💥 重击砸碎了格挡!(紫圈来袭要翻滚)', 1.6);
+      player.hp -= 1;
+      player.invulnT = 0.7;
+      flashEl.style.opacity = 0.45;
+      setTimeout(() => (flashEl.style.opacity = 0), 120);
+      if (player.hp <= 0) gameOver();
       return;
     }
     sfx.clank();
@@ -6606,12 +6664,29 @@ function updateBandits(dt) {
       if (b.windupT > 0) {
         b.windupT -= dt;
         if (b.windupT <= 0) {
-          b.attackCd = 1.0;
           b.swingT = 0.3;
-          if (Math.hypot(player.pos.x - b.pos.x, player.pos.z - b.pos.z) < 2.3) damagePlayer(b.dmg, b);
+          const inR = Math.hypot(player.pos.x - b.pos.x, player.pos.z - b.pos.z) < (b.heavyAtk ? 2.7 : 2.3);
+          if (inR) damagePlayer(b.heavyAtk ? b.dmg + 1 : b.dmg, b, b.heavyAtk);
+          if (b.heavyAtk) { // 重击落地:震屏收尾,恢复期更长
+            b.heavyAtk = false;
+            camShake = Math.max(camShake, 0.25);
+            b.attackCd = 1.7;
+          } else if (b.comboN > 0) { // 二连击:紧接一记快斩
+            b.comboN--;
+            b.windupT = 0.28;
+            telegraphFlash(b, 0.28);
+            b.attackCd = 0.2;
+          } else b.attackCd = 1.0;
         }
       } else if (pd > 1.6) { moveEntity(b, player.pos.x, player.pos.z, b.speed, dt); moving = true; }
-      else if (b.attackCd <= 0) { b.windupT = 0.45; telegraphFlash(b); }
+      else if (b.attackCd <= 0) {
+        // 出招选择:精英(头目/悬赏/决斗)会二连击和破盾重击,杂兵偶尔连击
+        const elite = b.boss || b.bountyHead || b.duel;
+        const r = Math.random();
+        if (elite && r < 0.3) { b.heavyAtk = true; b.windupT = 0.85; telegraphFlash(b, 0.85, true); }
+        else if ((elite && r < 0.65) || (!elite && r < 0.18)) { b.comboN = 1; b.windupT = 0.45; telegraphFlash(b); }
+        else { b.windupT = 0.45; telegraphFlash(b); }
+      }
     } else {
       const a = performance.now() * 0.0003 + b.home.x;
       moveEntity(b, b.home.x + Math.cos(a) * 5, b.home.z + Math.sin(a) * 5, b.speed * 0.3, dt);
@@ -6942,8 +7017,13 @@ function updatePlayer(dt) {
   if (moving) {
     player.pos.x += mv.x * speed * dt;
     player.pos.z += mv.y * speed * dt;
-    player.yaw = angleLerp(player.yaw, Math.atan2(mv.x, mv.y), dt * 12);
+    if (!lockFoe) player.yaw = angleLerp(player.yaw, Math.atan2(mv.x, mv.y), dt * 12);
     player.walkT += dt * speed * 2.2;
+  }
+  // 锁定中:身体始终朝着目标,移动变成环绕侧步
+  if (lockFoe) {
+    player.yaw = angleLerp(player.yaw,
+      Math.atan2(lockFoe.pos.x - player.pos.x, lockFoe.pos.z - player.pos.z), dt * 14);
   }
   moveState = moving ? (speed > 5 ? 2 : 1) : 0;
   if (fishing.active && moving) {
@@ -7480,12 +7560,22 @@ function updateCamera(dt) {
   } else {
     camera.up.set(0, 1, 0);
   }
+  // 锁定中:镜头滑到敌我连线的正后方,取景框住双方
+  if (lockFoe) {
+    camYaw = angleLerp(camYaw,
+      Math.atan2(player.pos.x - lockFoe.pos.x, player.pos.z - lockFoe.pos.z), Math.min(1, dt * 4));
+    camPitch += (0.36 - camPitch) * Math.min(1, dt * 2.5);
+  }
   _camOff.set(
     Math.sin(camYaw) * Math.cos(camPitch),
     Math.sin(camPitch),
     Math.cos(camYaw) * Math.cos(camPitch),
   ).multiplyScalar(dist);
   const target = _camTarget.set(player.pos.x, ty, player.pos.z);
+  if (lockFoe) { // 视点偏向敌我中间
+    target.x += (lockFoe.pos.x - player.pos.x) * 0.22;
+    target.z += (lockFoe.pos.z - player.pos.z) * 0.22;
+  }
   const desired = _camDesired.copy(target).add(_camOff);
   desired.y = Math.max(0.6, desired.y);
   camera.position.lerp(desired, 1 - Math.pow(0.0001, dt));
@@ -8485,6 +8575,7 @@ window.__gtm = {
   SPELLS, castSpell, learnSpell, cycleSpell, explodeAt, tryAttack,
   trailFX, faceNearestFoe, getSquash: () => player.squashT || 0,
   dangerFX, telegraphFlash,
+  toggleLock, getLock: () => lockFoe, getLockMark: () => lockMark.visible,
   SKILL_DEFS, skillXp, toggleSneak, sneakFactor, shout, learnShout, doShout,
   mercs, hireMerc, payMercs, DRAGON_SKULL,
   vendetta, vendettaLetter, vendettaRead, updateVendetta, getLoot: () => player.loot || 0,
@@ -8626,6 +8717,7 @@ function loop(now) {
   updateMagic(dt);
   updateTrails(dt);
   updateDanger(dt);
+  updateLock(dt);
   if (player.squashT > 0) {   // 落地挤压回弹
     player.squashT = Math.max(0, player.squashT - dt);
     const base = player.sneaking ? 0.8 : 1;
