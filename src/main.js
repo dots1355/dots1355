@@ -731,7 +731,7 @@ function updateWolves(dt) {
         w.lungeZ = (player.pos.z - w.pos.z) / ld;
         w.yaw = Math.atan2(w.lungeX, w.lungeZ);
         w.group.rotation.y = w.yaw;
-        telegraphFlash(w);
+        telegraphFlash(w, 0.3);
         continue;
       }
       if (pd > 1.3) { moveEntity(w, player.pos.x, player.pos.z, w.speed * wolfBuff, dt); moving = true; }
@@ -1462,27 +1462,36 @@ function updateFalls(dt) {
 }
 
 // 敌人攻击预警红光
-function telegraphFlash(e) {
-  e.group.traverse((o) => {
-    const m = o.material;
-    if (m && m.emissive && m._t0 === undefined) {
-      m._t0 = m.emissive.getHex();
-      m._ti0 = m.emissiveIntensity;
-      m.emissive.setHex(0xff2200);
-      m.emissiveIntensity = 0.7;
+// 起手预警:脚下亮出红色警戒圈,随蓄力收拢变亮,配警示音——看见就滚(翻滚)或举盾弹反
+// (旧实现直接改材质 emissive,GLB 模型材质是共享缓存,会把满街同色 NPC 一起染红,故重做)
+const dangerFX = [];
+const dangerMat = new THREE.MeshBasicMaterial({ color: 0xff3220, transparent: true, opacity: 0.4,
+  side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending });
+function telegraphFlash(e, dur = 0.45) {
+  sfx.warn();
+  const ring = new THREE.Mesh(new THREE.RingGeometry(0.55, 0.8, 1, 24), dangerMat.clone());
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.set(e.pos.x, 0.07, e.pos.z);
+  scene.add(ring);
+  dangerFX.push({ ring, e, t: 0, dur });
+}
+function updateDanger(dt) {
+  for (let i = dangerFX.length - 1; i >= 0; i--) {
+    const f = dangerFX[i];
+    f.t += dt;
+    const k = f.t / f.dur;
+    // 出手完毕/被打断(死亡、倒地、踉跄)即熄灭
+    if (k >= 1 || f.e.dead || f.e.downT > 0 || (f.e.stunT || 0) > 0) {
+      scene.remove(f.ring);
+      f.ring.geometry.dispose();
+      f.ring.material.dispose();
+      dangerFX.splice(i, 1);
+      continue;
     }
-  });
-  setTimeout(() => {
-    e.group.traverse((o) => {
-      const m = o.material;
-      if (m && m._t0 !== undefined) {
-        m.emissive.setHex(m._t0);
-        m.emissiveIntensity = m._ti0;
-        delete m._t0;
-        delete m._ti0;
-      }
-    });
-  }, 380);
+    f.ring.position.set(f.e.pos.x, 0.07, f.e.pos.z);
+    f.ring.scale.setScalar(2.6 - k * 1.6);        // 大圈收拢到出手半径
+    f.ring.material.opacity = 0.25 + 0.55 * k;    // 越接近出手越亮
+  }
 }
 
 // ================= 鸡(惹不起的存在) =================
@@ -6031,7 +6040,7 @@ function faceNearestFoe(range) {
 const trailFX = [];
 const trailMat = new THREE.MeshBasicMaterial({ color: 0xdfe9f5, transparent: true, opacity: 0.5,
   side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending });
-function swingTrail(range, arc = 2.1) {
+function swingTrail(range, arc = 2.1, dir = 1) {
   const g = new THREE.Group();
   const ring = new THREE.Mesh(
     new THREE.RingGeometry(Math.max(0.5, range * 0.45), range, 1, 10, Math.PI / 2 - arc / 2, arc),
@@ -6040,8 +6049,11 @@ function swingTrail(range, arc = 2.1) {
   g.add(ring);
   g.position.set(player.pos.x, 1.05, player.pos.z);
   g.rotation.y = player.yaw;
+  // 连斩分段:一段左挥(下压斜面)、二段右挥(镜像反斜)、三段平扫压轴
+  if (dir === 1) g.rotation.x = 0.28;
+  else if (dir === -1) { g.scale.x = -1; g.rotation.x = -0.28; }
   scene.add(g);
-  trailFX.push({ g, ring, t: 0 });
+  trailFX.push({ g, ring, t: 0, mx: g.scale.x });
 }
 function updateTrails(dt) {
   for (let i = trailFX.length - 1; i >= 0; i--) {
@@ -6057,6 +6069,7 @@ function updateTrails(dt) {
     }
     f.ring.material.opacity = 0.5 * (1 - k);
     f.g.scale.setScalar(1 + k * 0.5);
+    f.g.scale.x *= f.mx || 1; // 保住镜像方向
   }
 }
 
@@ -6078,7 +6091,7 @@ function meleeSweep(dmg, range, arcDot, knock) {
   };
   hitOne(guards, (g) => {
     const dmg = execDmg(g);
-    g.hp -= dmg; sfx.hit(); hitFX(g, knock); showDamage(g.pos, dmg, dmg >= 3);
+    g.hp -= dmg; sfx.hitMetal(); hitFX(g, knock); showDamage(g.pos, dmg, dmg >= 3); // 砍在甲上叮当响
     if (!g.wantedHit) { g.wantedHit = true; crime(1, '你袭击了卫兵!'); }
     if (g.hp <= 0) {
       g.downT = 14; g.stunT = 0; g.group.rotation.z = 0;
@@ -6113,7 +6126,7 @@ function meleeSweep(dmg, range, arcDot, knock) {
   });
   hitOne(wolves, (w) => {
     const dmg3 = execDmg(w);
-    w.hp -= dmg3; sfx.hit(); hitFX(w, knock); showDamage(w.pos, dmg3, dmg3 >= 3);
+    w.hp -= dmg3; sfx.hitFlesh(); hitFX(w, knock); showDamage(w.pos, dmg3, dmg3 >= 3); // 砍进皮肉闷声
     if (w.hp <= 0) killWolf(w);
   });
   if (executed) { // 处决演出:时停 + 震屏
@@ -6125,7 +6138,7 @@ function meleeSweep(dmg, range, arcDot, knock) {
     if (stats.executions >= 10) unlockAch('executioner');
   }
   hitOne(deers, (d) => {
-    sfx.hit();
+    sfx.hitFlesh();
     killDeer(d);
   });
   // 鸡不会死,但它们会记住你
@@ -6232,8 +6245,9 @@ function tryAttack() {
   const whirl = third && skillLv('onehand') >= 5;
   const reach = def.range + (third ? 0.4 : 0) + (sprinting ? 0.4 : 0);
   if (!player.sneaking) faceNearestFoe(reach); // 攻击磁吸:刀锋咬住目标(潜行例外,别打草惊蛇)
-  sfx.whoosh();
-  swingTrail(reach, whirl ? Math.PI * 2 : 2.1);
+  const dir = (whirl || third) ? 0 : (player.chainN % 2 ? 1 : -1); // 左挥/右挥交替,第三剑平扫
+  sfx.whoosh(third ? 0.82 : dir === 1 ? 1 : 1.14); // 三段音高各不同,耳朵也数得清连击
+  swingTrail(reach, whirl ? Math.PI * 2 : third ? 2.6 : 2.1, dir);
   meleeSweep(Math.round(meleeBonus(def.dmg + (player.swordLv >= 2 ? 1 : 0) + (player.relic ? 1 : 0) +
     (third ? 1 : 0) + (sprinting ? 1 : 0)) * sneakMul * riposteMul),
   reach, whirl ? -1.01 : 0.35,
@@ -6258,8 +6272,8 @@ function heavyAttack() {
   // 巨剑专属:蓄力横扫近乎全周,击退更狠(势大力沉的代价是它本来就慢)
   const wide = player.weapon === 'greatsword';
   faceNearestFoe(def.range + 0.7);
-  sfx.whoosh();
-  swingTrail(def.range + 0.7, wide ? Math.PI * 1.7 : Math.PI);
+  sfx.whoosh(0.7); // 重击破空声最沉
+  swingTrail(def.range + 0.7, wide ? Math.PI * 1.7 : Math.PI, 0);
   meleeSweep(meleeBonus((def.dmg + (player.swordLv >= 2 ? 1 : 0) + (player.relic ? 1 : 0)) * 2),
     def.range + 0.7, wide ? -0.6 : -0.1, def.knock * (wide ? 2.3 : 1.8));
   skillXp('onehand', 1);
@@ -6478,7 +6492,7 @@ function updateGuards(dt) {
         moving = true;
       } else if (g.attackCd <= 0) {
         g.windupT = 0.42;
-        telegraphFlash(g);
+        telegraphFlash(g, 0.42);
       }
       g.yaw = angleLerp(g.yaw, Math.atan2(player.pos.x - g.pos.x, player.pos.z - g.pos.z), dt * 10);
     } else {
@@ -6489,9 +6503,10 @@ function updateGuards(dt) {
     }
     g.group.position.copy(g.pos);
     g.group.rotation.y = g.yaw;
-    g.parts._attackAnim = (g.swingT || 0) > 0;
+    g.parts._attackAnim = (g.swingT || 0) > 0 || (g.windupT || 0) > 0;
     animateLimbs(g.parts, g.walkT, moving, g.group, g.state === 'chase' ? 1.1 : 0.55);
-    if (g.swingT > 0) {
+    if (g.windupT > 0) meleeSwing(g.parts, 0.32); // 蓄力:武器高举定住
+    else if (g.swingT > 0) {
       g.swingT -= dt;
       meleeSwing(g.parts, Math.min(1, 1 - g.swingT / 0.35));
     }
@@ -6604,9 +6619,10 @@ function updateBandits(dt) {
     }
     b.group.position.copy(b.pos);
     b.group.rotation.y = b.yaw;
-    b.parts._attackAnim = (b.swingT || 0) > 0;
+    b.parts._attackAnim = (b.swingT || 0) > 0 || (b.windupT || 0) > 0;
     animateLimbs(b.parts, b.walkT, moving, b.group, 1.0);
-    if (b.swingT > 0) {
+    if (b.windupT > 0) meleeSwing(b.parts, 0.32); // 蓄力:武器高举定住
+    else if (b.swingT > 0) {
       b.swingT -= dt;
       meleeSwing(b.parts, Math.min(1, 1 - b.swingT / 0.35));
     }
@@ -8468,6 +8484,7 @@ window.__gtm = {
   EVO, seedLegend, mutateLegend, evolveLegends, legendText, evolveTactics, growCorpus,
   SPELLS, castSpell, learnSpell, cycleSpell, explodeAt, tryAttack,
   trailFX, faceNearestFoe, getSquash: () => player.squashT || 0,
+  dangerFX, telegraphFlash,
   SKILL_DEFS, skillXp, toggleSneak, sneakFactor, shout, learnShout, doShout,
   mercs, hireMerc, payMercs, DRAGON_SKULL,
   vendetta, vendettaLetter, vendettaRead, updateVendetta, getLoot: () => player.loot || 0,
@@ -8608,6 +8625,7 @@ function loop(now) {
   vistaNear.position.set(player.pos.x, 0, player.pos.z);
   updateMagic(dt);
   updateTrails(dt);
+  updateDanger(dt);
   if (player.squashT > 0) {   // 落地挤压回弹
     player.squashT = Math.max(0, player.squashT - dt);
     const base = player.sneaking ? 0.8 : 1;
