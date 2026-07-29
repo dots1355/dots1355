@@ -16,7 +16,21 @@
 
   #hearts { position: absolute; top: 14px; left: 18px; font-size: 24px; letter-spacing: 2px;
     filter: drop-shadow(0 2px 3px rgba(0,0,0,0.7)); }
-  #coins { position: absolute; top: 48px; left: 20px; font-size: 21px; font-weight: bold; color: #ffd83d;
+  #stamina { position: absolute; top: 44px; left: 20px; width: 150px; height: 7px;
+    background: rgba(0,0,0,0.45); border-radius: 4px; overflow: hidden; display: none;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.6); }
+  #stamina-fill { height: 100%; width: 100%; background: linear-gradient(90deg, #d9a13c, #f2cf6b);
+    border-radius: 4px; transition: width 0.08s linear; }
+  #stamina-fill.gasp { background: linear-gradient(90deg, #c0392b, #e07050); }
+  #titlecard { position: absolute; inset: 0; display: none; opacity: 0; transition: opacity 1.4s;
+    background: radial-gradient(ellipse at center, rgba(8,10,14,0.15), rgba(8,10,14,0.85));
+    z-index: 40; flex-direction: column; align-items: center; justify-content: center;
+    pointer-events: none; }
+  #titlecard .main { font-size: 62px; letter-spacing: 16px; color: #e8ecf4; font-weight: bold;
+    text-shadow: 0 4px 26px rgba(0,0,0,0.9); }
+  #titlecard .sub { font-size: 24px; letter-spacing: 26px; margin-top: 14px; color: #c8b06a;
+    text-shadow: 0 3px 14px rgba(0,0,0,0.9); }
+  #coins { position: absolute; top: 58px; left: 20px; font-size: 21px; font-weight: bold; color: #ffd83d;
     text-shadow: 0 2px 4px rgba(0,0,0,0.8); }
   #wanted { position: absolute; top: 14px; right: 18px; font-size: 26px; letter-spacing: 3px;
     animation: pulse 0.9s infinite alternate; }
@@ -155,7 +169,9 @@
       <div id="dialog-text"></div>
       <div id="dialog-hint"></div>
     </div>
+    <div id="titlecard"><div class="main">侠盗猎马人</div><div class="sub">中世纪王国</div></div>
     <div id="hearts" class="hud-text"></div>
+    <div id="stamina"><div id="stamina-fill"></div></div>
     <div id="coins" class="hud-text"></div>
     <div id="equip"></div>
     <div id="wanted" class="hud-text"></div>
@@ -167,6 +183,8 @@
     <div id="controls-hint" class="hud-text">
       WASD 移动 · Shift 疾跑 · 空格 跳跃/二段跳 · C 翻滚(带无敌帧) · Tab 锁定目标(环绕对峙)<br>
       红圈=敌人出手预警(翻滚或弹反) · 紫圈=破盾重击(必须翻滚躲开)<br>
+      体力条:出手/翻滚/疾跑/格挡都耗体力,耗尽=力竭喘气、盾会被砸开;完美弹反回气<br>
+      方向攻击(骑砍式):W+攻=突刺(够得远) · S+攻=下劈(重,可破防) · 平移/站定=横斩(大弧)<br>
       E 互动 · F/左键 攻击(疾跑出手=突斩 · 空中出手=跳劈 · 举盾出手=盾击 · 连续三剑=连斩 · 打踉跄的敌人=处决 ×5) · 右键按住 格挡(出手瞬间举盾=弹反,弹反后速攻=还击 ×2.5) · Q 切换武器<br>
       按住 F 蓄力:刀剑=重击 · 短匕=掷飞刀 · 猎弓=满月贯穿箭<br>
       R 施法 · V 切换法术(1-4 直选;法术要去女巫/教堂/湖心祭坛/回响之镜习得) · Z 潜行(近身出手=偷袭 ×3) · X 战吼(龙骨之地龙颅习得)<br>

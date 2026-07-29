@@ -368,7 +368,8 @@ const heartsEl = $('hearts'), coinsEl = $('coins'), wantedEl = $('wanted'),
   gameoverEl = $('gameover'), gameoverText = $('gameover-text'),
   minimap = $('minimap'), mm = minimap.getContext('2d'),
   lowhpEl = $('lowhp'), weatherEl = $('weather'), equipEl = $('equip'),
-  bosshpEl = $('bosshp'), bosshpFillEl = $('bosshp-fill');
+  bosshpEl = $('bosshp'), bosshpFillEl = $('bosshp-fill'),
+  staminaEl = $('stamina'), staminaFillEl = $('stamina-fill');
 
 // 顶部细条通知:队列化,一次一条,不遮挡视野
 let toastTimer = 0; // >0 显示中,<0 淡出间隔
@@ -399,6 +400,8 @@ const player = {
   pos: world.playerSpawn.clone(),
   vy: 0, yaw: 0, onGround: true, jumps: 0,
   hp: 10, maxHp: 10, coins: 0,
+  sta: 100, maxSta: 100, gaspT: 0, staggerT: 0, // 体力(骑砍核心):出手/翻滚/格挡皆有代价
+
   walkT: 0, attackT: 0, invulnT: 0, mounted: null, dead: false, herbs: 0, venison: 0,
   parcel: null, swordLv: 1, royalHorse: false,
   carrying: null, drunkT: 0, hiccupT: 0,
@@ -909,7 +912,27 @@ function updateMagic(dt) {
   const regen = 0.32 * (player.homeDay === calendar.day ? 1.5 : 1) * (player.blessT > 0 ? 1.4 : 1);
   player.mp = Math.min(player.maxMp, player.mp + regen * dt);
   if (shout.cd > 0) shout.cd -= dt;
+  // 体力(骑砍规则):格挡/疾跑/出手/喘气中不回,其余时刻 16/s 回满
+  if (player.gaspT > 0) player.gaspT -= dt;
+  if (player.staggerT > 0) player.staggerT -= dt;
+  const busy = player.blocking || player.attackT > 0 || player.gaspT > 0 || moveState >= 2;
+  if (!busy) player.sta = Math.min(player.maxSta, player.sta + 16 * dt);
   updateSneakXp(dt);
+}
+// 花体力:不够=喘不上气(出不了手);花光=力竭破绽
+let gaspToastT = 0;
+function spendSta(cost) {
+  if (player.sta < cost) {
+    if (performance.now() - gaspToastT > 1500) {
+      gaspToastT = performance.now();
+      toast('💨 喘不上气……(体力耗尽,缓一缓)', 1.2);
+      sfx.hiccup();
+    }
+    return false;
+  }
+  player.sta -= cost;
+  if (player.sta <= 0) { player.sta = 0; player.gaspT = 1.2; } // 榨干最后一口气=1.2 秒喘息
+  return true;
 }
 
 // ================= 技能熟练度(上古卷轴式:用什么,涨什么) =================
@@ -4890,6 +4913,7 @@ function updateIdle(dt) {
 
 // ================= 存档 =================
 const SAVE_KEY = 'gth-save-v1';
+const FRESH_START = !localStorage.getItem(SAVE_KEY); // 新档才演序章
 let crestsFound = [];
 let saveIconTimer = null;
 function saveGame() {
@@ -5128,12 +5152,14 @@ window.addEventListener('keydown', (e) => {
   }
   if ((e.code === 'KeyC' || e.code === 'ControlLeft') && !dialog.open) doRoll();
   if (e.code === 'Tab' && !dialog.open) toggleLock();
+  if (e.code === 'KeyO' && prologue.on) skipPrologue();
   if (e.code === 'KeyG' && !dialog.open) tryRob();
 });
 // 右键格挡(按住)
 renderer.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
 window.addEventListener('mousedown', (e) => {
-  if (e.button === 2 && started && !player.dead && !player.mounted && player.weapon !== 'bow') {
+  if (e.button === 2 && started && !player.dead && !player.mounted && player.weapon !== 'bow' &&
+      !(player.staggerT > 0)) { // 踉跄中抬不起盾
     if (!player.blocking) player.blockStart = performance.now(); // 完美弹反判定窗
     player.blocking = true;
   }
@@ -5159,12 +5185,79 @@ document.addEventListener('mousemove', (e) => {
   camPitch = Math.max(-0.1, Math.min(1.15, camPitch + e.movementY * 0.0028));
 });
 
+// ================= 序章(天际式开场):狼袭教学 → 队长赏识 → 标题卡揭幕 =================
+const prologue = { on: false, step: 0, t: 0, wolves: [] };
+function startPrologue() {
+  prologue.on = true;
+  prologue.step = 0;
+  prologue.t = 0;
+  dayTime = 0.27; // 黎明,冷光里开场
+  for (let i = 0; i < 3; i++) {
+    const w = wolves[i];
+    if (!w) break;
+    w._home0 = w.home; // 记住老巢,序章完了送回去
+    w.home = { x: player.pos.x, z: player.pos.z };
+    w.dead = false; w.hp = 1; w.stunT = 0; w.lunging = 0; w.lungeCd = 1 + i * 0.8;
+    w.group.visible = true;
+    w.pos.set(player.pos.x + 5 + i * 2.2, 0, player.pos.z + 5 + (i % 2) * 4);
+    w.group.position.copy(w.pos);
+    prologue.wolves.push(w);
+  }
+  toast('🐺 黎明——狼群冲进了村子!', 3.5);
+}
+function endPrologue() {
+  prologue.wolves.forEach((w) => { if (w._home0) w.home = w._home0; });
+  prologue.on = false;
+}
+function showTitleCard() {
+  const el = document.getElementById('titlecard');
+  el.style.display = 'flex';
+  requestAnimationFrame(() => (el.style.opacity = 1));
+  sfx.fanfare();
+  setTimeout(() => {
+    el.style.opacity = 0;
+    setTimeout(() => (el.style.display = 'none'), 1600);
+  }, 3400);
+}
+function skipPrologue(silent) {
+  prologue.wolves.forEach((w) => { if (!w.dead) killWolf(w); });
+  endPrologue();
+  prologue.step = 5;
+  if (!silent) { toast('(序章已跳过)', 1.5); showTitleCard(); }
+}
+function updatePrologue(dt) {
+  if (!prologue.on) return;
+  prologue.t += dt;
+  const alive = prologue.wolves.filter((w) => !w.dead).length;
+  if (prologue.step === 0 && prologue.t > 1.6) {
+    prologue.step = 1;
+    toast('⚔️ 卫兵队长:「旅人,拿稳你的剑!按 Tab 锁定最近的狼!」(按 O 跳过序章)', 5);
+  } else if (prologue.step === 1 && (lockFoe || alive < 3)) {
+    prologue.step = 2;
+    toast('🔴 红圈亮起=它要扑了:按 C 翻滚闪开,或右键举盾弹反!', 4.5);
+  } else if (prologue.step === 2 && alive < 3) {
+    prologue.step = 3;
+    toast('👍 就是这样!按 F 反击——W+F 突刺,S+F 下劈,连按三下=连斩!', 4.5);
+  } else if (prologue.step <= 3 && alive === 0) {
+    prologue.step = 4;
+    prologue.t = 0;
+    player.coins += 15;
+    sfx.fanfare();
+    toast('🎖️ 卫兵队长:「好身手!赏钱拿着——王都用得上你这样的人。」(+15 金币)', 5);
+  } else if (prologue.step === 4 && prologue.t > 2.6) {
+    prologue.step = 5;
+    endPrologue();
+    showTitleCard();
+  }
+}
+
 let started = false;
 titleEl.addEventListener('click', () => {
   initAudio();
   startMusic();
   titleEl.style.display = 'none';
   started = true;
+  if (FRESH_START) startPrologue(); // 新档:黎明狼袭序章
   refreshProclaim(); // 今日公告(联网时由 AI 现写)
   const sp0 = todaySpecial();
   if (sp0) {
@@ -6157,6 +6250,12 @@ function meleeSweep(dmg, range, arcDot, knock) {
     const dmg2 = execDmg(b);
     b.hp -= dmg2; sfx.hit(); hitFX(b, b.boss ? knock * 0.4 : knock);
     showDamage(b.pos, dmg2, dmg2 >= 3);
+    // 破防:重刃(下劈/重击 dmg≥3)砸在举盾的人身上=盾开人晃,处决窗口大开
+    if (dmg >= 3 && !(b.stunT > 0) && b.hp > 0 && Math.random() < EVO.tactics.block * 0.6) {
+      b.stunT = 1.1;
+      sfx.clank();
+      toast('🛡️💥 破防!(踉跄中挨刀=处决 ×5)', 1.2);
+    }
     if (b.hp <= 0) {
       b.dead = true; startFall(b); registerKill(); choreProgress('bandits');
       EVO.kills.melee++;
@@ -6204,6 +6303,7 @@ function tryAttack() {
   // 盾击:举盾状态下出手——不掉血,但把面前的敌人撞个踉跄
   if (started && !player.dead && player.blocking && !(player.rollT > 0) &&
       !(player.attackT > 0) && !player.mounted && player.weapon !== 'bow') {
+    if (player.staggerT > 0 || !spendSta(12)) return;
     player.attackT = 0.7;
     player.attackDur = 0.7;
     sfx.clank();
@@ -6241,7 +6341,9 @@ function tryAttack() {
   }
   const def = WEAPONS[player.weapon];
   // 跳劈:空中出手——砸向地面,落点四方溅开一圈冲击
+  if (player.staggerT > 0) return; // 踉跄中出不了手
   if (!player.onGround && !player.mounted && player.weapon !== 'bow' && !player.plunging) {
+    if (!spendSta(14)) return;
     player.plunging = true;
     player.vy = -16;
     player.attackT = def.cd;
@@ -6249,9 +6351,20 @@ function tryAttack() {
     sfx.sword();
     return;
   }
+  if (player.weapon === 'bow') {
+    player.attackT = def.cd;
+    player.attackDur = def.cd;
+    shootArrow();
+    return;
+  }
+  // 方向攻击(骑砍式):攻击跟着移动方向走——W+攻=突刺,S+攻=下劈,其余=横斩
+  const shiftHeld = keys['ShiftLeft'] || keys['ShiftRight'];
+  let stance = 'slash';
+  if (!shiftHeld && (keys['KeyW'] || keys['ArrowUp'])) stance = 'thrust';
+  else if (!shiftHeld && (keys['KeyS'] || keys['ArrowDown'])) stance = 'overhead';
+  if (!spendSta(stance === 'overhead' ? 16 : stance === 'thrust' ? 10 : 12)) return;
   player.attackT = def.cd;
   player.attackDur = def.cd;
-  if (player.weapon === 'bow') { shootArrow(); return; }
   sfx.sword();
   if (dist2(player.pos.x, player.pos.z, 140, 20) < 80) unlockAch('windmill');
   // 三连斩:0.9 秒内连续出手,第三剑更重、附带大击退
@@ -6290,15 +6403,22 @@ function tryAttack() {
   if (player.sneaking) toast(`🗡️ 偷袭!(×${sneakMul})`, 1.2);
   // 旋风斩:武艺 5 级起,三连斩的第三剑变成全周横扫
   const whirl = third && skillLv('onehand') >= 5;
-  const reach = def.range + (third ? 0.4 : 0) + (sprinting ? 0.4 : 0);
+  const reach = def.range + (third ? 0.4 : 0) + (sprinting ? 0.4 : 0) +
+    (stance === 'thrust' ? 0.9 : stance === 'overhead' ? 0.1 : 0); // 突刺够得远
   if (!player.sneaking) faceNearestFoe(reach); // 攻击磁吸:刀锋咬住目标(潜行例外,别打草惊蛇)
-  const dir = (whirl || third) ? 0 : (player.chainN % 2 ? 1 : -1); // 左挥/右挥交替,第三剑平扫
-  sfx.whoosh(third ? 0.82 : dir === 1 ? 1 : 1.14); // 三段音高各不同,耳朵也数得清连击
-  swingTrail(reach, whirl ? Math.PI * 2 : third ? 2.6 : 2.1, dir);
+  const dir = (whirl || third || stance !== 'slash') ? 0 : (player.chainN % 2 ? 1 : -1);
+  sfx.whoosh(stance === 'overhead' ? 0.72 : stance === 'thrust' ? 1.3 :
+    third ? 0.82 : dir === 1 ? 1 : 1.14); // 每种出手音高不同,耳朵能分招
+  swingTrail(reach, whirl ? Math.PI * 2 : stance === 'thrust' ? 0.55 :
+    stance === 'overhead' ? 1.0 : third ? 2.6 : 2.1, dir);
   meleeSweep(Math.round(meleeBonus(def.dmg + (player.swordLv >= 2 ? 1 : 0) + (player.relic ? 1 : 0) +
-    (third ? 1 : 0) + (sprinting ? 1 : 0)) * sneakMul * riposteMul),
-  reach, whirl ? -1.01 : 0.35,
-  def.knock * (third ? 1.8 : 1) * (sprinting ? 1.3 : 1));
+    (third ? 1 : 0) + (sprinting ? 1 : 0) +
+    (stance === 'overhead' ? 2 : stance === 'thrust' ? 1 : 0)) * sneakMul * riposteMul),
+  reach,
+  whirl ? -1.01 : stance === 'thrust' ? 0.86 : stance === 'overhead' ? 0.5 : 0.35,
+  def.knock * (third ? 1.8 : 1) * (sprinting ? 1.3 : 1) *
+    (stance === 'overhead' ? 1.5 : stance === 'thrust' ? 0.6 : 1));
+  if (stance === 'overhead') camShake = Math.max(camShake, 0.12); // 下劈坠着劲
   if (whirl) { camShake = Math.max(camShake, 0.2); spawnDust(player.pos.x, 0.5, player.pos.z, 10, 2, 1.6); }
   skillXp('onehand', 1);
   if (player.sneaking) skillXp('sneak', 2);
@@ -6306,9 +6426,11 @@ function tryAttack() {
 
 // 蓄力重击:按住 F 约 0.7 秒自动挥出 —— 双倍伤害、超广角横扫、大击退
 function heavyAttack() {
+  if (player.staggerT > 0) return;
   // 蓄力技按武器分家:短匕掷飞刀,猎弓开满月,刀剑抡重击
-  if (player.weapon === 'dagger') { throwKnife(); return; }
-  if (player.weapon === 'bow') { chargedShot(); return; }
+  if (player.weapon === 'dagger') { if (!spendSta(10)) return; throwKnife(); return; }
+  if (player.weapon === 'bow') { if (!spendSta(12)) return; chargedShot(); return; }
+  if (!spendSta(22)) return;
   const def = WEAPONS[player.weapon];
   player.attackT = def.cd * 1.6;
   player.attackDur = def.cd * 1.6;
@@ -6384,6 +6506,7 @@ function damagePlayer(n, attacker = null, pierce = false) {
       if (stats.parries >= 5) unlockAch('parry');
       player.invulnT = 0.5;
       player.riposteT = 1.5; // 还击窗口
+      player.sta = Math.min(player.maxSta, player.sta + 10); // 完美弹反回气:精准的奖赏
       return;
     }
     if (pierce) { // 紫圈重击:格挡被砸碎,硬吃一记减伤——早该翻滚的
@@ -6398,7 +6521,19 @@ function damagePlayer(n, attacker = null, pierce = false) {
       if (player.hp <= 0) gameOver();
       return;
     }
+    // 格挡也要花力气:每挡一下 -8 体力,挡空了盾会被砸开
     sfx.clank();
+    player.sta = Math.max(0, player.sta - 8);
+    if (player.sta <= 0) {
+      player.blocking = false;
+      player.staggerT = 0.9;
+      player.gaspT = 1.2;
+      camShake = Math.max(camShake, 0.35);
+      toast('🛡️💫 力竭!盾被砸开了——快翻不动了', 1.5);
+      sfx.hiccup();
+      player.invulnT = 0.5;
+      return;
+    }
     camShake = Math.max(camShake, 0.15);
     player.invulnT = 0.35;
     return;
@@ -6414,6 +6549,7 @@ function damagePlayer(n, attacker = null, pierce = false) {
 }
 
 function gameOver() {
+  if (prologue.on) skipPrologue(true); // 序章里倒下:直接放行,别卡教学
   player.dead = true;
   player.hp = 0;
   player.drunkT = 0;
@@ -7033,16 +7169,20 @@ function updatePlayer(dt) {
     moveState = 2;
     return;
   }
-  const speed = (keys['ShiftLeft'] || keys['ShiftRight'] ? 8.4 : 5.0) * (player.blocking ? 0.45 : 1) *
+  // 疾跑吃体力:跑干了就只能小步喘(骑砍的腿)
+  const canSprint = (keys['ShiftLeft'] || keys['ShiftRight']) && player.sta > 0.5 && player.gaspT <= 0;
+  const speed = (canSprint ? 8.4 : 5.0) * (player.blocking ? 0.45 : 1) *
     (player.blessT > 0 ? 1.15 : 1) * // 教堂庇佑:脚下生风
     (player.homeDay === calendar.day ? 1.08 : 1) * // 在自家床上睡过:安眠增益
-    (player.sneaking ? 0.5 : 1); // 潜行:压着步子
+    (player.sneaking ? 0.5 : 1) * // 潜行:压着步子
+    (player.gaspT > 0 ? 0.75 : 1) * (player.staggerT > 0 ? 0.35 : 1); // 喘气/踉跄拖腿
   const prevYaw = player.yaw;
   if (moving) {
     player.pos.x += mv.x * speed * dt;
     player.pos.z += mv.y * speed * dt;
     if (!lockFoe) player.yaw = angleLerp(player.yaw, Math.atan2(mv.x, mv.y), dt * 12);
     player.walkT += dt * speed * 2.2;
+    if (canSprint) player.sta = Math.max(0, player.sta - 7 * dt);
   }
   // 锁定中:身体始终朝着目标,移动变成环绕侧步
   if (lockFoe) {
@@ -7196,7 +7336,8 @@ function checkStomp() {
 
 function doRoll() {
   if (!started || player.dead || player.mounted || player.carrying ||
-      player.rollCd > 0 || player.rollT > 0 || !player.onGround) return;
+      player.rollCd > 0 || player.rollT > 0 || !player.onGround || player.staggerT > 0) return;
+  if (!spendSta(15)) return;
   const fx = -Math.sin(camYaw), fz = -Math.cos(camYaw);
   const rx = -fz, rz = fx;
   let ix = 0, iz = 0;
@@ -7635,6 +7776,12 @@ function updateCamera(dt) {
 // ================= HUD =================
 let hudCache = '';
 function updateHUD() {
+  // 体力条每帧直刷(绕过 hudCache):打斗中它一直在动
+  if (started && !player.dead) {
+    staminaEl.style.display = 'block';
+    staminaFillEl.style.width = `${(player.sta / player.maxSta) * 100}%`;
+    staminaFillEl.className = player.gaspT > 0 ? 'gasp' : '';
+  } else staminaEl.style.display = 'none';
   const full = Math.floor(player.hp / 2);
   const half = player.hp % 2;
   const heartsMax = Math.ceil(player.maxHp / 2);
@@ -8603,6 +8750,8 @@ window.__gtm = {
   dangerFX, telegraphFlash,
   toggleLock, getLock: () => lockFoe, getLockMark: () => lockMark.visible,
   getFov: () => camera.fov,
+  prologue, startPrologue, skipPrologue, spendSta, keys,
+  getMoveState: () => moveState, saveNow: saveGame,
   SKILL_DEFS, skillXp, toggleSneak, sneakFactor, shout, learnShout, doShout,
   mercs, hireMerc, payMercs, DRAGON_SKULL,
   vendetta, vendettaLetter, vendettaRead, updateVendetta, getLoot: () => player.loot || 0,
@@ -8745,6 +8894,7 @@ function loop(now) {
   updateTrails(dt);
   updateDanger(dt);
   updateLock(dt);
+  updatePrologue(dt);
   if (player.squashT > 0) {   // 落地挤压回弹
     player.squashT = Math.max(0, player.squashT - dt);
     const base = player.sneaking ? 0.8 : 1;
