@@ -265,7 +265,12 @@ try {
       if (kind === 'human') setHumanModel(gltf.scene);
       else if (kind === 'horse' || kind === 'wolf') setFaunaModel(kind, gltf.scene);
       else if (kind === 'weapons') setWeaponModels(gltf.scene);
-      else if (kind === 'house' || kind === 'keep') setBuildingModel(kind, gltf.scene);
+      else if (kind === 'props') {
+        const st = gltf.scene.getObjectByName('Stall');
+        const br = gltf.scene.getObjectByName('Barrel');
+        if (st) setBuildingModel('stall', st);
+        if (br) setBuildingModel('barrel', br);
+      } else if (kind === 'house' || kind === 'keep') setBuildingModel(kind, gltf.scene);
       else if (kind === 'rocks') {
         const geos = [];
         gltf.scene.traverse((o) => { if (o.isMesh) geos.push(o.geometry); });
@@ -286,6 +291,32 @@ if (location.protocol !== 'file:') fetch('./assets/ai/title.jpg').then((r) => {
     t.style.backgroundPosition = 'center';
   });
 }).catch(() => {});
+
+// 地平线远山环:两圈跟随玩家的雾中山脊(纯背景,永远走不到)——天际"永远有山"的地平线
+function vistaRing(R, H, phase, hex) {
+  const N = 140;
+  const pos = [], idx = [];
+  for (let i = 0; i <= N; i++) {
+    const a = (i / N) * Math.PI * 2;
+    const h = H * Math.max(0.12,
+      0.42 + 0.3 * Math.sin(a * 3 + phase) + 0.22 * Math.sin(a * 7 + phase * 2.3) + 0.14 * Math.sin(a * 13 + phase * 4.1));
+    pos.push(Math.cos(a) * R, -8, Math.sin(a) * R);
+    pos.push(Math.cos(a) * R, h, Math.sin(a) * R);
+  }
+  for (let i = 0; i < N; i++) {
+    const b = i * 2;
+    idx.push(b, b + 1, b + 2, b + 1, b + 3, b + 2);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setIndex(idx);
+  const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: hex, side: THREE.DoubleSide, fog: true }));
+  m.frustumCulled = false;
+  scene.add(m);
+  return m;
+}
+const vistaFar = vistaRing(360, 74, 1.7, 0x76858f);  // 远脊:几乎溶进雾里
+const vistaNear = vistaRing(300, 52, 4.9, 0x67757f); // 近脊:略深一层,错峰出剪影
 
 const world = buildWorld(scene);
 const { colliders } = world;
@@ -8498,6 +8529,8 @@ function loop(now) {
   updateArm(dt);
   updateHome();
   updateFirefly();
+  vistaFar.position.set(player.pos.x, 0, player.pos.z);  // 远山永远在地平线上
+  vistaNear.position.set(player.pos.x, 0, player.pos.z);
   updateMagic(dt);
   updateMercs(dt);
   updateVendetta();

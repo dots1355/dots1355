@@ -297,6 +297,17 @@ export function buildWorld(scene) {
 
   // ---- 集市摊位 ----
   function stall(x, z, canopyColor) {
+    // Blender 市集摊位模板(未染帆布——诺德市集不用糖果篷)
+    const stpl = getBuildingModel('stall');
+    if (stpl) {
+      const g = stpl.clone();
+      g.position.set(x, 0, z);
+      g.lookAt(0, 0, 5);
+      scene.add(g);
+      circle(x, z, 1.4);
+      feat('stall', x, z, 2.5, 1.5);
+      return;
+    }
     const g = new THREE.Group();
     const counter = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1, 1.1), woodMat);
     counter.position.y = 0.5;
@@ -626,6 +637,15 @@ export function buildWorld(scene) {
 
   // ---- 场景道具:木桶 / 板条箱 / 干草卷 / 栅栏 / 手推车 ----
   function barrel(x, z) {
+    const btpl = getBuildingModel('barrel');
+    if (btpl) {
+      const g = btpl.clone();
+      g.position.set(x, 0, z);
+      g.rotation.y = Math.random() * Math.PI * 2;
+      scene.add(g);
+      circle(x, z, 0.5);
+      return;
+    }
     const g = new THREE.Group();
     const body = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.36, 1.0, 10), woodMat);
     body.position.y = 0.5;
