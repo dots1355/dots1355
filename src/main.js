@@ -6175,9 +6175,10 @@ function meleeSweep(dmg, range, arcDot, knock) {
     w.hp -= dmg3; sfx.hitFlesh(); hitFX(w, knock); showDamage(w.pos, dmg3, dmg3 >= 3); // 砍进皮肉闷声
     if (w.hp <= 0) killWolf(w);
   });
-  if (executed) { // 处决演出:时停 + 震屏
+  if (executed) { // 处决演出:时停 + 震屏 + 镜头急推
     hitStopT = Math.max(hitStopT, 0.22);
     camShake = Math.max(camShake, 0.45);
+    fovKick = 0.4;
     sfx.kill();
     toast('⚔️ 处决!(×5)', 1.6);
     stats.executions = (stats.executions || 0) + 1;
@@ -6680,17 +6681,40 @@ function updateBandits(dt) {
         }
       } else if (pd > 1.6) { moveEntity(b, player.pos.x, player.pos.z, b.speed, dt); moving = true; }
       else if (b.attackCd <= 0) {
-        // 出招选择:精英(头目/悬赏/决斗)会二连击和破盾重击,杂兵偶尔连击
-        const elite = b.boss || b.bountyHead || b.duel;
-        const r = Math.random();
-        if (elite && r < 0.3) { b.heavyAtk = true; b.windupT = 0.85; telegraphFlash(b, 0.85, true); }
-        else if ((elite && r < 0.65) || (!elite && r < 0.18)) { b.comboN = 1; b.windupT = 0.45; telegraphFlash(b); }
-        else { b.windupT = 0.45; telegraphFlash(b); }
+        // 车轮战:同时出手的最多两人,其余的绕着你侧向游走等空档(骑砍围攻的呼吸感)
+        const attackers = bandits.reduce((n, o) => n + ((o.windupT > 0 || o.swingT > 0) && !o.dead ? 1 : 0), 0);
+        if (attackers >= 2) {
+          const px = player.pos.x - b.pos.x, pz = player.pos.z - b.pos.z;
+          const d = Math.hypot(px, pz) || 1;
+          b._orbit = b._orbit || (Math.random() < 0.5 ? 1 : -1);
+          moveEntity(b, b.pos.x + (-pz / d) * b._orbit * 2, b.pos.z + (px / d) * b._orbit * 2, b.speed * 0.55, dt);
+          moving = true;
+        } else {
+          // 出招选择:精英(头目/悬赏/决斗)会二连击和破盾重击,杂兵偶尔连击
+          const elite = b.boss || b.bountyHead || b.duel;
+          const r = Math.random();
+          if (elite && r < 0.3) { b.heavyAtk = true; b.windupT = 0.85; telegraphFlash(b, 0.85, true); }
+          else if ((elite && r < 0.65) || (!elite && r < 0.18)) { b.comboN = 1; b.windupT = 0.45; telegraphFlash(b); }
+          else { b.windupT = 0.45; telegraphFlash(b); }
+        }
       }
     } else {
       const a = performance.now() * 0.0003 + b.home.x;
       moveEntity(b, b.home.x + Math.cos(a) * 5, b.home.z + Math.sin(a) * 5, b.speed * 0.3, dt);
       moving = true;
+    }
+    // 包抄间距:同伙互相让位,别挤成一摞人肉塔
+    if (pd < 40) {
+      for (const o of bandits) {
+        if (o === b || o.dead || o.downT > 0) continue;
+        const sx = b.pos.x - o.pos.x, sz = b.pos.z - o.pos.z;
+        const sd = sx * sx + sz * sz;
+        if (sd < 1.32 && sd > 0.0001) {
+          const d = Math.sqrt(sd);
+          b.pos.x += (sx / d) * (1.15 - d) * dt * 3;
+          b.pos.z += (sz / d) * (1.15 - d) * dt * 3;
+        }
+      }
     }
     b.group.position.copy(b.pos);
     b.group.rotation.y = b.yaw;
@@ -7546,6 +7570,7 @@ function updateEnvIntensity() {
 // ================= 相机 =================
 let moveState = 0; // 0 静止 1 走 2 跑 3 疾驰
 let camShake = 0;
+let fovKick = 0; // 处决瞬间镜头急推
 const _camOff = new THREE.Vector3();
 const _camTarget = new THREE.Vector3();
 const _camDesired = new THREE.Vector3();
@@ -7598,10 +7623,11 @@ function updateCamera(dt) {
     camera.position.y += (Math.random() - 0.5) * camShake * 0.35;
   }
   camera.lookAt(target);
-  // 疾跑/疾驰时动态拉伸视野(速度感)
-  const fovTarget = 62 + [0, 0, 3.5, 9][moveState];
+  // 疾跑/疾驰时动态拉伸视野(速度感);处决瞬间反向急推(贴近感)
+  if (fovKick > 0) fovKick -= dt;
+  const fovTarget = 62 + [0, 0, 3.5, 9][moveState] - (fovKick > 0 ? 9 : 0);
   if (Math.abs(camera.fov - fovTarget) > 0.05) {
-    camera.fov += (fovTarget - camera.fov) * Math.min(1, dt * 5);
+    camera.fov += (fovTarget - camera.fov) * Math.min(1, dt * (fovKick > 0 ? 14 : 5));
     camera.updateProjectionMatrix();
   }
 }
@@ -8576,6 +8602,7 @@ window.__gtm = {
   trailFX, faceNearestFoe, getSquash: () => player.squashT || 0,
   dangerFX, telegraphFlash,
   toggleLock, getLock: () => lockFoe, getLockMark: () => lockMark.visible,
+  getFov: () => camera.fov,
   SKILL_DEFS, skillXp, toggleSneak, sneakFactor, shout, learnShout, doShout,
   mercs, hireMerc, payMercs, DRAGON_SKULL,
   vendetta, vendettaLetter, vendettaRead, updateVendetta, getLoot: () => player.loot || 0,
