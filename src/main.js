@@ -839,10 +839,7 @@ function explodeAt(x, z, dmg = 3, radius = 3.4) {
     if (b.boss) dismissMinions();
   });
   boom(wolves, (w) => killWolf(w));
-  boom(guards, (g) => {
-    g.downT = 14; g.stunT = 0; g.group.rotation.z = 0; g.wantedHit = false;
-    startFall(g); registerKill(); dropCoins(g.pos, 3);
-  });
+  boom(guards, (g) => downGuard(g));
   for (const g of guards) {
     if (!g.dead && g.downT <= 0 && dist2(x, z, g.pos.x, g.pos.z) < radius * radius && !g.wantedHit) {
       g.wantedHit = true;
@@ -1024,7 +1021,7 @@ function doShout() {
   };
   wave(bandits, (b) => { b.dead = true; startFall(b); registerKill(); dropCoins(b.pos, 5); });
   wave(wolves, (w) => killWolf(w));
-  wave(guards, (g) => { g.downT = 14; startFall(g); registerKill(); dropCoins(g.pos, 3); });
+  wave(guards, (g) => downGuard(g));
   for (const g of guards) {
     if (!g.dead && dist2(player.pos.x, player.pos.z, g.pos.x, g.pos.z) < 100 && !g.wantedHit) {
       g.wantedHit = true;
@@ -1281,10 +1278,8 @@ function arrowHitEntities(a) {
   if (tryHit(guards, (g) => {
     g.hp -= dmg; sfx.hit(); hitFX(g, 0.4); showDamage(g.pos, dmg);
     if (!g.wantedHit) { g.wantedHit = true; crime(1, '你放箭射击卫兵!'); }
-    if (g.hp <= 0) {
-      g.downT = 14; g.stunT = 0; g.group.rotation.z = 0;
-      g.wantedHit = false; startFall(g); registerKill(); dropCoins(g.pos, 3);
-    } else g.state = 'chase';
+    if (g.hp <= 0) downGuard(g);
+    else g.state = 'chase';
   })) return true;
   if (tryHit(bandits, (b) => {
     // 战术演化:被射多了的匪帮学会侧身闪箭(贴脸射/法术不受影响)
@@ -3311,6 +3306,7 @@ const ACH_DEFS = {
   scribe:   { name: '史官', desc: '读遍全部 12 处世界观铭文' },
   mirror:   { name: '照见自己', desc: '与北境边缘的回响之镜对视' },
   parry:    { name: '见招拆招', desc: '完成 5 次完美弹反' },
+  lawless:  { name: '无法无天', desc: '把全城卫兵同时放倒' },
   chef:     { name: '野炊大师', desc: '在篝火上烤 5 块鹿肉' },
   packmate: { name: '孤狼不再', desc: '驯服白狼「霜牙」' },
   soak:     { name: '泡汤客', desc: '在温泉里泡满 30 秒' },
@@ -5431,6 +5427,7 @@ function crime(n, msg) {
   if (msg) toast(msg, 2.5);
   if (wanted > old) {
     sfx.wanted();
+    if (lawlessT > 0) return; // 无法无天期:卫兵队被打空了,没有增援可派
     // 增援:从最近的城门出动
     const gate = world.gates.reduce((a, b) =>
       dist2(a.x, a.z, player.pos.x, player.pos.z) < dist2(b.x, b.z, player.pos.x, player.pos.z) ? a : b);
@@ -5448,6 +5445,34 @@ function clearWanted() {
     if (guards[i].extra) { scene.remove(guards[i].group); guards.splice(i, 1); }
     else guards[i].state = 'patrol';
   }
+}
+
+// ================= 无法无天(卫兵剿灭)=================
+// 卫兵倒地统一出口:240 秒起不来;全城放倒=成就+通缉没人执行自动烟消+增援停发
+let lawlessT = 0, lawlessPending = false;
+function downGuard(g) {
+  g.downT = 240;
+  g.stunT = 0;
+  g.group.rotation.z = 0;
+  g.wantedHit = false;
+  startFall(g);
+  registerKill();
+  dropCoins(g.pos, 3);
+  if (guards.length && guards.every((x) => x.downT > 0)) lawlessPending = true;
+}
+function updateLawless(dt) {
+  if (lawlessPending) { // 在横扫判定外处理:clearWanted 会拆增援卫兵,别在遍历中动数组
+    lawlessPending = false;
+    lawlessT = 240;
+    unlockAch('lawless');
+    if (wanted > 0) {
+      clearWanted();
+      toast('🌘 全城卫兵都倒下了——通缉令没人执行,烟消云散。', 4.5);
+    } else toast('🌘 全城卫兵都倒下了。这座城暂时没有王法。', 4);
+    sfx.fanfare();
+    remember('把全城卫兵放倒,过了一阵子无法无天的日子', 'lawless');
+  }
+  if (lawlessT > 0) lawlessT -= dt;
 }
 
 // ================= 交互 =================
@@ -6232,12 +6257,8 @@ function meleeSweep(dmg, range, arcDot, knock) {
     const dmg = execDmg(g);
     g.hp -= dmg; sfx.hitMetal(); hitFX(g, knock); showDamage(g.pos, dmg, dmg >= 3); // 砍在甲上叮当响
     if (!g.wantedHit) { g.wantedHit = true; crime(1, '你袭击了卫兵!'); }
-    if (g.hp <= 0) {
-      g.downT = 14; g.stunT = 0; g.group.rotation.z = 0;
-      g.wantedHit = false;
-      startFall(g); registerKill();
-      dropCoins(g.pos, 3);
-    } else g.state = 'chase';
+    if (g.hp <= 0) downGuard(g);
+    else g.state = 'chase';
   });
   hitOne(bandits, (b) => {
     // 战术演化:被砍多了的匪帮学会举盾——普通斩击有概率被格挡(重击/跳劈 dmg 高,破格挡)
@@ -8750,7 +8771,8 @@ window.__gtm = {
   dangerFX, telegraphFlash,
   toggleLock, getLock: () => lockFoe, getLockMark: () => lockMark.visible,
   getFov: () => camera.fov,
-  prologue, startPrologue, skipPrologue, spendSta, keys,
+  prologue, startPrologue, skipPrologue, spendSta,
+  downGuard, getLawless: () => lawlessT, getAch: (k) => achUnlocked.includes(k), keys,
   getMoveState: () => moveState, saveNow: saveGame,
   SKILL_DEFS, skillXp, toggleSneak, sneakFactor, shout, learnShout, doShout,
   mercs, hireMerc, payMercs, DRAGON_SKULL,
@@ -8895,6 +8917,7 @@ function loop(now) {
   updateDanger(dt);
   updateLock(dt);
   updatePrologue(dt);
+  updateLawless(dt);
   if (player.squashT > 0) {   // 落地挤压回弹
     player.squashT = Math.max(0, player.squashT - dt);
     const base = player.sneaking ? 0.8 : 1;
