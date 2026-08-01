@@ -774,10 +774,11 @@ function killWolf(w) {
 
 // ================= 武器与护甲系统 =================
 const WEAPONS = {
-  sword:      { name: '铁剑', icon: '🗡️', dmg: 1, range: 2.4, cd: 0.28, knock: 0.55, price: 0 },
-  dagger:     { name: '短匕', icon: '🔪', dmg: 1, range: 2.0, cd: 0.16, knock: 0.3, price: 30 },
-  greatsword: { name: '巨剑', icon: '⚔️', dmg: 3, range: 2.9, cd: 0.7, knock: 1.3, price: 90 },
-  bow:        { name: '猎弓', icon: '🏹', dmg: 2, range: 0, cd: 0.8, knock: 0.4, price: 60 },
+  // staMul=重量:同一招巨剑更费体力、短匕最省——省下的气就是你的走位(骑砍的取舍)
+  sword:      { name: '铁剑', icon: '🗡️', dmg: 1, range: 2.4, cd: 0.28, knock: 0.55, price: 0, staMul: 1 },
+  dagger:     { name: '短匕', icon: '🔪', dmg: 1, range: 2.0, cd: 0.16, knock: 0.3, price: 30, staMul: 0.65 },
+  greatsword: { name: '巨剑', icon: '⚔️', dmg: 3, range: 2.9, cd: 0.7, knock: 1.3, price: 90, staMul: 1.5 },
+  bow:        { name: '猎弓', icon: '🏹', dmg: 2, range: 0, cd: 0.8, knock: 0.4, price: 60, staMul: 1 },
 };
 const ARMORS = [
   { name: '', bonus: 0 },
@@ -835,6 +836,7 @@ function explodeAt(x, z, dmg = 3, radius = 3.4) {
   };
   boom(bandits, (b) => {
     b.dead = true; startFall(b); registerKill(); choreProgress('bandits');
+    banditSlain();
     dropCoins(b.pos, b.boss ? 20 : 5);
     if (b.boss) dismissMinions();
   });
@@ -950,7 +952,12 @@ function skillXp(k, n) {
     s.xp -= need;
     s.lv++;
     sfx.fanfare();
-    toast(`${SKILL_DEFS[k].icon} ${SKILL_DEFS[k].name}提升到 ${s.lv} 级!(${SKILL_DEFS[k].perk})`, 3.5);
+    // 技艺磨炼身体:每次升级体力上限 +3(封顶 160)——练什么都算锻炼
+    if (player.maxSta < 160) {
+      player.maxSta = Math.min(160, player.maxSta + 3);
+      player.sta = player.maxSta; // 升级瞬间气也回满,爽快些
+    }
+    toast(`${SKILL_DEFS[k].icon} ${SKILL_DEFS[k].name}提升到 ${s.lv} 级!(${SKILL_DEFS[k].perk};体力上限 ${player.maxSta})`, 3.5);
     if (s.lv === 10) remember(`把${SKILL_DEFS[k].name}练到了炉火纯青`, `skill-${k}`);
     saveGame();
   }
@@ -1292,6 +1299,7 @@ function arrowHitEntities(a) {
     if (b.hp <= 0) {
       b.dead = true; startFall(b); registerKill(); choreProgress('bandits');
       EVO.kills.arrow++;
+      banditSlain();
       if (b.boss) dismissMinions();
       dropCoins(b.pos, b.boss ? 20 : 5);
       if (quest.active && missions[quest.idx].type === 'bandits' && !b.boss && !b.escort && !b.bountyHead && !b.robber && !b.arena && !b.ambient && !b.duel && !b.convict && !b.eventFoe) {
@@ -5106,6 +5114,10 @@ if (hasSave) {
 }
 // 读档后应用升级效果
 setWeaponVisual(player.weapon);
+// 体力上限由技能总等级重算(maxSta 不入档,防旧档字段缺失)
+player.maxSta = Math.min(160, 100 + 3 *
+  Object.values(player.skills || {}).reduce((n, s) => n + Math.max(0, (s.lv || 1) - 1), 0));
+player.sta = player.maxSta;
 setArmorVisual(player.armor);
 applySeason();
 if (player.royalHorse) {
@@ -6200,6 +6212,32 @@ function updateLock(dt) {
     (lockFoe.pos.y || 0) + h + Math.sin(performance.now() * 0.006) * 0.07, lockFoe.pos.z);
   lockMark.rotation.y += dt * 3;
 }
+// ================= 士气(骑砍式):血腥震慑,残兵溃逃 =================
+let streakN = 0, streakT = 0;
+function frightenBandits(radius = 14) {
+  let fled = 0;
+  for (const o of bandits) {
+    if (o.dead || o.downT > 0 || o.boss) continue; // 头目不吃这套
+    if (dist2(player.pos.x, player.pos.z, o.pos.x, o.pos.z) > radius * radius) continue;
+    if (o.hp <= 2 || Math.random() < 0.45) { // 残血必逃,满血看胆量
+      o.fleeT = Math.max(o.fleeT || 0, 5 + Math.random() * 3);
+      fled++;
+    }
+  }
+  return fled;
+}
+function banditSlain() {
+  const now = performance.now();
+  streakN = (now - streakT < 6000) ? streakN + 1 : 1;
+  streakT = now;
+  if (streakN >= 3) {
+    streakN = 0;
+    if (frightenBandits() > 0) {
+      toast('😱 连杀震慑:附近的盗贼胆寒溃逃!', 2.5);
+      sfx.warn();
+    }
+  }
+}
 // 剑光拖尾:每次挥砍横扫出一道弧光,0.16 秒燃尽
 const trailFX = [];
 const trailMat = new THREE.MeshBasicMaterial({ color: 0xdfe9f5, transparent: true, opacity: 0.5,
@@ -6280,6 +6318,7 @@ function meleeSweep(dmg, range, arcDot, knock) {
     if (b.hp <= 0) {
       b.dead = true; startFall(b); registerKill(); choreProgress('bandits');
       EVO.kills.melee++;
+      banditSlain();
       dropCoins(b.pos, b.boss ? 20 : 5);
       addPickup('heart', b.pos.x, b.pos.z + 1, 30);
       if (b.boss) { toast('⚔️ 血斧巴罗克倒下了!黑石兄弟会土崩瓦解!', 5); dismissMinions(); }
@@ -6295,10 +6334,11 @@ function meleeSweep(dmg, range, arcDot, knock) {
     w.hp -= dmg3; sfx.hitFlesh(); hitFX(w, knock); showDamage(w.pos, dmg3, dmg3 >= 3); // 砍进皮肉闷声
     if (w.hp <= 0) killWolf(w);
   });
-  if (executed) { // 处决演出:时停 + 震屏 + 镜头急推
+  if (executed) { // 处决演出:时停 + 震屏 + 镜头急推;目击者胆寒
     hitStopT = Math.max(hitStopT, 0.22);
     camShake = Math.max(camShake, 0.45);
     fovKick = 0.4;
+    if (frightenBandits(11) > 0) toast('😱 目睹处决,盗贼胆寒溃逃!', 2.2);
     sfx.kill();
     toast('⚔️ 处决!(×5)', 1.6);
     stats.executions = (stats.executions || 0) + 1;
@@ -6383,7 +6423,8 @@ function tryAttack() {
   let stance = 'slash';
   if (!shiftHeld && (keys['KeyW'] || keys['ArrowUp'])) stance = 'thrust';
   else if (!shiftHeld && (keys['KeyS'] || keys['ArrowDown'])) stance = 'overhead';
-  if (!spendSta(stance === 'overhead' ? 16 : stance === 'thrust' ? 10 : 12)) return;
+  if (!spendSta(Math.round((stance === 'overhead' ? 16 : stance === 'thrust' ? 10 : 12) *
+    (def.staMul || 1)))) return;
   player.attackT = def.cd;
   player.attackDur = def.cd;
   sfx.sword();
@@ -6451,7 +6492,7 @@ function heavyAttack() {
   // 蓄力技按武器分家:短匕掷飞刀,猎弓开满月,刀剑抡重击
   if (player.weapon === 'dagger') { if (!spendSta(10)) return; throwKnife(); return; }
   if (player.weapon === 'bow') { if (!spendSta(12)) return; chargedShot(); return; }
-  if (!spendSta(22)) return;
+  if (!spendSta(Math.round(22 * (WEAPONS[player.weapon].staMul || 1)))) return;
   const def = WEAPONS[player.weapon];
   player.attackT = def.cd * 1.6;
   player.attackDur = def.cd * 1.6;
@@ -6802,6 +6843,16 @@ function updateBandits(dt) {
       continue;
     }
     if (b.stunT > 0) { b.stunT -= dt; continue; }
+    if (b.fleeT > 0) { // 溃逃:头也不回地跑,跑够了才敢回头
+      b.fleeT -= dt;
+      const rx = b.pos.x - player.pos.x, rz = b.pos.z - player.pos.z;
+      const rd = Math.hypot(rx, rz) || 1;
+      moveEntity(b, b.pos.x + (rx / rd) * 7, b.pos.z + (rz / rd) * 7, b.speed * 1.05, dt);
+      b.group.position.copy(b.pos);
+      b.group.rotation.y = b.yaw;
+      animateLimbs(b.parts, b.walkT, true, b.group, 1.15);
+      continue;
+    }
     b.attackCd = Math.max(0, b.attackCd - dt);
     if (b._trampleCd > 0) b._trampleCd -= dt;
     const pd = Math.hypot(player.pos.x - b.pos.x, player.pos.z - b.pos.z);
@@ -8772,7 +8823,8 @@ window.__gtm = {
   toggleLock, getLock: () => lockFoe, getLockMark: () => lockMark.visible,
   getFov: () => camera.fov,
   prologue, startPrologue, skipPrologue, spendSta,
-  downGuard, getLawless: () => lawlessT, getAch: (k) => achUnlocked.includes(k), keys,
+  downGuard, getLawless: () => lawlessT, getAch: (k) => achUnlocked.includes(k),
+  frightenBandits, banditSlain, keys,
   getMoveState: () => moveState, saveNow: saveGame,
   SKILL_DEFS, skillXp, toggleSneak, sneakFactor, shout, learnShout, doShout,
   mercs, hireMerc, payMercs, DRAGON_SKULL,
