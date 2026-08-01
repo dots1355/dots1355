@@ -6391,8 +6391,12 @@ function tryAttack() {
     player.attackT = defM.cd * 1.1;
     player.attackDur = defM.cd * 1.1;
     sfx.sword();
-    meleeSweep(meleeBonus(defM.dmg + (player.swordLv >= 2 ? 1 : 0) + (player.relic ? 1 : 0) + 1),
-      defM.range + 1.0, 0.1, defM.knock * 1.4);
+    // 冲量伤害(骑砍之魂):马速借给刀锋——疾驰一刀 +2,小跑 +1,原地无加成
+    const mom = (player._rideSpeed || 0) >= 15 ? 2 : (player._rideSpeed || 0) >= 8 ? 1 : 0;
+    if (mom >= 2) { sfx.whoosh(0.7); camShake = Math.max(camShake, 0.18); }
+    swingTrail(defM.range + 1.0, 2.3);
+    meleeSweep(meleeBonus(defM.dmg + (player.swordLv >= 2 ? 1 : 0) + (player.relic ? 1 : 0) + 1 + mom),
+      defM.range + 1.0, 0.1, defM.knock * (1.4 + mom * 0.5));
     skillXp('onehand', 1);
     skillXp('riding', 1);
     return;
@@ -7148,6 +7152,7 @@ function updatePlayer(dt) {
       ? (keys['ShiftLeft'] || keys['ShiftRight'] ? 4.6 : 3.2)
       : (keys['ShiftLeft'] || keys['ShiftRight'] ? 17 : 11) * (h.fast ? 1.2 : 1) *
         (1 + 0.02 * (skillLv('riding') - 1)); // 骑术:人马合一
+    player._rideSpeed = moving ? speed : 0; // 冲量记账:马上挥刀按马速加成
     // 骑砍冲锋践踏:疾驰状态撞上敌人,连人带马把他掀翻
     if (!h.sheep && speed >= 16 && moving) {
       for (const list of [bandits, wolves]) {
