@@ -5168,7 +5168,8 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyT' && dialog.open) deepTalk();
   if (e.code === 'KeyH') toggleHint();
   if (e.code === 'KeyQ') cycleWeapon();
-  if (e.code === 'KeyR' && !dialog.open) castSpell();
+  // 施法键做冗余判定:部分输入法/键盘布局下 e.code 会被吞,补上 e.key 兜底
+  if ((e.code === 'KeyR' || e.key === 'r' || e.key === 'R') && !dialog.open) castSpell();
   if (e.code === 'KeyV' && !dialog.open) cycleSpell();
   if (e.code === 'KeyZ' && !dialog.open) toggleSneak();
   if (e.code === 'KeyX' && !dialog.open) doShout();
@@ -5203,6 +5204,7 @@ renderer.domElement.addEventListener('mousedown', (e) => {
   if (dialog.open) { advanceDialog(); return; }
   if (!locked) renderer.domElement.requestPointerLock();
   else if (e.button === 0) tryAttack();
+  else if (e.button === 1) { e.preventDefault(); castSpell(); } // 中键施法:左手不用离开 WASD
 });
 document.addEventListener('pointerlockchange', () => {
   locked = document.pointerLockElement === renderer.domElement;
@@ -5267,7 +5269,7 @@ function updatePrologue(dt) {
     toast('🔴 红圈亮起=它要扑了:按 C 翻滚闪开,或右键举盾弹反!', 4.5);
   } else if (prologue.step === 2 && alive < 3) {
     prologue.step = 3;
-    toast('👍 就是这样!按 F 反击——W+F 突刺,S+F 下劈,连按三下=连斩!', 4.5);
+    toast('👍 就是这样!按 F 反击(W+F 突刺,S+F 下劈);远了就按 R 放✴️魔光弹!', 4.5);
   } else if (prologue.step <= 3 && alive === 0) {
     prologue.step = 4;
     prologue.t = 0;
@@ -7946,7 +7948,7 @@ function updateHUD() {
     (player.armor ? ` · 🛡️ ${ARMORS[player.armor].name}` : '') +
     (player.weaponsOwned.length > 1 ? '(Q 切换)' : '') +
     (player.spells.length
-      ? ` · ${SPELLS[player.spells[player.spellIdx]].icon}${SPELLS[player.spells[player.spellIdx]].name}` +
+      ? ` · ${SPELLS[player.spells[player.spellIdx]].icon}${SPELLS[player.spells[player.spellIdx]].name}(R/鼠标中键)` +
         ` ${'🔹'.repeat(Math.floor(player.mp))}${'▫'.repeat(player.maxMp - Math.floor(player.mp))}`
       : '');
   promptEl.textContent = promptText;
