@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { buildWorld } from './world.js';
 import { makeHumanoid, makeHorse, makeWolf, makeChicken, makeSheep, resolveCollisions, angleLerp, dist2, lambert, setHumanModel, setFaunaModel, setWeaponModels, getWeaponModel } from './entities.js';
 import { INTRO, REGIONS, GUARD_LINES, NPCS, MISSIONS, VILLAGERS, DIALOGS, TIME_GREETINGS, LORE } from './story.js';
-import { initAudio, sfx, startMusic, toggleMusic, weatherAudio, setAmbience } from './audio.js';
+import { initAudio, sfx, startMusic, toggleMusic, weatherAudio, setAmbience, setCombatMusic } from './audio.js';
 import { preloadAIAssets, generateRemoteAITextures } from './textures.js';
 import { initWilderness, updateWilderness, wildRegionName, CORE } from './wilderness.js';
 import * as BANKS from './dialogue-banks.js';
@@ -6314,12 +6314,26 @@ function toggleLock() {
   if (best) { lockFoe = best; sfx.equip(); }
   else toast('附近没有可锁定的目标', 1.2);
 }
+// 锁定目标血条(名字 + 血量,顶部居中)
+const lockhpEl = document.getElementById('lockhp'),
+  lockhpNameEl = document.getElementById('lockhp-name'),
+  lockhpFillEl = document.getElementById('lockhp-fill');
+function foeName(e) {
+  if (e.warlord) return '⚔️ 战团枭首';
+  if (e.boss) return '🪓 血斧巴罗克';
+  if (e.bountyHead) return '💀 悬赏要犯';
+  if (e.duel) return '🗡️ 决斗者';
+  if (wolves.includes(e)) return '🐺 恶狼';
+  if (guards.includes(e)) return '🛡️ 王国卫兵';
+  return '🔪 盗贼';
+}
 function updateLock(dt) {
-  if (!lockFoe) return;
+  if (!lockFoe) { lockhpEl.style.display = 'none'; return; }
   if (lockFoe.dead || lockFoe.downT > 0 || player.dead ||
       dist2(player.pos.x, player.pos.z, lockFoe.pos.x, lockFoe.pos.z) > 26 * 26) {
     lockFoe = null;
     lockMark.visible = false;
+    lockhpEl.style.display = 'none';
     return;
   }
   lockMark.visible = true;
@@ -6327,6 +6341,31 @@ function updateLock(dt) {
   lockMark.position.set(lockFoe.pos.x,
     (lockFoe.pos.y || 0) + h + Math.sin(performance.now() * 0.006) * 0.07, lockFoe.pos.z);
   lockMark.rotation.y += dt * 3;
+  lockFoe._maxHp = Math.max(lockFoe._maxHp || 0, lockFoe.hp); // 见过的最高血量当上限
+  lockhpEl.style.display = 'block';
+  lockhpNameEl.textContent = foeName(lockFoe);
+  lockhpFillEl.style.width = `${Math.max(0, Math.min(1, lockFoe.hp / lockFoe._maxHp)) * 100}%`;
+}
+
+// ================= 战斗音乐:遇敌切紧张曲,脱战 4 秒回吟游调 =================
+let combatCalmT = 0;
+function updateCombatMusic(dt) {
+  let hot = false;
+  for (const list of [bandits, wolves]) {
+    for (const e of list) {
+      if (e.dead || e.downT > 0 || e.fleeT > 0) continue;
+      if (dist2(player.pos.x, player.pos.z, e.pos.x, e.pos.z) < 14 * 14) { hot = true; break; }
+    }
+    if (hot) break;
+  }
+  if (!hot && wanted > 0) { // 被通缉追捕也算交战
+    for (const g of guards) {
+      if (g.downT > 0 || g.state !== 'chase') continue;
+      if (dist2(player.pos.x, player.pos.z, g.pos.x, g.pos.z) < 16 * 16) { hot = true; break; }
+    }
+  }
+  combatCalmT = hot ? 4 : Math.max(0, combatCalmT - dt);
+  setCombatMusic(combatCalmT > 0);
 }
 // ================= 盗贼战团(骑砍式野战遭遇)=================
 // 每隔几分钟,一支五人战团(枭首+四喽啰)从旷野压向王都:半路截杀=犒赏,放进城=集市遭殃
@@ -9077,7 +9116,8 @@ window.__gtm = {
   downGuard, getLawless: () => lawlessT, getAch: (k) => achUnlocked.includes(k),
   frightenBandits, banditSlain,
   frostPatches, frostSlow, castBigFire, getFireCharge: () => player.fireChargeT || 0,
-  warband, spawnWarband, updateWarband, keys,
+  warband, spawnWarband, updateWarband,
+  getCombatMusic: () => combatCalmT > 0, foeName, keys,
   getMoveState: () => moveState, saveNow: saveGame,
   SKILL_DEFS, skillXp, toggleSneak, sneakFactor, shout, learnShout, doShout,
   mercs, hireMerc, payMercs, DRAGON_SKULL,
@@ -9225,6 +9265,7 @@ function loop(now) {
   updatePrologue(dt);
   updateLawless(dt);
   updateWarband(dt);
+  updateCombatMusic(dt);
   if (player.squashT > 0) {   // 落地挤压回弹
     player.squashT = Math.max(0, player.squashT - dt);
     const base = player.sneaking ? 0.8 : 1;

@@ -178,8 +178,24 @@ const MELODY = [
 ];
 const BASS = [110, 110, 131, 131, 98, 98, 110, 110, 87, 87, 98, 98, 110, 110, 110, 110];
 
+// 战斗曲:半音压迫的急行旋律 + 密集锯齿低音 + 鼓点(遇敌自动切入)
+const COMBAT_MELODY = [
+  440, 0, 440, 466, 440, 0, 349, 0, 440, 0, 523, 466, 440, 0, 330, 0,
+  440, 440, 0, 523, 587, 0, 523, 466, 440, 0, 466, 0, 349, 0, 330, 0,
+];
+const COMBAT_BASS = [110, 110, 104, 110, 87, 98, 110, 104];
+let combatMode = false;
+export function setCombatMusic(on) { combatMode = !!on; }
 let step = 0;
 function musicTick() {
+  if (combatMode) {
+    const m = COMBAT_MELODY[step % COMBAT_MELODY.length];
+    if (m) tone(m, 0.12, 'square', 0.04);
+    if (step % 2 === 0) tone(COMBAT_BASS[Math.floor(step / 2) % COMBAT_BASS.length], 0.2, 'sawtooth', 0.055);
+    if (step % 4 === 2) tone(70, 0.08, 'sine', 0.1, 0, -30); // 心跳般的低鼓
+    step++;
+    return;
+  }
   const m = MELODY[step % MELODY.length];
   if (m) tone(m, 0.16, 'triangle', 0.05);
   if (step % 4 === 0) {

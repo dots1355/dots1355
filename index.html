@@ -123,6 +123,13 @@
     border: 1px solid #a03a3a; border-radius: 4px; overflow: hidden; }
   #bosshp .fill { height: 100%; width: 100%; background: linear-gradient(90deg, #c0392b, #ff6b4a);
     transition: width 0.25s; }
+  #lockhp { position: absolute; top: 84px; left: 50%; transform: translateX(-50%);
+    width: 210px; display: none; }
+  #lockhp .label { font-size: 12px; color: #ffcf9a; text-align: center; text-shadow: 0 1px 3px #000; }
+  #lockhp .bar { height: 6px; margin-top: 2px; background: rgba(0,0,0,0.55);
+    border: 1px solid #8a5a2a; border-radius: 3px; overflow: hidden; }
+  #lockhp .fill { height: 100%; width: 100%; background: linear-gradient(90deg, #d98a2b, #f2c96b);
+    transition: width 0.15s; }
 
   #save-icon { position: absolute; bottom: 228px; left: 22px; font-size: 18px; opacity: 0;
     transition: opacity 0.6s; filter: drop-shadow(0 2px 3px #000); }
@@ -233,6 +240,10 @@
   <div id="bosshp">
     <div class="label">血斧巴罗克</div>
     <div class="bar"><div class="fill" id="bosshp-fill"></div></div>
+  </div>
+  <div id="lockhp">
+    <div class="label" id="lockhp-name"></div>
+    <div class="bar"><div class="fill" id="lockhp-fill"></div></div>
   </div>
   <div id="save-icon">💾</div>
 
