@@ -792,6 +792,7 @@ player.weaponsOwned = ['sword'];
 // 四门法术分别来自四处地标:女巫卖火球、教堂授治愈、湖心祭坛赠冰霜、回响之镜予闪现。
 // R 施放 · V 切换 · 数字键 1-4 直选;法力自然回复,自家安眠/庇佑时回得更快。
 const SPELLS = {
+  spark: { name: '魔光弹', icon: '✴️', mp: 1, cd: 0.45 }, // 娘胎里带的:1 蓝速射,毁灭系入门
   fire:  { name: '火球术', icon: '🔥', mp: 3, cd: 1.1 },
   heal:  { name: '治愈术', icon: '✨', mp: 4, cd: 2.5 },
   frost: { name: '冰霜新星', icon: '❄️', mp: 4, cd: 6 },
@@ -799,7 +800,7 @@ const SPELLS = {
 };
 player.mp = 6;
 player.maxMp = 6;
-player.spells = [];
+player.spells = ['spark']; // 基础魔法与生俱来,R 键即放
 player.spellIdx = 0;
 player.castT = 0;
 function learnSpell(key) {
@@ -863,10 +864,28 @@ function castSpell() {
   if (stats.casts >= 30) unlockAch('mage');
   skillXp('destruction', 2);
   const fx = Math.sin(player.yaw), fz = Math.cos(player.yaw);
-  if (key === 'fire') {
+  if (key === 'spark') {
+    // 魔光弹:速射直线光弹,带辉光;毁灭系每 3 级伤害 +1
+    sfx.arrow();
+    const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.12, 8, 6),
+      new THREE.MeshBasicMaterial({ color: 0xbfe4ff }));
+    mesh.add(new THREE.Mesh(new THREE.SphereGeometry(0.3, 8, 6),
+      new THREE.MeshBasicMaterial({ color: 0x5599ff, transparent: true, opacity: 0.35,
+        blending: THREE.AdditiveBlending, depthWrite: false })));
+    if (!player.sneaking) faceNearestFoe(9); // 法弹也吸目标,新手第一发就该打中
+    const fx2 = Math.sin(player.yaw), fz2 = Math.cos(player.yaw);
+    const pos = new THREE.Vector3(player.pos.x + fx2 * 0.7, 1.25, player.pos.z + fz2 * 0.7);
+    mesh.position.copy(pos);
+    scene.add(mesh);
+    arrows.push({ mesh, pos, vel: new THREE.Vector3(fx2, 0.02, fz2).multiplyScalar(26),
+      ttl: 1.8, stuck: false, mag: true, dmg: 1 + Math.floor((skillLv('destruction') - 1) / 3) });
+  } else if (key === 'fire') {
     sfx.arrow();
     const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.22, 8, 6),
       new THREE.MeshBasicMaterial({ color: 0xff8830 }));
+    mesh.add(new THREE.Mesh(new THREE.SphereGeometry(0.5, 8, 6),
+      new THREE.MeshBasicMaterial({ color: 0xff5510, transparent: true, opacity: 0.3,
+        blending: THREE.AdditiveBlending, depthWrite: false })));
     const pos = new THREE.Vector3(player.pos.x + fx * 0.8, 1.3, player.pos.z + fz * 0.8);
     mesh.position.copy(pos);
     scene.add(mesh);
@@ -1329,7 +1348,7 @@ function updateArrows(dt) {
     a.ttl -= dt;
     if (a.ttl <= 0) { scene.remove(a.mesh); arrows.splice(i, 1); continue; }
     if (a.stuck) continue;
-    if (!a.fire) a.vel.y -= 7 * dt; // 火球直线飞行
+    if (!a.fire && !a.mag) a.vel.y -= 7 * dt; // 火球/魔光弹直线飞行,不吃重力
     // 子步进:快箭(满月 42/秒)在低帧率下一帧能跨 2 个身位,不切细会从判定圈中间穿过去
     const stepN = Math.max(1, Math.ceil((a.vel.length() * dt) / 0.6));
     let removed = false;
@@ -1349,7 +1368,7 @@ function updateArrows(dt) {
         continue;
       }
       if (arrowHitEntities(a)) {
-        skillXp('archery', 2);
+        skillXp(a.mag ? 'destruction' : 'archery', 2);
         if (a.pierce > 0) { a.pierce--; continue; } // 满月箭:穿过去接着飞
         scene.remove(a.mesh);
         arrows.splice(i, 1);
@@ -4075,6 +4094,7 @@ let promptTargetPos = null;
 // ================= 命中反馈:白闪 + 击退 =================
 function hitFX(e, push = 0.55) {
   hitStop(0.035);
+  spawnDust(e.pos.x, 1.0, e.pos.z, 3, 0.45, 1.4); // 命中扬尘:刀刀有反馈
   // 受击弹跳:横向鼓一下再弹回,肉眼可见的"挨了一记"
   if (!e._popping) {
     e._popping = true;
@@ -5114,6 +5134,8 @@ if (hasSave) {
 }
 // 读档后应用升级效果
 setWeaponVisual(player.weapon);
+// 基础魔法与生俱来:老档也补上魔光弹
+if (!player.spells.includes('spark')) player.spells.unshift('spark');
 // 体力上限由技能总等级重算(maxSta 不入档,防旧档字段缺失)
 player.maxSta = Math.min(160, 100 + 3 *
   Object.values(player.skills || {}).reduce((n, s) => n + Math.max(0, (s.lv || 1) - 1), 0));
@@ -6365,6 +6387,7 @@ function tryAttack() {
   if (started && !player.dead && player.blocking && !(player.rollT > 0) &&
       !(player.attackT > 0) && !player.mounted && player.weapon !== 'bow') {
     if (player.staggerT > 0 || !spendSta(12)) return;
+    player._stance = null;
     player.attackT = 0.7;
     player.attackDur = 0.7;
     sfx.clank();
@@ -6388,6 +6411,7 @@ function tryAttack() {
       player.blocking || player.rollT > 0) return;
   if (player.mounted && player.weapon !== 'bow' && !player.mounted.sheep) {
     const defM = WEAPONS[player.weapon];
+    player._stance = null;
     player.attackT = defM.cd * 1.1;
     player.attackDur = defM.cd * 1.1;
     sfx.sword();
@@ -6409,6 +6433,7 @@ function tryAttack() {
   if (player.staggerT > 0) return; // 踉跄中出不了手
   if (!player.onGround && !player.mounted && player.weapon !== 'bow' && !player.plunging) {
     if (!spendSta(14)) return;
+    player._stance = 'overhead'; // 跳劈就是从天而降的下劈
     player.plunging = true;
     player.vy = -16;
     player.attackT = def.cd;
@@ -6417,6 +6442,7 @@ function tryAttack() {
     return;
   }
   if (player.weapon === 'bow') {
+    player._stance = null;
     player.attackT = def.cd;
     player.attackDur = def.cd;
     shootArrow();
@@ -6429,6 +6455,7 @@ function tryAttack() {
   else if (!shiftHeld && (keys['KeyS'] || keys['ArrowDown'])) stance = 'overhead';
   if (!spendSta(Math.round((stance === 'overhead' ? 16 : stance === 'thrust' ? 10 : 12) *
     (def.staMul || 1)))) return;
+  player._stance = stance === 'slash' ? null : stance; // 挥刀动画按招式走
   player.attackT = def.cd;
   player.attackDur = def.cd;
   sfx.sword();
@@ -6498,6 +6525,7 @@ function heavyAttack() {
   if (player.weapon === 'bow') { if (!spendSta(12)) return; chargedShot(); return; }
   if (!spendSta(Math.round(22 * (WEAPONS[player.weapon].staMul || 1)))) return;
   const def = WEAPONS[player.weapon];
+  player._stance = 'overhead'; // 重击=抡满的下劈动作
   player.attackT = def.cd * 1.6;
   player.attackDur = def.cd * 1.6;
   sfx.sword();
@@ -6700,7 +6728,18 @@ function animateLimbs(p, walkT, moving, group = null, speedNorm = 0.6) {
 }
 
 // 通用三段式挥剑:抬臂蓄力 → 劈砍 → 收势(t: 0→1)
-function meleeSwing(p, t) {
+function meleeSwing(p, t, mode) {
+  // 突刺:收臂→直臂捅出→回收,身体侧拧送肩(骑砍的枪感)
+  if (mode === 'thrust') {
+    let arm;
+    if (t < 0.28) arm = -0.15 - (t / 0.28) * 0.35;             // 收
+    else if (t < 0.55) arm = -0.5 - ((t - 0.28) / 0.27) * 1.15; // 捅
+    else arm = -1.65 + ((t - 0.55) / 0.45) * 1.65;              // 收回
+    p.armR.rotation.x = arm;
+    p.armR.rotation.z = 0.12 * Math.sin(t * Math.PI);
+    if (p.body) p.body.rotation.y = -0.4 * Math.sin(t * Math.PI);
+    return;
+  }
   let arm, twist;
   if (t < 0.32) {
     const k = t / 0.32;
@@ -6715,6 +6754,11 @@ function meleeSwing(p, t) {
     arm = 0.8 * (1 - k);
     twist = 0.45 * (1 - k);
   }
+  // 下劈:同一条弧线抡得更满、劈得更深,身体跟着前倾压刀
+  if (mode === 'overhead') {
+    arm *= 1.2;
+    if (p.body) p.body.rotation.x = 0.3 * Math.sin(Math.min(1, t / 0.7) * Math.PI);
+  } else if (p.body) p.body.rotation.x = 0;
   p.armR.rotation.x = arm;
   p.armR.rotation.z = -0.25 * Math.sin(t * Math.PI);
   if (p.body) p.body.rotation.y = twist;
@@ -7121,7 +7165,7 @@ function updatePlayer(dt) {
     player.attackT -= dt;
     const t = 1 - player.attackT / (player.attackDur || 0.35);
     player.parts._attackAnim = true;
-    meleeSwing(player.parts, Math.min(1, t));
+    meleeSwing(player.parts, Math.min(1, t), player._stance);
     if (player.attackT <= 0) {
       player.parts._attackAnim = false;
       player.parts.armR.rotation.z = 0;
