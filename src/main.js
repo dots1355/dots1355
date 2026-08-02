@@ -851,6 +851,64 @@ function explodeAt(x, z, dmg = 3, radius = 3.4) {
     }
   }
 }
+// ================= 冰霜留痕:新星过后地面结霜,敌人踩上去减速一半 =================
+const frostPatches = [];
+function addFrostPatch(x, z, r = 5.5, dur = 6) {
+  const m = new THREE.Mesh(new THREE.CircleGeometry(r, 24),
+    new THREE.MeshBasicMaterial({ color: 0x9fe0ff, transparent: true, opacity: 0.28,
+      blending: THREE.AdditiveBlending, depthWrite: false }));
+  m.rotation.x = -Math.PI / 2;
+  m.position.set(x, 0.06, z);
+  scene.add(m);
+  frostPatches.push({ x, z, r, t: dur, m });
+}
+function updateFrostPatches(dt) {
+  for (let i = frostPatches.length - 1; i >= 0; i--) {
+    const p = frostPatches[i];
+    p.t -= dt;
+    if (p.t <= 0) {
+      scene.remove(p.m);
+      p.m.geometry.dispose();
+      p.m.material.dispose();
+      frostPatches.splice(i, 1);
+      continue;
+    }
+    if (p.t < 1) p.m.material.opacity = 0.28 * p.t; // 最后一秒融化
+  }
+}
+function frostSlow(e) {
+  if (!frostPatches.length) return 1;
+  for (const p of frostPatches) {
+    if (dist2(e.pos.x, e.pos.z, p.x, p.z) < p.r * p.r) return 0.5;
+  }
+  return 1;
+}
+
+// 大火球:蓄力引导的产物——更大更疼,炸开半径 5,配大冷却
+function castBigFire() {
+  if (!started || player.dead || player.carrying || dialog.open) return;
+  const cost = Math.max(2, Math.round(5 * (1 - 0.04 * (skillLv('destruction') - 1))));
+  if (player.mp < cost) { toast(`💧 法力不足(大火球需要 ${cost} 点)`, 1.6); return; }
+  player.mp -= cost;
+  player.castT = 1.8;
+  stats.casts = (stats.casts || 0) + 1;
+  skillXp('destruction', 3);
+  sfx.arrow();
+  sfx.stomp();
+  camShake = Math.max(camShake, 0.2);
+  const fx = Math.sin(player.yaw), fz = Math.cos(player.yaw);
+  const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.4, 10, 8),
+    new THREE.MeshBasicMaterial({ color: 0xffa040 }));
+  mesh.add(new THREE.Mesh(new THREE.SphereGeometry(0.85, 10, 8),
+    new THREE.MeshBasicMaterial({ color: 0xff4400, transparent: true, opacity: 0.32,
+      blending: THREE.AdditiveBlending, depthWrite: false })));
+  const pos = new THREE.Vector3(player.pos.x + fx * 0.9, 1.35, player.pos.z + fz * 0.9);
+  mesh.position.copy(pos);
+  scene.add(mesh);
+  arrows.push({ mesh, pos, vel: new THREE.Vector3(fx, 0.05, fz).multiplyScalar(19),
+    ttl: 2.4, stuck: false, fire: true, big: true });
+}
+
 function castSpell() {
   if (!started || player.dead || player.castT > 0 || !player.spells.length ||
       player.carrying || dialog.open) return;
@@ -904,6 +962,7 @@ function castSpell() {
     sfx.clear();
     camShake = Math.max(camShake, 0.25);
     spawnDust(player.pos.x, 0.4, player.pos.z, 22, 3.2, 1.6);
+    addFrostPatch(player.pos.x, player.pos.z); // 冰霜留痕:6 秒冰面,踩上减速一半
     const freeze = (list) => {
       for (const e of list) {
         if (e.dead || e.downT > 0 || e.stunT === undefined) continue;
@@ -936,8 +995,22 @@ function updateMagic(dt) {
   player.mp = Math.min(player.maxMp, player.mp + regen * dt);
   if (shout.cd > 0) shout.cd -= dt;
   // 按住连发:R/中键压住不放,魔光弹按冷却节奏一发接一发(只限魔光弹,别把治愈术的蓝烧干)
-  if ((keys['KeyR'] || midHeld) && player.castT <= 0 && !dialog.open &&
-      player.spells[player.spellIdx] === 'spark') castSpell();
+  const heldCast = (keys['KeyR'] || midHeld) && !dialog.open;
+  if (heldCast && player.castT <= 0 && player.spells[player.spellIdx] === 'spark') castSpell();
+  // 火球蓄力:冷却结束后继续按住=引导聚能,蓄满松开轰出大火球
+  if (heldCast && player.castT <= 0 && player.spells[player.spellIdx] === 'fire') {
+    const t0 = player.fireChargeT || 0;
+    player.fireChargeT = Math.min(1, t0 + dt);
+    if (Math.random() < 0.35) spawnDust(player.pos.x + Math.sin(player.yaw) * 0.7, 1.3,
+      player.pos.z + Math.cos(player.yaw) * 0.7, 1, 0.3, 1.2); // 聚能星火
+    if (t0 < 0.55 && player.fireChargeT >= 0.55) {
+      sfx.clear();
+      toast('🔥 蓄满!松开轰出大火球', 1.2);
+    }
+  } else if (!heldCast && (player.fireChargeT || 0) > 0) {
+    if (player.fireChargeT >= 0.55) castBigFire();
+    player.fireChargeT = 0;
+  }
   // 体力(骑砍规则):格挡/疾跑/出手/喘气中不回,其余时刻 16/s 回满
   if (player.gaspT > 0) player.gaspT -= dt;
   if (player.staggerT > 0) player.staggerT -= dt;
@@ -1368,7 +1441,7 @@ function updateArrows(dt) {
           dist2(a.pos.x, a.pos.z, e.pos.x, e.pos.z) < 1.6);
         if (near(bandits) || near(wolves) || near(guards) ||
             a.pos.y <= 0.1 || pointBlocked(a.pos.x, a.pos.z) || a.ttl <= 0.05) {
-          explodeAt(a.pos.x, a.pos.z);
+          explodeAt(a.pos.x, a.pos.z, a.big ? 5 : 3, a.big ? 5.2 : 3.4); // 大火球:范围与伤害俱增
           scene.remove(a.mesh);
           arrows.splice(i, 1);
           removed = true;
@@ -6718,6 +6791,7 @@ function moveEntity(e, tx, tz, speed, dt) {
   const dx = tx - e.pos.x, dz = tz - e.pos.z;
   const d = Math.hypot(dx, dz);
   if (d < 0.15) return true;
+  speed *= frostSlow(e); // 踩着冰面腿脚发僵
   e.pos.x += (dx / d) * speed * dt;
   e.pos.z += (dz / d) * speed * dt;
   e.yaw = angleLerp(e.yaw, Math.atan2(dx, dz), dt * 10);
@@ -8902,7 +8976,8 @@ window.__gtm = {
   getFov: () => camera.fov,
   prologue, startPrologue, skipPrologue, spendSta,
   downGuard, getLawless: () => lawlessT, getAch: (k) => achUnlocked.includes(k),
-  frightenBandits, banditSlain, keys,
+  frightenBandits, banditSlain,
+  frostPatches, frostSlow, castBigFire, getFireCharge: () => player.fireChargeT || 0, keys,
   getMoveState: () => moveState, saveNow: saveGame,
   SKILL_DEFS, skillXp, toggleSneak, sneakFactor, shout, learnShout, doShout,
   mercs, hireMerc, payMercs, DRAGON_SKULL,
@@ -9043,6 +9118,7 @@ function loop(now) {
   vistaFar.position.set(player.pos.x, 0, player.pos.z);  // 远山永远在地平线上
   vistaNear.position.set(player.pos.x, 0, player.pos.z);
   updateMagic(dt);
+  updateFrostPatches(dt);
   updateTrails(dt);
   updateDanger(dt);
   updateLock(dt);
