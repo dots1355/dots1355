@@ -865,20 +865,25 @@ function castSpell() {
   skillXp('destruction', 2);
   const fx = Math.sin(player.yaw), fz = Math.cos(player.yaw);
   if (key === 'spark') {
-    // 魔光弹:速射直线光弹,带辉光;毁灭系每 3 级伤害 +1
+    // 魔光弹:速射直线光弹,带辉光;毁灭系每 3 级伤害 +1,5 级起三连扇射
     sfx.arrow();
-    const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.12, 8, 6),
-      new THREE.MeshBasicMaterial({ color: 0xbfe4ff }));
-    mesh.add(new THREE.Mesh(new THREE.SphereGeometry(0.3, 8, 6),
-      new THREE.MeshBasicMaterial({ color: 0x5599ff, transparent: true, opacity: 0.35,
-        blending: THREE.AdditiveBlending, depthWrite: false })));
     if (!player.sneaking) faceNearestFoe(9); // 法弹也吸目标,新手第一发就该打中
-    const fx2 = Math.sin(player.yaw), fz2 = Math.cos(player.yaw);
-    const pos = new THREE.Vector3(player.pos.x + fx2 * 0.7, 1.25, player.pos.z + fz2 * 0.7);
-    mesh.position.copy(pos);
-    scene.add(mesh);
-    arrows.push({ mesh, pos, vel: new THREE.Vector3(fx2, 0.02, fz2).multiplyScalar(26),
-      ttl: 1.8, stuck: false, mag: true, dmg: 1 + Math.floor((skillLv('destruction') - 1) / 3) });
+    const yaws = skillLv('destruction') >= 5
+      ? [player.yaw - 0.17, player.yaw, player.yaw + 0.17]
+      : [player.yaw];
+    for (const yw of yaws) {
+      const fx2 = Math.sin(yw), fz2 = Math.cos(yw);
+      const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.12, 8, 6),
+        new THREE.MeshBasicMaterial({ color: 0xbfe4ff }));
+      mesh.add(new THREE.Mesh(new THREE.SphereGeometry(0.3, 8, 6),
+        new THREE.MeshBasicMaterial({ color: 0x5599ff, transparent: true, opacity: 0.35,
+          blending: THREE.AdditiveBlending, depthWrite: false })));
+      const pos = new THREE.Vector3(player.pos.x + fx2 * 0.7, 1.25, player.pos.z + fz2 * 0.7);
+      mesh.position.copy(pos);
+      scene.add(mesh);
+      arrows.push({ mesh, pos, vel: new THREE.Vector3(fx2, 0.02, fz2).multiplyScalar(26),
+        ttl: 1.8, stuck: false, mag: true, dmg: 1 + Math.floor((skillLv('destruction') - 1) / 3) });
+    }
   } else if (key === 'fire') {
     sfx.arrow();
     const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.22, 8, 6),
@@ -930,6 +935,9 @@ function updateMagic(dt) {
   const regen = 0.32 * (player.homeDay === calendar.day ? 1.5 : 1) * (player.blessT > 0 ? 1.4 : 1);
   player.mp = Math.min(player.maxMp, player.mp + regen * dt);
   if (shout.cd > 0) shout.cd -= dt;
+  // 按住连发:R/中键压住不放,魔光弹按冷却节奏一发接一发(只限魔光弹,别把治愈术的蓝烧干)
+  if ((keys['KeyR'] || midHeld) && player.castT <= 0 && !dialog.open &&
+      player.spells[player.spellIdx] === 'spark') castSpell();
   // 体力(骑砍规则):格挡/疾跑/出手/喘气中不回,其余时刻 16/s 回满
   if (player.gaspT > 0) player.gaspT -= dt;
   if (player.staggerT > 0) player.staggerT -= dt;
@@ -957,7 +965,7 @@ function spendSta(cost) {
 const SKILL_DEFS = {
   onehand:     { name: '武艺', icon: '⚔️', perk: '近战伤害 +6%/级' },
   archery:     { name: '弓术', icon: '🏹', perk: '箭矢伤害 +6%/级' },
-  destruction: { name: '法术', icon: '🔮', perk: '法力消耗 -4%/级' },
+  destruction: { name: '法术', icon: '🔮', perk: '法力消耗 -4%/级;5 级魔光弹三连扇射' },
   riding:      { name: '骑术', icon: '🐴', perk: '骑乘速度 +2%/级' },
   sneak:       { name: '潜行', icon: '🤫', perk: '警觉圈再缩 3%/级' },
 };
@@ -1369,6 +1377,7 @@ function updateArrows(dt) {
       }
       if (arrowHitEntities(a)) {
         skillXp(a.mag ? 'destruction' : 'archery', 2);
+        if (a.mag) magBurst(a.pos.x, Math.max(0.4, a.pos.y), a.pos.z); // 命中碎光
         if (a.pierce > 0) { a.pierce--; continue; } // 满月箭:穿过去接着飞
         scene.remove(a.mesh);
         arrows.splice(i, 1);
@@ -1376,6 +1385,13 @@ function updateArrows(dt) {
         continue;
       }
       if (a.pos.y <= 0.05 || pointBlocked(a.pos.x, a.pos.z)) {
+        if (a.mag) { // 光弹不钉墙:撞上就炸成碎光消散
+          magBurst(a.pos.x, Math.max(0.15, a.pos.y), a.pos.z);
+          scene.remove(a.mesh);
+          arrows.splice(i, 1);
+          removed = true;
+          break;
+        }
         a.stuck = true;
         a.ttl = Math.min(a.ttl, 2);
         a.pos.y = Math.max(0.05, a.pos.y);
@@ -5197,14 +5213,16 @@ window.addEventListener('mousedown', (e) => {
 });
 window.addEventListener('mouseup', (e) => {
   if (e.button === 2) player.blocking = false;
+  if (e.button === 1) midHeld = false;
 });
+let midHeld = false;
 window.addEventListener('keyup', (e) => (keys[e.code] = false));
 renderer.domElement.addEventListener('mousedown', (e) => {
   if (!started) return;
   if (dialog.open) { advanceDialog(); return; }
   if (!locked) renderer.domElement.requestPointerLock();
   else if (e.button === 0) tryAttack();
-  else if (e.button === 1) { e.preventDefault(); castSpell(); } // 中键施法:左手不用离开 WASD
+  else if (e.button === 1) { e.preventDefault(); midHeld = true; castSpell(); } // 中键施法:左手不用离开 WASD
 });
 document.addEventListener('pointerlockchange', () => {
   locked = document.pointerLockElement === renderer.domElement;
@@ -6280,6 +6298,15 @@ function swingTrail(range, arc = 2.1, dir = 1) {
   else if (dir === -1) { g.scale.x = -1; g.rotation.x = -0.28; }
   scene.add(g);
   trailFX.push({ g, ring, t: 0, mx: g.scale.x });
+}
+// 魔法命中碎光:一团加色蓝光炸开(复用拖尾的生灭管线)
+function magBurst(x, y, z) {
+  const m = new THREE.Mesh(new THREE.SphereGeometry(0.2, 8, 6),
+    new THREE.MeshBasicMaterial({ color: 0x9fd4ff, transparent: true, opacity: 0.8,
+      blending: THREE.AdditiveBlending, depthWrite: false }));
+  m.position.set(x, y, z);
+  scene.add(m);
+  trailFX.push({ g: m, ring: m, t: -0.08, mx: 1 }); // 负起点=多亮一拍
 }
 function updateTrails(dt) {
   for (let i = trailFX.length - 1; i >= 0; i--) {
