@@ -3423,6 +3423,7 @@ const ACH_DEFS = {
   mirror:   { name: '照见自己', desc: '与北境边缘的回响之镜对视' },
   parry:    { name: '见招拆招', desc: '完成 5 次完美弹反' },
   lawless:  { name: '无法无天', desc: '把全城卫兵同时放倒' },
+  warbreaker: { name: '破军', desc: '全歼一支盗贼战团' },
   chef:     { name: '野炊大师', desc: '在篝火上烤 5 块鹿肉' },
   packmate: { name: '孤狼不再', desc: '驯服白狼「霜牙」' },
   soak:     { name: '泡汤客', desc: '在温泉里泡满 30 秒' },
@@ -6327,6 +6328,81 @@ function updateLock(dt) {
     (lockFoe.pos.y || 0) + h + Math.sin(performance.now() * 0.006) * 0.07, lockFoe.pos.z);
   lockMark.rotation.y += dt * 3;
 }
+// ================= 盗贼战团(骑砍式野战遭遇)=================
+// 每隔几分钟,一支五人战团(枭首+四喽啰)从旷野压向王都:半路截杀=犒赏,放进城=集市遭殃
+const warband = { active: false, members: [], cd: 100 + Math.random() * 60, lootT: 0 };
+function spawnWarband() {
+  warband.active = true;
+  warband.members = [];
+  warband.lootT = 0;
+  const a = Math.random() * Math.PI * 2;
+  const sx = Math.cos(a) * 120, sz = Math.sin(a) * 120;
+  const lead = addBandit(sx, sz, { hp: 8, dmg: 2, speed: 5.4, scale: 1.12 });
+  lead.warlord = true;
+  lead.duel = true; // 借精英出招库:紫圈重击+二连击
+  lead.warband = true;
+  warband.members.push(lead);
+  for (let i = 0; i < 4; i++) {
+    const b = addBandit(sx + (Math.random() * 8 - 4), sz + (Math.random() * 8 - 4), { hp: 3 });
+    b.warband = true;
+    warband.members.push(b);
+  }
+  const compass = Math.abs(sx) > Math.abs(sz) ? (sx > 0 ? '东' : '西') : (sz > 0 ? '南' : '北');
+  toast(`⚠️ 斥候急报:一支盗贼战团正从${compass}面逼近王都!半路截住他们!`, 5);
+  sfx.warn();
+}
+function disbandWarband(escaped) {
+  for (const b of warband.members) {
+    if (escaped && !b.dead) { b.dead = true; b.group.visible = false; }
+    const gone = b;
+    setTimeout(() => { // 尸体躺一会儿再收,别当场蒸发
+      scene.remove(gone.group);
+      const i = bandits.indexOf(gone);
+      if (i >= 0) bandits.splice(i, 1);
+    }, 4000);
+  }
+  warband.members = [];
+  warband.active = false;
+  warband.cd = 150 + Math.random() * 120;
+}
+function updateWarband(dt) {
+  if (!started || player.dead) return;
+  if (!warband.active) {
+    if (!prologue.on) warband.cd -= dt;
+    if (warband.cd <= 0) spawnWarband();
+    return;
+  }
+  const alive = warband.members.filter((b) => !b.dead);
+  if (!alive.length) { // 全歼:犒赏
+    disbandWarband(false);
+    toast('🎖️ 战团覆灭!你护住了王都的安宁。(悬赏 +25 金币)', 4.5);
+    sfx.fanfare();
+    player.coins += 25;
+    unlockAch('warbreaker');
+    remember('在野外截住并全歼了一支盗贼战团', `warband-${calendar.day}`);
+    return;
+  }
+  // 行军:队伍的"锚点"稳步压向广场;贴近玩家的成员自动切普通战斗 AI
+  for (const b of alive) {
+    const dx = -b.home.x, dz = 10 - b.home.z;
+    const d = Math.hypot(dx, dz);
+    if (d > 14) {
+      b.home.x += (dx / d) * 4.2 * dt;
+      b.home.z += (dz / d) * 4.2 * dt;
+    }
+  }
+  // 兵临集市:赖满 20 秒没被赶走=劫掠得手,扬长而去
+  const lead = alive[0];
+  if (Math.hypot(lead.pos.x, lead.pos.z - 10) < 26) {
+    warband.lootT += dt;
+    if (warband.lootT > 20) {
+      disbandWarband(true);
+      toast('💥 盗贼战团劫掠了集市,扬长而去!商人们叫苦不迭……', 5);
+      remember('没能拦住劫掠集市的盗贼战团', `warloot-${calendar.day}`);
+    }
+  }
+}
+
 // ================= 士气(骑砍式):血腥震慑,残兵溃逃 =================
 let streakN = 0, streakT = 0;
 function frightenBandits(radius = 14) {
@@ -6402,9 +6478,9 @@ function updateTrails(dt) {
 function meleeSweep(dmg, range, arcDot, knock) {
   const fx = Math.sin(player.yaw), fz = Math.cos(player.yaw);
   // 处决:对踉跄中的敌人(弹反/盾击/冰冻后)出手 = ×5 终结,配慢动作
-  let executed = false;
+  let executed = false, execTarget = null;
   const execDmg = (e) => {
-    if (dmg > 0 && e.stunT > 0.3) { executed = true; return dmg * 5; }
+    if (dmg > 0 && e.stunT > 0.3) { executed = true; execTarget = e; return dmg * 5; }
     return dmg;
   };
   const hitOne = (list, onHit) => {
@@ -6458,10 +6534,33 @@ function meleeSweep(dmg, range, arcDot, knock) {
     w.hp -= dmg3; sfx.hitFlesh(); hitFX(w, knock); showDamage(w.pos, dmg3, dmg3 >= 3); // 砍进皮肉闷声
     if (w.hp <= 0) killWolf(w);
   });
-  if (executed) { // 处决演出:时停 + 震屏 + 镜头急推;目击者胆寒
+  if (executed) { // 处决演出:时停 + 震屏 + 镜头急推;目击者胆寒;按武器各有终结技
     hitStopT = Math.max(hitStopT, 0.22);
     camShake = Math.max(camShake, 0.45);
     fovKick = 0.4;
+    if (execTarget) {
+      if (player.weapon === 'dagger') {
+        // 影袭:黑雾一闪,人已在目标身后收刀
+        magBurst(player.pos.x, 1.0, player.pos.z);
+        const dx = execTarget.pos.x - player.pos.x, dz = execTarget.pos.z - player.pos.z;
+        const d = Math.hypot(dx, dz) || 1;
+        player.pos.x = execTarget.pos.x + (dx / d) * 1.1;
+        player.pos.z = execTarget.pos.z + (dz / d) * 1.1;
+        resolveCollisions(player.pos, 0.45, colliders);
+        player.yaw = Math.atan2(-dx, -dz); // 转身面向尸体,收刀
+        magBurst(player.pos.x, 1.0, player.pos.z);
+      } else if (player.weapon === 'greatsword') {
+        // 断头台:巨剑砸出冲击环,大地都跟着响
+        camShake = Math.max(camShake, 0.65);
+        spawnDust(execTarget.pos.x, 0.2, execTarget.pos.z, 14, 2.2, 2.2);
+        swingTrail(3.2, Math.PI * 2);
+        sfx.stomp();
+      } else {
+        // 铁剑:十字剑光收势
+        swingTrail(2.7, 2.3, 1);
+        swingTrail(2.7, 2.3, -1);
+      }
+    }
     if (frightenBandits(11) > 0) toast('😱 目睹处决,盗贼胆寒溃逃!', 2.2);
     sfx.kill();
     toast('⚔️ 处决!(×5)', 1.6);
@@ -8977,7 +9076,8 @@ window.__gtm = {
   prologue, startPrologue, skipPrologue, spendSta,
   downGuard, getLawless: () => lawlessT, getAch: (k) => achUnlocked.includes(k),
   frightenBandits, banditSlain,
-  frostPatches, frostSlow, castBigFire, getFireCharge: () => player.fireChargeT || 0, keys,
+  frostPatches, frostSlow, castBigFire, getFireCharge: () => player.fireChargeT || 0,
+  warband, spawnWarband, updateWarband, keys,
   getMoveState: () => moveState, saveNow: saveGame,
   SKILL_DEFS, skillXp, toggleSneak, sneakFactor, shout, learnShout, doShout,
   mercs, hireMerc, payMercs, DRAGON_SKULL,
@@ -9124,6 +9224,7 @@ function loop(now) {
   updateLock(dt);
   updatePrologue(dt);
   updateLawless(dt);
+  updateWarband(dt);
   if (player.squashT > 0) {   // 落地挤压回弹
     player.squashT = Math.max(0, player.squashT - dt);
     const base = player.sneaking ? 0.8 : 1;
