@@ -1576,6 +1576,17 @@ function registerKill() {
     el.style.transform = 'translateX(-50%) scale(1.3)';
     setTimeout(() => { el.style.transform = 'translateX(-50%) scale(1)'; }, 120);
   }
+  // 连杀里程碑:越杀越勇
+  if (comboN === 3) toast('⚔️ 三连杀!', 1.4);
+  else if (comboN === 5) {
+    toast('🔥 势不可挡!(体力回满)', 2);
+    player.sta = player.maxSta;
+    sfx.fanfare();
+  } else if (comboN === 8) {
+    toast('👑 一骑当千!', 2.4);
+    unlockAch('rampage');
+    sfx.fanfare();
+  }
 }
 function updateCombo(dt) {
   if (comboT > 0) {
@@ -3424,6 +3435,7 @@ const ACH_DEFS = {
   parry:    { name: '见招拆招', desc: '完成 5 次完美弹反' },
   lawless:  { name: '无法无天', desc: '把全城卫兵同时放倒' },
   warbreaker: { name: '破军', desc: '全歼一支盗贼战团' },
+  rampage:  { name: '一骑当千', desc: '一场战斗内 8 连杀' },
   chef:     { name: '野炊大师', desc: '在篝火上烤 5 块鹿肉' },
   packmate: { name: '孤狼不再', desc: '驯服白狼「霜牙」' },
   soak:     { name: '泡汤客', desc: '在温泉里泡满 30 秒' },
@@ -6369,25 +6381,28 @@ function updateCombatMusic(dt) {
 }
 // ================= 盗贼战团(骑砍式野战遭遇)=================
 // 每隔几分钟,一支五人战团(枭首+四喽啰)从旷野压向王都:半路截杀=犒赏,放进城=集市遭殃
-const warband = { active: false, members: [], cd: 100 + Math.random() * 60, lootT: 0 };
+const warband = { active: false, members: [], cd: 100 + Math.random() * 60, lootT: 0, wave: 0 };
 function spawnWarband() {
   warband.active = true;
   warband.members = [];
   warband.lootT = 0;
   const a = Math.random() * Math.PI * 2;
   const sx = Math.cos(a) * 120, sz = Math.sin(a) * 120;
-  const lead = addBandit(sx, sz, { hp: 8, dmg: 2, speed: 5.4, scale: 1.12 });
+  // 越剿越强:每覆灭一支,下一支多一个喽啰(封顶 8),枭首更硬
+  const grunts = Math.min(8, 4 + warband.wave);
+  const lead = addBandit(sx, sz, { hp: 8 + warband.wave, dmg: 2, speed: 5.4, scale: 1.12 });
   lead.warlord = true;
   lead.duel = true; // 借精英出招库:紫圈重击+二连击
   lead.warband = true;
   warband.members.push(lead);
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < grunts; i++) {
     const b = addBandit(sx + (Math.random() * 8 - 4), sz + (Math.random() * 8 - 4), { hp: 3 });
     b.warband = true;
     warband.members.push(b);
   }
   const compass = Math.abs(sx) > Math.abs(sz) ? (sx > 0 ? '东' : '西') : (sz > 0 ? '南' : '北');
-  toast(`⚠️ 斥候急报:一支盗贼战团正从${compass}面逼近王都!半路截住他们!`, 5);
+  toast(`⚠️ 斥候急报:一支盗贼战团(${warband.members.length} 人)正从${compass}面逼近王都!半路截住他们!` +
+    (warband.wave > 0 ? '(为复仇而来,比上次更凶)' : ''), 5);
   sfx.warn();
 }
 function disbandWarband(escaped) {
@@ -6412,7 +6427,8 @@ function updateWarband(dt) {
     return;
   }
   const alive = warband.members.filter((b) => !b.dead);
-  if (!alive.length) { // 全歼:犒赏
+  if (!alive.length) { // 全歼:犒赏;残党记仇,下一支更大
+    warband.wave++;
     disbandWarband(false);
     toast('🎖️ 战团覆灭!你护住了王都的安宁。(悬赏 +25 金币)', 4.5);
     sfx.fanfare();
@@ -9117,7 +9133,7 @@ window.__gtm = {
   frightenBandits, banditSlain,
   frostPatches, frostSlow, castBigFire, getFireCharge: () => player.fireChargeT || 0,
   warband, spawnWarband, updateWarband,
-  getCombatMusic: () => combatCalmT > 0, foeName, keys,
+  getCombatMusic: () => combatCalmT > 0, foeName, registerKill, keys,
   getMoveState: () => moveState, saveNow: saveGame,
   SKILL_DEFS, skillXp, toggleSneak, sneakFactor, shout, learnShout, doShout,
   mercs, hireMerc, payMercs, DRAGON_SKULL,
