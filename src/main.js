@@ -8856,14 +8856,44 @@ function drawMinimap() {
     mm.arc(mx, mz, 2.5, 0, 6.28);
     mm.fill();
   }
-  // 盗贼
+  // 盗贼(战团成员标红,枭首加大加边;不在图内时沿边画来袭方向箭头)
+  let wbOffMap = null;
   for (const b of bandits) {
     if (b.dead) continue;
     const [mx, mz] = toMap(b.pos.x, b.pos.z);
-    mm.fillStyle = '#222';
+    const onMap = mx > 2 && mx < S - 2 && mz > 2 && mz < S - 2;
+    if (b.warband && !onMap) { wbOffMap = b; continue; }
+    if (b.warlord) {
+      mm.fillStyle = '#ff2222';
+      mm.beginPath();
+      mm.arc(mx, mz, 4, 0, 6.28);
+      mm.fill();
+      mm.strokeStyle = '#ffd83d';
+      mm.lineWidth = 1.5;
+      mm.stroke();
+    } else {
+      mm.fillStyle = b.warband ? '#e03030' : '#222';
+      mm.beginPath();
+      mm.arc(mx, mz, 2.5, 0, 6.28);
+      mm.fill();
+    }
+  }
+  if (wbOffMap && warband.active) { // 战团尚在图外:红箭头指向来袭方向
+    const wdx = wbOffMap.pos.x - px, wdz = wbOffMap.pos.z - pz;
+    const ang = Math.atan2(wdz, wdx);
+    const ex = S / 2 + Math.cos(ang) * (S / 2 - 10);
+    const ey = S / 2 + Math.sin(ang) * (S / 2 - 10);
+    mm.save();
+    mm.translate(ex, ey);
+    mm.rotate(ang);
+    mm.fillStyle = '#ff3b30';
     mm.beginPath();
-    mm.arc(mx, mz, 2.5, 0, 6.28);
+    mm.moveTo(6, 0);
+    mm.lineTo(-4, -4);
+    mm.lineTo(-4, 4);
+    mm.closePath();
     mm.fill();
+    mm.restore();
   }
   // 任务标记
   if (exGroup.visible) {
