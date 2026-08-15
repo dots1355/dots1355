@@ -785,6 +785,7 @@ const WEAPONS = {
   dagger:     { name: '短匕', icon: '🔪', dmg: 1, range: 2.0, cd: 0.16, knock: 0.3, price: 30, staMul: 0.65 },
   greatsword: { name: '巨剑', icon: '⚔️', dmg: 3, range: 2.9, cd: 0.7, knock: 1.3, price: 90, staMul: 1.5 },
   bow:        { name: '猎弓', icon: '🏹', dmg: 2, range: 0, cd: 0.8, knock: 0.4, price: 60, staMul: 1 },
+  warblade:   { name: '枭首之刃', icon: '⚜️', dmg: 2, range: 2.5, cd: 0.24, knock: 0.7, staMul: 0.9 }, // 无价:单挑斩将夺来
 };
 const ARMORS = [
   { name: '', bonus: 0 },
@@ -870,13 +871,33 @@ function updateFrostPatches(dt) {
     p.t -= dt;
     if (p.t <= 0) {
       scene.remove(p.m);
-      p.m.geometry.dispose();
-      p.m.material.dispose();
+      p.m.traverse ? p.m.traverse((o) => { // 拒马是组合体,逐件回收
+        if (o.geometry) o.geometry.dispose();
+        if (o.material && o.material.dispose && !o.material._shared) o.material.dispose();
+      }) : null;
+      if (p.m.geometry) { p.m.geometry.dispose(); p.m.material.dispose(); }
       frostPatches.splice(i, 1);
       continue;
     }
-    if (p.t < 1) p.m.material.opacity = 0.28 * p.t; // 最后一秒融化
+    if (!p.wood && p.t < 1) p.m.material.opacity = 0.28 * p.t; // 冰面最后一秒融化(拒马不透明)
   }
+}
+// 拒马:攻城警报拉响时,卫兵在来袭方向支起两座木刺阵——踩进去的人腿脚都慢半拍
+function addBarricade(x, z) {
+  const grp = new THREE.Group();
+  const wood = lambert(0x6a4a28, { roughness: 0.92 });
+  wood._shared = true; // 共享一份材质,dispose 时跳过
+  for (let i = 0; i < 6; i++) {
+    const spike = new THREE.Mesh(new THREE.ConeGeometry(0.1, 1.2, 5), wood);
+    const a2 = (i / 6) * Math.PI * 2;
+    spike.position.set(Math.cos(a2) * 1.7, 0.55, Math.sin(a2) * 1.7);
+    spike.rotation.z = i % 2 ? 0.55 : -0.55;
+    spike.rotation.y = a2;
+    grp.add(spike);
+  }
+  grp.position.set(x, 0, z);
+  scene.add(grp);
+  frostPatches.push({ x, z, r: 3.2, t: 90, m: grp, wood: true });
 }
 function frostSlow(e) {
   if (!frostPatches.length) return 1;
@@ -1249,6 +1270,7 @@ player.rollCd = 0;
 player.rollDir = new THREE.Vector2(0, 1);
 
 // 手中武器外观
+let _warBladeMat = null;
 let _goldBladeMat = null;
 function setWeaponVisual(type) {
   const armR = player.parts.armR;
@@ -1259,7 +1281,15 @@ function setWeaponVisual(type) {
     const name = { dagger: 'Dagger', greatsword: 'Greatsword', bow: 'Bow', sword: 'Sword' }[type] || 'Sword';
     const real = getWeaponModel(name);
     if (real) {
-      if (player.swordLv >= 2 && type !== 'bow') {
+      if (type === 'warblade') { // 枭首之刃:暗红刃身,一眼认出
+        if (!_warBladeMat) _warBladeMat = lambert(0x8a2430, { metalness: 0.8, roughness: 0.3 });
+        real.traverse((o) => {
+          if (o.isMesh) {
+            const remap = (mm) => (mm.name === 'steel' ? _warBladeMat : mm);
+            o.material = Array.isArray(o.material) ? o.material.map(remap) : remap(o.material);
+          }
+        });
+      } else if (player.swordLv >= 2 && type !== 'bow') {
         if (!_goldBladeMat) _goldBladeMat = lambert(0xe8c34a, { metalness: 0.85, roughness: 0.25 });
         real.traverse((o) => {
           if (o.isMesh) {
@@ -1418,6 +1448,7 @@ function arrowHitEntities(a) {
     if (b.hp <= 0) {
       b.dead = true; startFall(b); registerKill(); choreProgress('bandits');
       EVO.kills.arrow++;
+      if (b.warband) warband.pKills = (warband.pKills || 0) + 1;
       banditSlain(b);
       if (b.boss) dismissMinions();
       dropCoins(b.pos, b.boss ? 20 : 5);
@@ -6455,7 +6486,7 @@ function updateCombatMusic(dt) {
     }
   }
   combatCalmT = hot ? 4 : Math.max(0, combatCalmT - dt);
-  setCombatMusic(combatCalmT > 0);
+  setCombatMusic(combatCalmT > 0, warband.active && warband.siege);
 }
 // ================= 盗贼战团(骑砍式野战遭遇)=================
 // 每隔几分钟,一支五人战团(枭首+四喽啰)从旷野压向王都:半路截杀=犒赏,放进城=集市遭殃
@@ -6464,6 +6495,8 @@ function spawnWarband() {
   warband.active = true;
   warband.members = [];
   warband.lootT = 0;
+  warband.pKills = 0;
+  warband.gKills = 0;
   const a = Math.random() * Math.PI * 2;
   const sx = Math.cos(a) * 120, sz = Math.sin(a) * 120;
   // 越剿越强:每覆灭一支,下一支多一个喽啰(封顶 8),枭首更硬;每第四波=倾巢攻城
@@ -6483,6 +6516,13 @@ function spawnWarband() {
   if (warband.siege) {
     toast(`🚨 攻城警报!!枭首纠集 ${warband.members.length} 人大队从${compass}面强攻王都!卫兵已列阵迎敌——并肩守城!(冲到枭首面前按 E 可阵前单挑)`, 6);
     sfx.wanted();
+    { // 城防:来袭方向支起两座拒马迟滞敌军
+      const dl = Math.hypot(sx, sz - 10) || 1;
+      const ux = sx / dl, uz = (sz - 10) / dl;
+      addBarricade(ux * 24 - uz * 3, 10 + uz * 24 + ux * 3);
+      addBarricade(ux * 30 + uz * 3, 10 + uz * 30 - ux * 3);
+      toast('🪵 卫兵连夜在城门外支起了拒马!(敌军踩入减速)', 3.5);
+    }
   } else {
     toast(`⚠️ 斥候急报:一支盗贼战团(${warband.members.length} 人)正从${compass}面逼近王都!半路截住他们!` +
       (warband.wave > 0 ? '(为复仇而来,比上次更凶)' : ''), 5);
@@ -6537,6 +6577,12 @@ function updateWarband(dt) {
       toast('⚔️🏆 枭首伏诛!战团夺气,作鸟兽散——兵不血刃!(+100 金币)', 6);
       sfx.fanfare();
       player.coins += 100;
+      if (!player.weaponsOwned.includes('warblade')) { // 夺刀:枭首的佩刃归胜者
+        player.weaponsOwned.push('warblade');
+        sfx.chest();
+        toast('⚜️ 你拾起枭首的佩刃——「枭首之刃」入手!(Q 切换:更快更狠的单手刃)', 5);
+        remember('从枭首尸体旁拾起了他的佩刃', 'warblade');
+      }
       unlockAch('champion');
       if (wasSiege) unlockAch('wallkeeper');
       remember('阵前单挑斩落枭首,吓散整支战团', `duel-${calendar.day}`);
@@ -6563,6 +6609,10 @@ function updateWarband(dt) {
       toast('🏰 攻城被击退!!卫兵们冲你抱拳——王都记住了这一天。(犒赏 +80 金币)', 6);
       player.coins += 80;
       unlockAch('wallkeeper');
+      openDialog([
+        `📜 守城战报:敌军 ${warband.pKills + warband.gKills} 人授首——你亲斩 ${warband.pKills} 人,卫兵击破 ${warband.gKills} 人。`,
+        warband.pKills >= warband.gKills ? '卫兵队长:「今天这城,是你守下来的。」' : '卫兵队长:「弟兄们今天很卖力——你也不赖。」',
+      ]);
       remember('与卫兵并肩击退了强攻王都的盗贼大军', `siege-${calendar.day}`);
     } else {
       toast('🎖️ 战团覆灭!你护住了王都的安宁。(悬赏 +25 金币)', 4.5);
@@ -6641,6 +6691,7 @@ function slayBandit(b, opts = {}) {
   choreProgress('bandits');
   banditSlain(b); // 军旗/士气结算
   if (b.boss) dismissMinions();
+  if (b.warband) warband[opts.companion ? 'gKills' : 'pKills'] = (warband[opts.companion ? 'gKills' : 'pKills'] || 0) + 1;
   dropCoins(b.pos, b.boss ? 20 : opts.coins ?? 5);
   if (quest.active && missions[quest.idx].type === 'bandits' && !b.boss && !b.escort && !b.bountyHead &&
       !b.robber && !b.arena && !b.ambient && !b.duel && !b.convict && !b.eventFoe) {
@@ -6746,6 +6797,7 @@ function meleeSweep(dmg, range, arcDot, knock) {
     if (b.hp <= 0) {
       b.dead = true; startFall(b); registerKill(); choreProgress('bandits');
       EVO.kills.melee++;
+      if (b.warband) warband.pKills = (warband.pKills || 0) + 1;
       banditSlain(b);
       dropCoins(b.pos, b.boss ? 20 : 5);
       addPickup('heart', b.pos.x, b.pos.z + 1, 30);
@@ -8442,6 +8494,11 @@ function updateHUD() {
   const timerType = quest.active && (missions[quest.idx].type === 'deliver' || missions[quest.idx].type === 'race');
   const timer = timerType ? `⏱ ${Math.ceil(quest.timer)} 秒` : '';
   if (timer) missionText = `${timer}${quest.timer < 12 ? ' ⚠️' : ''}\n${missionText}`;
+  if (warband.active) { // 战况横幅:战团还剩几个,一眼可知
+    const wbAlive = warband.members.filter((b) => !b.dead).length;
+    missionText = `${warband.siege ? '🚨 攻城战' : '⚔️ 战团来袭'}:余 ${wbAlive}/${warband.members.length}` +
+      `${warband.duelOn ? ' · 单挑中!' : ''}\n` + missionText;
+  }
   missionText += `\n🛡️ 皇家纹章 ${crestsFound.length}/${world.crestSpots.length}`;
   const raining = weather.state === 'rain' || weather.state === 'storm';
   const wIcon = isWinter() && raining ? '🌨️' : { clear: '☀️', cloudy: '⛅', rain: '🌧️', storm: '⛈️' }[weather.state];

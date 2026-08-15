@@ -184,8 +184,8 @@ const COMBAT_MELODY = [
   440, 440, 0, 523, 587, 0, 523, 466, 440, 0, 466, 0, 349, 0, 330, 0,
 ];
 const COMBAT_BASS = [110, 110, 104, 110, 87, 98, 110, 104];
-let combatMode = false;
-export function setCombatMusic(on) { combatMode = !!on; }
+let combatMode = false, siegeMode = false;
+export function setCombatMusic(on, siege = false) { combatMode = !!on; siegeMode = !!siege; }
 let step = 0;
 function musicTick() {
   if (combatMode) {
@@ -193,6 +193,7 @@ function musicTick() {
     if (m) tone(m, 0.12, 'square', 0.04);
     if (step % 2 === 0) tone(COMBAT_BASS[Math.floor(step / 2) % COMBAT_BASS.length], 0.2, 'sawtooth', 0.055);
     if (step % 4 === 2) tone(70, 0.08, 'sine', 0.1, 0, -30); // 心跳般的低鼓
+    if (siegeMode && step % 8 === 0) { tone(55, 0.22, 'sine', 0.16, 0, -12); tone(110, 0.1, 'triangle', 0.07, 0.02, -40); } // 攻城战鼓:一记闷雷压阵
     step++;
     return;
   }
