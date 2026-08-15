@@ -3485,6 +3485,7 @@ const ACH_DEFS = {
   lawless:  { name: '无法无天', desc: '把全城卫兵同时放倒' },
   warbreaker: { name: '破军', desc: '全歼一支盗贼战团' },
   wallkeeper: { name: '守城人', desc: '与卫兵并肩击退攻城大军' },
+  champion:   { name: '阵前斩将', desc: '单挑斩落枭首,吓散整支战团' },
   rampage:  { name: '一骑当千', desc: '一场战斗内 8 连杀' },
   chef:     { name: '野炊大师', desc: '在篝火上烤 5 块鹿肉' },
   packmate: { name: '孤狼不再', desc: '驯服白狼「霜牙」' },
@@ -5683,6 +5684,18 @@ function updateLawless(dt) {
 let promptText = '';
 function tryInteract() {
   if (!started || player.dead) return;
+  // 阵前单挑:攻城时冲到枭首面前按 E 应战
+  if (warband.active && warband.siege && !warband.duelOn) {
+    const lead = warband.members.find((b) => b.warlord && !b.dead);
+    if (lead && dist2(player.pos.x, player.pos.z, lead.pos.x, lead.pos.z) < 81) {
+      warband.duelOn = true;
+      for (const b of warband.members) if (!b.warlord) b._truce = true;
+      lockFoe = lead; // 镜头直接咬住对手
+      toast('⚔️ 枭首狞笑:「有胆!就你我二人——赢了,我带人走;输了,城归我!」', 5);
+      sfx.wanted();
+      return;
+    }
+  }
   // 钓鱼中:收杆
   if (fishing.active) { fishingReel(); return; }
   // 扔鸡(抱着鸡时 E 投掷)
@@ -6468,7 +6481,7 @@ function spawnWarband() {
   }
   const compass = Math.abs(sx) > Math.abs(sz) ? (sx > 0 ? '东' : '西') : (sz > 0 ? '南' : '北');
   if (warband.siege) {
-    toast(`🚨 攻城警报!!枭首纠集 ${warband.members.length} 人大队从${compass}面强攻王都!卫兵已列阵迎敌——并肩守城!`, 6);
+    toast(`🚨 攻城警报!!枭首纠集 ${warband.members.length} 人大队从${compass}面强攻王都!卫兵已列阵迎敌——并肩守城!(冲到枭首面前按 E 可阵前单挑)`, 6);
     sfx.wanted();
   } else {
     toast(`⚠️ 斥候急报:一支盗贼战团(${warband.members.length} 人)正从${compass}面逼近王都!半路截住他们!` +
@@ -6509,6 +6522,26 @@ function updateWarband(dt) {
     if (!prologue.on) warband.cd -= dt;
     if (warband.cd <= 0) spawnWarband();
     return;
+  }
+  // 阵前单挑:枭首一死,全军夺气而溃——兵不血刃
+  if (warband.duelOn) {
+    const lead = warband.members.find((b) => b.warlord);
+    if (!lead || lead.dead) {
+      warband.duelOn = false;
+      const wasSiege = warband.siege;
+      warband.wave++;
+      for (const b of warband.members) if (!b.dead) { b._truce = false; b.fleeT = 9; }
+      warband.active = false;
+      warband.cd = 150 + Math.random() * 120;
+      setTimeout(() => disbandWarband(true), 3500); // 跑出视野再散伙
+      toast('⚔️🏆 枭首伏诛!战团夺气,作鸟兽散——兵不血刃!(+100 金币)', 6);
+      sfx.fanfare();
+      player.coins += 100;
+      unlockAch('champion');
+      if (wasSiege) unlockAch('wallkeeper');
+      remember('阵前单挑斩落枭首,吓散整支战团', `duel-${calendar.day}`);
+      return;
+    }
   }
   const alive = warband.members.filter((b) => !b.dead);
   warband.tauntT = (warband.tauntT || 0) - dt;
@@ -7046,6 +7079,10 @@ function damagePlayer(n, attacker = null, pierce = false) {
 
 function gameOver() {
   if (prologue.on) skipPrologue(true); // 序章里倒下:直接放行,别卡教学
+  if (warband.duelOn) { // 单挑落败:誓约解除,攻城继续
+    warband.duelOn = false;
+    warband.members.forEach((b) => { b._truce = false; });
+  }
   if (dialog.open) { dialog.open = false; dialogEl.style.display = 'none'; dialog.onDone = null; } // 人都倒了,话就别说了
   player.fireChargeT = 0;
   player.dead = true;
@@ -7184,7 +7221,7 @@ function updateGuards(dt) {
       continue;
     }
     // 攻城战:卫兵放下巡逻,迎击 40 米内最近的战团匪徒(通缉中还是先抓你)
-    if (warband.siege && warband.active && wanted === 0) {
+    if (warband.siege && warband.active && wanted === 0 && !warband.duelOn) {
       let tgt = null, td = 1600;
       for (const wb of warband.members) {
         if (wb.dead || wb.downT > 0) continue;
@@ -7333,6 +7370,12 @@ function updateBandits(dt) {
       b.windupT = 0;
       b.comboN = 0;
       b.heavyAtk = false;
+      continue;
+    }
+    if (b._truce && warband.duelOn) { // 单挑立誓:喽啰围观,不插手
+      b.group.position.copy(b.pos);
+      b.group.rotation.y = b.yaw;
+      animateLimbs(b.parts, b.walkT, false, b.group, 0.5);
       continue;
     }
     if (b.fleeT > 0) { // 溃逃:头也不回地跑,跑够了才敢回头
