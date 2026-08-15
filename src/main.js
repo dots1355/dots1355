@@ -1595,11 +1595,13 @@ function registerKill() {
     player.sta = player.maxSta;
     sfx.fanfare();
   } else if (comboN === 8) {
-    toast('👑 一骑当千!', 2.4);
+    toast('👑 一骑当千!兵刃烧得发白——攻速提升,剑光化金!', 3);
     unlockAch('rampage');
     sfx.fanfare();
   }
 }
+// 白热:八连杀燃起的状态,连杀窗口内攻速 +28%、剑光化金,断了连杀就熄
+const whiteHot = () => comboN >= 8 && comboT > 0;
 function updateCombo(dt) {
   if (comboT > 0) {
     comboT -= dt;
@@ -2828,6 +2830,20 @@ function refreshTrophies() {
       fang.rotation.x = Math.PI;
       fang.position.set(-0.5 + i * 0.25, 2.5, 2.05);
       t.add(fang);
+    }
+  }
+  // 战团军旗:每面挂一杆,最多陈列六面——满墙都是别人的败绩
+  if (stats.banners) {
+    for (let i = 0; i < Math.min(6, stats.banners); i++) {
+      const x = -2.3 + i * 0.92;
+      const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 1.0, 6),
+        lambert(0x4a3826, { roughness: 0.9 }));
+      pole.position.set(x, 2.62, 2.05);
+      t.add(pole);
+      const flag = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.34),
+        lambert(0x6a1520, { roughness: 0.95 }));
+      flag.position.set(x + 0.27, 2.88, 2.06);
+      t.add(flag);
     }
   }
   t.position.set(HOME.x, 0, HOME.z);
@@ -6432,6 +6448,19 @@ function disbandWarband(escaped) {
   warband.active = false;
   warband.cd = 150 + Math.random() * 120;
 }
+// 枭首临阵叫骂:走近了他会冲你喊话;复仇之师另有一套狠话,偶尔帮众跟着起哄(吃活体语料)
+const WARLORD_TAUNTS = [
+  '这座城的卫兵,还没我营里的火夫能打!',
+  '把值钱的交出来,饶你一条腿!',
+  '兄弟们——集市是我们的了!',
+  '听说你很能打?正好,我的刀锈了。',
+  '别躲了,出来领死!',
+];
+const WARLORD_REVENGE = [
+  '上次死的是我兄弟——今天拿你抵命!',
+  '记住这面旗,它会插在你坟头!',
+  '我们回来了,这次带够了人手!',
+];
 function updateWarband(dt) {
   if (!started || player.dead) return;
   if (!warband.active) {
@@ -6440,6 +6469,17 @@ function updateWarband(dt) {
     return;
   }
   const alive = warband.members.filter((b) => !b.dead);
+  warband.tauntT = (warband.tauntT || 0) - dt;
+  const lead0 = alive.find((b) => b.warlord);
+  if (lead0 && warband.tauntT <= 0 &&
+      dist2(player.pos.x, player.pos.z, lead0.pos.x, lead0.pos.z) < 625) {
+    warband.tauntT = 9;
+    const pool = warband.wave > 0 && Math.random() < 0.6 ? WARLORD_REVENGE : WARLORD_TAUNTS;
+    const base = pool[Math.floor(Math.random() * pool.length)];
+    const corpus = Array.isArray(EVO.corpus) && EVO.corpus.length && Math.random() < 0.35
+      ? `(帮众起哄:${EVO.corpus[Math.floor(Math.random() * EVO.corpus.length)]})` : '';
+    toast(`🗯️ 战团枭首:「${base}」${corpus}`, 3.2);
+  }
   if (!alive.length) { // 全歼:犒赏;残党记仇,下一支更大
     warband.wave++;
     disbandWarband(false);
@@ -6495,6 +6535,7 @@ function banditSlain(b) {
     sfx.chest();
     toast(`🚩 夺得战团军旗!(第 ${stats.banners} 面:体力上限 +5 → ${player.maxSta},当场回满)`, 4.5);
     remember(`阵斩战团枭首,夺下第 ${stats.banners} 面军旗`, `banner-${stats.banners}`);
+    refreshTrophies(); // 军旗直接挂上家里的战利品墙
   }
   const now = performance.now();
   streakN = (now - streakT < 6000) ? streakN + 1 : 1;
@@ -6516,6 +6557,7 @@ function swingTrail(range, arc = 2.1, dir = 1) {
   const ring = new THREE.Mesh(
     new THREE.RingGeometry(Math.max(0.5, range * 0.45), range, 1, 10, Math.PI / 2 - arc / 2, arc),
     trailMat.clone());
+  if (whiteHot()) ring.material.color.setHex(0xffd75e); // 白热连杀:剑光化金
   ring.rotation.x = Math.PI / 2;
   g.add(ring);
   g.position.set(player.pos.x, 1.05, player.pos.z);
@@ -6736,8 +6778,9 @@ function tryAttack() {
   if (!spendSta(Math.round((stance === 'overhead' ? 16 : stance === 'thrust' ? 10 : 12) *
     (def.staMul || 1)))) return;
   player._stance = stance === 'slash' ? null : stance; // 挥刀动画按招式走
-  player.attackT = def.cd;
-  player.attackDur = def.cd;
+  const hotMul = whiteHot() ? 0.72 : 1; // 白热:出刀更快
+  player.attackT = def.cd * hotMul;
+  player.attackDur = def.cd * hotMul;
   sfx.sword();
   if (dist2(player.pos.x, player.pos.z, 140, 20) < 80) unlockAch('windmill');
   // 三连斩:0.9 秒内连续出手,第三剑更重、附带大击退
@@ -9159,7 +9202,8 @@ window.__gtm = {
   frightenBandits, banditSlain,
   frostPatches, frostSlow, castBigFire, getFireCharge: () => player.fireChargeT || 0,
   warband, spawnWarband, updateWarband,
-  getCombatMusic: () => combatCalmT > 0, foeName, registerKill, keys,
+  getCombatMusic: () => combatCalmT > 0, foeName, registerKill, whiteHot,
+  WARLORD_TAUNTS, getBanners: () => stats.banners || 0, toastQueue, keys,
   getMoveState: () => moveState, saveNow: saveGame,
   SKILL_DEFS, skillXp, toggleSneak, sneakFactor, shout, learnShout, doShout,
   mercs, hireMerc, payMercs, DRAGON_SKULL,
