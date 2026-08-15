@@ -377,6 +377,11 @@ const toastQueue = [];
 function toast(msg, dur = 2.6) {
   toastQueue.push([msg, Math.min(dur, 4)]);
 }
+// 插队播报:教学这种时效信息不排队,直接顶到最前并催场
+function toastNow(msg, dur = 3) {
+  toastQueue.unshift([msg, Math.min(dur, 4)]);
+  if (toastTimer > 0.4) toastTimer = 0.4; // 正在播的加速谢幕
+}
 function updateToast(dt) {
   if (toastTimer > 0) {
     toastTimer -= dt;
@@ -667,6 +672,7 @@ function updateWolves(dt) {
         w.group.visible = true;
         w.lunging = 0; // 死在半空的扑咬姿势不带进下一条命
         w.lungeHit = false;
+        w.stunT = 0;
         w.group.scale.y = 1;
       }
       continue;
@@ -756,7 +762,7 @@ function updateWolves(dt) {
 
 function killWolf(w) {
   w.dead = true;
-  w.respawnT = w.arena ? 99999 : (todaySpecial()?.key === 'wolfmoon' ? 22 : 45);
+  w.respawnT = (w.arena || w._prol) ? 99999 : (todaySpecial()?.key === 'wolfmoon' ? 22 : 45);
   startFall(w);
   registerKill();
   setTimeout(() => { if (w.dead) w.group.visible = false; }, 2500);
@@ -815,6 +821,7 @@ function learnSpell(key) {
 }
 function cycleSpell() {
   if (player.spells.length < 2) return;
+  player.fireChargeT = 0; // 换法术=松开引导
   player.spellIdx = (player.spellIdx + 1) % player.spells.length;
   const k = player.spells[player.spellIdx];
   sfx.equip();
@@ -835,12 +842,7 @@ function explodeAt(x, z, dmg = 3, radius = 3.4) {
       if (e.hp <= 0) onDead(e);
     }
   };
-  boom(bandits, (b) => {
-    b.dead = true; startFall(b); registerKill(); choreProgress('bandits');
-    banditSlain(b);
-    dropCoins(b.pos, b.boss ? 20 : 5);
-    if (b.boss) dismissMinions();
-  });
+  boom(bandits, (b) => slayBandit(b));
   boom(wolves, (w) => killWolf(w));
   boom(guards, (g) => downGuard(g));
   for (const g of guards) {
@@ -886,7 +888,9 @@ function frostSlow(e) {
 
 // 大火球:蓄力引导的产物——更大更疼,炸开半径 5,配大冷却
 function castBigFire() {
-  if (!started || player.dead || player.carrying || dialog.open) return;
+  if (!started || player.dead || player.carrying || dialog.open ||
+      player.castT > 0 || player.staggerT > 0 ||
+      player.spells[player.spellIdx] !== 'fire') return; // 蓄力途中切了法术/进了冷却就作废
   const cost = Math.max(2, Math.round(5 * (1 - 0.04 * (skillLv('destruction') - 1))));
   if (player.mp < cost) { toast(`💧 法力不足(大火球需要 ${cost} 点)`, 1.6); return; }
   player.mp -= cost;
@@ -970,8 +974,10 @@ function castSpell() {
         e.stunT = Math.max(e.stunT || 0, 3.5);
         e.hp -= 1;
         showDamage(e.pos, 1);
+        if (list === guards && !e.wantedHit) { e.wantedHit = true; crime(1, '你的寒气冻伤了卫兵!'); }
         if (e.hp <= 0 && list === wolves) killWolf(e);
-        else if (e.hp <= 0 && list === bandits) { e.dead = true; startFall(e); registerKill(); dropCoins(e.pos, 5); }
+        else if (e.hp <= 0 && list === bandits) slayBandit(e);
+        else if (e.hp <= 0 && list === guards) downGuard(e);
       }
     };
     freeze(bandits);
@@ -996,7 +1002,8 @@ function updateMagic(dt) {
   if (shout.cd > 0) shout.cd -= dt;
   // 按住连发:R/中键压住不放,魔光弹按冷却节奏一发接一发(只限魔光弹,别把治愈术的蓝烧干)
   const heldCast = (keys['KeyR'] || midHeld) && !dialog.open;
-  if (heldCast && player.castT <= 0 && player.spells[player.spellIdx] === 'spark') castSpell();
+  if (heldCast && player.castT <= 0 && player.spells[player.spellIdx] === 'spark' &&
+      player.mp >= 1) castSpell(); // 没蓝就松手,别每帧挤一条"法力不足"
   // 火球蓄力:冷却结束后继续按住=引导聚能,蓄满松开轰出大火球
   if (heldCast && player.castT <= 0 && player.spells[player.spellIdx] === 'fire') {
     const t0 = player.fireChargeT || 0;
@@ -1126,11 +1133,11 @@ function doShout() {
       if (e.hp <= 0) onDead(e);
     }
   };
-  wave(bandits, (b) => { b.dead = true; startFall(b); registerKill(); dropCoins(b.pos, 5); });
+  wave(bandits, (b) => slayBandit(b));
   wave(wolves, (w) => killWolf(w));
   wave(guards, (g) => downGuard(g));
   for (const g of guards) {
-    if (!g.dead && dist2(player.pos.x, player.pos.z, g.pos.x, g.pos.z) < 100 && !g.wantedHit) {
+    if (!g.dead && !(g.downT > 0) && dist2(player.pos.x, player.pos.z, g.pos.x, g.pos.z) < 100 && !g.wantedHit) {
       g.wantedHit = true;
       crime(1, '你的战吼掀翻了卫兵!');
       break;
@@ -1191,7 +1198,7 @@ function updateMercs(dt) {
         hitFX(target, 0.5);
         if (target.hp <= 0) {
           if (wolves.includes(target)) killWolf(target);
-          else { target.dead = true; startFall(target); registerKill(); dropCoins(target.pos, 5); }
+          else slayBandit(target, { credit: '佣兵助攻' });
           m.kills = (m.kills || 0) + 1;
           if (m.kills >= 5 && !m.veteran) { // 五个人头,升老兵:更能打、更扛揍
             m.veteran = true;
@@ -1401,8 +1408,8 @@ function arrowHitEntities(a) {
     else g.state = 'chase';
   })) return true;
   if (tryHit(bandits, (b) => {
-    // 战术演化:被射多了的匪帮学会侧身闪箭(贴脸射/法术不受影响)
-    if (Math.random() < EVO.tactics.dodge * 0.45) {
+    // 战术演化:被射多了的匪帮学会侧身闪箭(贴脸射/法术/飞刀不受影响)
+    if (!a.mag && !a.knife && Math.random() < EVO.tactics.dodge * 0.45) {
       showDamage(b.pos, 0);
       hitFX(b, 0.15);
       return;
@@ -1435,11 +1442,21 @@ function arrowHitEntities(a) {
   }
   return false;
 }
+// 投射物下场:法术弹/飞刀是每发独立 geometry+material,必须 dispose,否则连发就是显存漏斗
+function disposeArrow(a) {
+  scene.remove(a.mesh);
+  if (a.mag || a.fire || a.big || a.knife) {
+    a.mesh.traverse((o) => {
+      if (o.geometry) o.geometry.dispose();
+      if (o.material) o.material.dispose();
+    });
+  }
+}
 function updateArrows(dt) {
   for (let i = arrows.length - 1; i >= 0; i--) {
     const a = arrows[i];
     a.ttl -= dt;
-    if (a.ttl <= 0) { scene.remove(a.mesh); arrows.splice(i, 1); continue; }
+    if (a.ttl <= 0) { disposeArrow(a); arrows.splice(i, 1); continue; }
     if (a.stuck) continue;
     if (!a.fire && !a.mag) a.vel.y -= 7 * dt; // 火球/魔光弹直线飞行,不吃重力
     // 子步进:快箭(满月 42/秒)在低帧率下一帧能跨 2 个身位,不切细会从判定圈中间穿过去
@@ -1454,7 +1471,7 @@ function updateArrows(dt) {
         if (near(bandits) || near(wolves) || near(guards) ||
             a.pos.y <= 0.1 || pointBlocked(a.pos.x, a.pos.z) || a.ttl <= 0.05) {
           explodeAt(a.pos.x, a.pos.z, a.big ? 5 : 3, a.big ? 5.2 : 3.4); // 大火球:范围与伤害俱增
-          scene.remove(a.mesh);
+          disposeArrow(a);
           arrows.splice(i, 1);
           removed = true;
         }
@@ -1464,7 +1481,7 @@ function updateArrows(dt) {
         skillXp(a.mag ? 'destruction' : 'archery', 2);
         if (a.mag) magBurst(a.pos.x, Math.max(0.4, a.pos.y), a.pos.z); // 命中碎光
         if (a.pierce > 0) { a.pierce--; continue; } // 满月箭:穿过去接着飞
-        scene.remove(a.mesh);
+        disposeArrow(a);
         arrows.splice(i, 1);
         removed = true;
         continue;
@@ -1472,7 +1489,7 @@ function updateArrows(dt) {
       if (a.pos.y <= 0.05 || pointBlocked(a.pos.x, a.pos.z)) {
         if (a.mag) { // 光弹不钉墙:撞上就炸成碎光消散
           magBurst(a.pos.x, Math.max(0.15, a.pos.y), a.pos.z);
-          scene.remove(a.mesh);
+          disposeArrow(a);
           arrows.splice(i, 1);
           removed = true;
           break;
@@ -1901,16 +1918,7 @@ function spawnWhiteWolf(x, z) {
 }
 frostfang.wary = spawnWhiteWolf(-286, -128);
 function slayBanditByWolf(b) {
-  b.dead = true;
-  startFall(b);
-  choreProgress('bandits');
-  dropCoins(b.pos, b.boss ? 20 : 3);
-  if (quest.active && missions[quest.idx].type === 'bandits' && !b.boss && !b.escort && !b.bountyHead &&
-      !b.robber && !b.arena && !b.ambient && !b.duel && !b.convict && !b.eventFoe) {
-    quest.progress++;
-    toast(`击败盗贼 ${quest.progress}/3(霜牙助攻!)`, 2);
-    if (quest.progress >= 3) completeMission();
-  }
+  slayBandit(b, { companion: true, coins: 3, credit: '霜牙助攻' });
 }
 function updateFrostfang(dt) {
   // 未驯服:白狼在隘口游荡,保持距离打量你
@@ -2125,7 +2133,8 @@ function openJournal() {
 // ================= 拍照模式(P 键隐藏全部 HUD) =================
 let photoMode = false;
 const PHOTO_HIDE = ['hearts', 'coins', 'equip', 'wanted', 'mission', 'region', 'minimap',
-  'prompt', 'controls-hint', 'combo', 'weather', 'bubble', 'toast'];
+  'prompt', 'controls-hint', 'combo', 'weather', 'bubble', 'toast',
+  'stamina', 'lockhp', 'bosshp', 'save-icon'];
 function togglePhoto() {
   photoMode = !photoMode;
   for (const id of PHOTO_HIDE) {
@@ -3058,7 +3067,15 @@ const DIRECTOR_EVENTS = [
             this.t = 0;
           }
         },
-        end() { for (const w of pack) { w.raidTarget = null; } },
+        end() { // 事件狼不留后患:活的散场,死的收尸,谁也别在村口安家
+          for (const w of pack) {
+            w.raidTarget = null;
+            scene.remove(w.group);
+            const i = wolves.indexOf(w);
+            if (i >= 0) wolves.splice(i, 1);
+            if (lockFoe === w) { lockFoe = null; lockMark.visible = false; }
+          }
+        },
       };
     },
   },
@@ -3263,8 +3280,12 @@ const DIRECTOR_EVENTS = [
     start() {
       const p = spawnNearPlayer(15, 22);
       const g = makeWanderer({ shirt: 0xeeeeff, pants: 0xddddee, hair: 0xffffff }, p.x, p.z);
-      g.group.traverse((o) => {
-        if (o.material) { o.material.transparent = true; o.material.opacity = 0.4; }
+      g.group.traverse((o) => { // 克隆后再改:共享材质缓存动不得,不然全城人跟着变半透明
+        if (o.material) {
+          o.material = o.material.clone();
+          o.material.transparent = true;
+          o.material.opacity = 0.4;
+        }
       });
       toast('👻 夜色里飘着一个苍白的身影……', 3);
       let t0 = 0;
@@ -5153,7 +5174,10 @@ function loadGame() {
       if (s.evo.eventFit && typeof s.evo.eventFit === 'object') EVO.eventFit = s.evo.eventFit;
       if (s.evo.tactics) EVO.tactics = { block: +s.evo.tactics.block || 0, dodge: +s.evo.tactics.dodge || 0 };
       if (Array.isArray(s.evo.corpus)) EVO.corpus = s.evo.corpus.filter((t) => typeof t === 'string');
-      for (const w of wolves) if (!w.dead) w.speed = 7.2 + EVO.wolfSpeed; // 在世的狼也是这一代的
+      for (const w of wolves) if (!w.dead) { // 在世的狼也是这一代的:速度和皮实一起补
+        w.speed = 7.2 + EVO.wolfSpeed;
+        w.hp = Math.max(w.hp, EVO.wolfGen >= 3 ? 3 : 2);
+      }
     }
     if (Array.isArray(s.spells)) player.spells = s.spells.filter((k) => SPELLS[k]);
     if (lakeBlessed && !player.spells.includes('frost')) player.spells.push('frost'); // 旧档补授
@@ -5266,6 +5290,8 @@ if (hasSave) {
 setWeaponVisual(player.weapon);
 // 基础魔法与生俱来:老档也补上魔光弹
 if (!player.spells.includes('spark')) player.spells.unshift('spark');
+// 通关之星:completeMission 存档发生在生成星星之前,读档时没领过就补一颗在广场
+if (quest.idx >= missions.length && !stats.starTaken) addPickup('star', 0, 13);
 // 体力上限由技能总等级 + 军旗战利品重算(maxSta 不入档,防旧档字段缺失)
 player.maxSta = Math.min(180, 100 + 3 *
   Object.values(player.skills || {}).reduce((n, s) => n + Math.max(0, (s.lv || 1) - 1), 0) +
@@ -5307,6 +5333,7 @@ window.addEventListener('keydown', (e) => {
   if (/^Digit[1-4]$/.test(e.code) && !dialog.open) {
     const idx = +e.code.slice(5) - 1;
     if (idx < player.spells.length && idx !== player.spellIdx) {
+      player.fireChargeT = 0; // 换法术=松开引导
       player.spellIdx = idx;
       sfx.equip();
       toast(`${SPELLS[player.spells[idx]].icon} ${SPELLS[player.spells[idx]].name}`, 1.2);
@@ -5361,6 +5388,7 @@ function startPrologue() {
     const w = wolves[i];
     if (!w) break;
     w._home0 = w.home; // 记住老巢,序章完了送回去
+    w._prol = true;    // 序章狼死了不复活,教学关才能通
     w.home = { x: player.pos.x, z: player.pos.z };
     w.dead = false; w.hp = 1; w.stunT = 0; w.lunging = 0; w.lungeCd = 1 + i * 0.8;
     w.group.visible = true;
@@ -5368,10 +5396,14 @@ function startPrologue() {
     w.group.position.copy(w.pos);
     prologue.wolves.push(w);
   }
-  toast('🐺 黎明——狼群冲进了村子!', 3.5);
+  toastNow('🐺 黎明——狼群冲进了村子!', 3.5);
 }
 function endPrologue() {
-  prologue.wolves.forEach((w) => { if (w._home0) w.home = w._home0; });
+  prologue.wolves.forEach((w) => {
+    if (w._home0) w.home = w._home0;
+    w._prol = false;
+    if (w.dead) w.respawnT = 45; // 回归野外正常轮回
+  });
   prologue.on = false;
 }
 function showTitleCard() {
@@ -5396,19 +5428,19 @@ function updatePrologue(dt) {
   const alive = prologue.wolves.filter((w) => !w.dead).length;
   if (prologue.step === 0 && prologue.t > 1.6) {
     prologue.step = 1;
-    toast('⚔️ 卫兵队长:「旅人,拿稳你的剑!按 Tab 锁定最近的狼!」(按 O 跳过序章)', 5);
+    toastNow('⚔️ 卫兵队长:「旅人,拿稳你的剑!按 Tab 锁定最近的狼!」(按 O 跳过序章)', 5);
   } else if (prologue.step === 1 && (lockFoe || alive < 3)) {
     prologue.step = 2;
-    toast('🔴 红圈亮起=它要扑了:按 C 翻滚闪开,或右键举盾弹反!', 4.5);
+    toastNow('🔴 红圈亮起=它要扑了:按 C 翻滚闪开,或右键举盾弹反!', 4.5);
   } else if (prologue.step === 2 && alive < 3) {
     prologue.step = 3;
-    toast('👍 就是这样!按 F 反击(W+F 突刺,S+F 下劈);远了就按 R 放✴️魔光弹!', 4.5);
+    toastNow('👍 就是这样!按 F 反击(W+F 突刺,S+F 下劈);远了就按 R 放✴️魔光弹!', 4.5);
   } else if (prologue.step <= 3 && alive === 0) {
     prologue.step = 4;
     prologue.t = 0;
     player.coins += 15;
     sfx.fanfare();
-    toast('🎖️ 卫兵队长:「好身手!赏钱拿着——王都用得上你这样的人。」(+15 金币)', 5);
+    toastNow('🎖️ 卫兵队长:「好身手!赏钱拿着——王都用得上你这样的人。」(+15 金币)', 5);
   } else if (prologue.step === 4 && prologue.t > 2.6) {
     prologue.step = 5;
     endPrologue();
@@ -5622,6 +5654,8 @@ let lawlessT = 0, lawlessPending = false;
 function downGuard(g) {
   g.downT = 240;
   g.stunT = 0;
+  g.windupT = 0;
+  g.swingT = 0;
   g.group.rotation.z = 0;
   g.wantedHit = false;
   startFall(g);
@@ -6371,7 +6405,8 @@ function foeName(e) {
 function updateLock(dt) {
   if (!lockFoe) { lockhpEl.style.display = 'none'; return; }
   if (lockFoe.dead || lockFoe.downT > 0 || player.dead ||
-      dist2(player.pos.x, player.pos.z, lockFoe.pos.x, lockFoe.pos.z) > 26 * 26) {
+      dist2(player.pos.x, player.pos.z, lockFoe.pos.x, lockFoe.pos.z) > 26 * 26 ||
+      (!bandits.includes(lockFoe) && !wolves.includes(lockFoe) && !guards.includes(lockFoe))) {
     lockFoe = null;
     lockMark.visible = false;
     lockhpEl.style.display = 'none';
@@ -6548,6 +6583,24 @@ function banditSlain(b) {
     }
   }
 }
+let meleeExecBase = 0; // 处决基准伤害:出手前由 tryAttack/heavyAttack 填入(不含弹反/偷袭乘区)
+// 盗贼死亡统一出口:任何来源(法术/爆炸/战吼/佣兵/白狼)都走全套结算,漏一项就是审计单上的 bug
+function slayBandit(b, opts = {}) {
+  if (b.dead) return;
+  b.dead = true;
+  startFall(b);
+  if (!opts.companion) registerKill(); // 伙伴击杀不进玩家连杀
+  choreProgress('bandits');
+  banditSlain(b); // 军旗/士气结算
+  if (b.boss) dismissMinions();
+  dropCoins(b.pos, b.boss ? 20 : opts.coins ?? 5);
+  if (quest.active && missions[quest.idx].type === 'bandits' && !b.boss && !b.escort && !b.bountyHead &&
+      !b.robber && !b.arena && !b.ambient && !b.duel && !b.convict && !b.eventFoe) {
+    quest.progress++;
+    toast(`击败盗贼 ${quest.progress}/3${opts.credit ? `(${opts.credit}!)` : ''}`, 2);
+    if (quest.progress >= 3) completeMission();
+  }
+}
 // 剑光拖尾:每次挥砍横扫出一道弧光,0.16 秒燃尽
 const trailFX = [];
 const trailMat = new THREE.MeshBasicMaterial({ color: 0xdfe9f5, transparent: true, opacity: 0.5,
@@ -6599,8 +6652,15 @@ function meleeSweep(dmg, range, arcDot, knock) {
   const fx = Math.sin(player.yaw), fz = Math.cos(player.yaw);
   // 处决:对踉跄中的敌人(弹反/盾击/冰冻后)出手 = ×5 终结,配慢动作
   let executed = false, execTarget = null;
+  const execBase = meleeExecBase || dmg; // 进场即取:tryAttack 带入的无乘区基准
+  meleeExecBase = 0; // 用一次即弃,避免残留到别的横扫
   const execDmg = (e) => {
-    if (dmg > 0 && e.stunT > 0.3) { executed = true; execTarget = e; return dmg * 5; }
+    if (dmg > 0 && e.stunT > 0.3) {
+      executed = true;
+      execTarget = e;
+      // 处决按基础伤害 ×5 结算,弹反 ×2.5/偷袭 ×3 不再叠上去
+      return execBase * 5;
+    }
     return dmg;
   };
   const hitOne = (list, onHit) => {
@@ -6732,6 +6792,7 @@ function tryAttack() {
   if (!started || player.dead || player.attackT > 0 || player.carrying ||
       player.blocking || player.rollT > 0) return;
   if (player.mounted && player.weapon !== 'bow' && !player.mounted.sheep) {
+    if (player.staggerT > 0 || !spendSta(10)) return; // 马上挥刀一样费力气
     const defM = WEAPONS[player.weapon];
     player._stance = null;
     player.attackT = defM.cd * 1.1;
@@ -6827,6 +6888,8 @@ function tryAttack() {
     third ? 0.82 : dir === 1 ? 1 : 1.14); // 每种出手音高不同,耳朵能分招
   swingTrail(reach, whirl ? Math.PI * 2 : stance === 'thrust' ? 0.55 :
     stance === 'overhead' ? 1.0 : third ? 2.6 : 2.1, dir);
+  meleeExecBase = Math.round(meleeBonus(def.dmg + (player.swordLv >= 2 ? 1 : 0) + (player.relic ? 1 : 0) +
+    (third ? 1 : 0) + (sprinting ? 1 : 0) + (stance === 'overhead' ? 2 : stance === 'thrust' ? 1 : 0)));
   meleeSweep(Math.round(meleeBonus(def.dmg + (player.swordLv >= 2 ? 1 : 0) + (player.relic ? 1 : 0) +
     (third ? 1 : 0) + (sprinting ? 1 : 0) +
     (stance === 'overhead' ? 2 : stance === 'thrust' ? 1 : 0)) * sneakMul * riposteMul),
@@ -6842,7 +6905,7 @@ function tryAttack() {
 
 // 蓄力重击:按住 F 约 0.7 秒自动挥出 —— 双倍伤害、超广角横扫、大击退
 function heavyAttack() {
-  if (player.staggerT > 0) return;
+  if (player.staggerT > 0 || player.blocking || player.rollT > 0) return; // 盾举着/翻滚中抡不了大的
   // 蓄力技按武器分家:短匕掷飞刀,猎弓开满月,刀剑抡重击
   if (player.weapon === 'dagger') { if (!spendSta(10)) return; throwKnife(); return; }
   if (player.weapon === 'bow') { if (!spendSta(12)) return; chargedShot(); return; }
@@ -6968,6 +7031,8 @@ function damagePlayer(n, attacker = null, pierce = false) {
 
 function gameOver() {
   if (prologue.on) skipPrologue(true); // 序章里倒下:直接放行,别卡教学
+  if (dialog.open) { dialog.open = false; dialogEl.style.display = 'none'; dialog.onDone = null; } // 人都倒了,话就别说了
+  player.fireChargeT = 0;
   player.dead = true;
   player.hp = 0;
   player.drunkT = 0;
@@ -7098,6 +7163,7 @@ function updateGuards(dt) {
     }
     if (g.stunT > 0) {
       g.stunT -= dt;
+      g.windupT = 0; // 蓄力被打断就作废
       g.group.rotation.z = Math.sin(performance.now() * 0.02) * 0.12;
       if (g.stunT <= 0) g.group.rotation.z = 0;
       continue;
@@ -7126,6 +7192,7 @@ function updateGuards(dt) {
       }
       g.yaw = angleLerp(g.yaw, Math.atan2(player.pos.x - g.pos.x, player.pos.z - g.pos.z), dt * 10);
     } else {
+      if (g.windupT > 0) g.windupT = 0; // 通缉半路消了:收剑,别举着冻住
       g.state = 'patrol';
       const wp = g.waypoints[g.wp];
       if (moveEntity(g, wp[0], wp[1], g.speed * 0.45, dt)) g.wp = (g.wp + 1) % g.waypoints.length;
@@ -7182,12 +7249,13 @@ function updateBandits(dt) {
           b.pos.copy(b.home);
           b.group.rotation.x = 0;
           b.respawnT = 60;
+          b.windupT = 0; b.swingT = 0; b.heavyAtk = false; b.comboN = 0; b.fleeT = 0; b.stunT = 0; // 上辈子的事一笔勾销
         }
       }
       continue;
     }
     if (!b.boss && !b.escort && !b.robber && !b.convict && !b.bountyHead &&
-        !b.duel && !b.arena && !b.eventFoe && entFar(b)) continue; // 远处匪徒待机
+        !b.duel && !b.arena && !b.eventFoe && !b.warband && entFar(b)) continue; // 远处匪徒待机(战团要行军,不休眠)
     // Boss 二阶段:血量过半即狂暴——提速、加伤、召两名亲卫
     if (b.boss && !b.enraged && b.hp <= 6) {
       b.enraged = true;
@@ -7215,7 +7283,13 @@ function updateBandits(dt) {
       animateLimbs(b.parts, b.walkT, true, b.group, 1);
       continue;
     }
-    if (b.stunT > 0) { b.stunT -= dt; continue; }
+    if (b.stunT > 0) { // 踉跄:蓄到一半的招一并作废,免得僵直一过凭空补刀
+      b.stunT -= dt;
+      b.windupT = 0;
+      b.comboN = 0;
+      b.heavyAtk = false;
+      continue;
+    }
     if (b.fleeT > 0) { // 溃逃:头也不回地跑,跑够了才敢回头
       b.fleeT -= dt;
       const rx = b.pos.x - player.pos.x, rz = b.pos.z - player.pos.z;
@@ -7263,7 +7337,8 @@ function updateBandits(dt) {
       } else if (pd > 1.6) { moveEntity(b, player.pos.x, player.pos.z, b.speed, dt); moving = true; }
       else if (b.attackCd <= 0) {
         // 车轮战:同时出手的最多两人,其余的绕着你侧向游走等空档(骑砍围攻的呼吸感)
-        const attackers = bandits.reduce((n, o) => n + ((o.windupT > 0 || o.swingT > 0) && !o.dead ? 1 : 0), 0);
+        const attackers = bandits.reduce((n, o) => n + ((o.windupT > 0 || o.swingT > 0) && !o.dead &&
+          dist2(o.pos.x, o.pos.z, player.pos.x, player.pos.z) < 400 ? 1 : 0), 0); // 只数身边 20 米内的出手者
         if (attackers >= 2) {
           const px = player.pos.x - b.pos.x, pz = player.pos.z - b.pos.z;
           const d = Math.hypot(px, pz) || 1;
@@ -7899,6 +7974,7 @@ function updatePickups(dt) {
         }
         saveGame();
       } else {
+        stats.starTaken = true; // 力量之星只领一次,记进档
         sfx.fanfare();
         toast('★ 恭喜通关!你成了王国传奇——世界仍然开放,继续撒欢吧!★', 8);
       }
@@ -9300,6 +9376,10 @@ function loop(now) {
       const push = 28.5 / (lakeD || 1);
       player.pos.x = -100 + ldx * push;
       player.pos.z = 100 + ldz * push;
+      if (player.mounted) { // 马也不会凫水:连人带马一起退回来
+        player.mounted.pos.x = player.pos.x;
+        player.mounted.pos.z = player.pos.z;
+      }
       if ((loop._wadeT || 0) < now - 4000) {
         loop._wadeT = now;
         toast('湖水一下子深了,你退了回来。(想上岛?栈桥边有小船)', 3);
