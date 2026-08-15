@@ -837,7 +837,7 @@ function explodeAt(x, z, dmg = 3, radius = 3.4) {
   };
   boom(bandits, (b) => {
     b.dead = true; startFall(b); registerKill(); choreProgress('bandits');
-    banditSlain();
+    banditSlain(b);
     dropCoins(b.pos, b.boss ? 20 : 5);
     if (b.boss) dismissMinions();
   });
@@ -1053,8 +1053,8 @@ function skillXp(k, n) {
     s.lv++;
     sfx.fanfare();
     // 技艺磨炼身体:每次升级体力上限 +3(封顶 160)——练什么都算锻炼
-    if (player.maxSta < 160) {
-      player.maxSta = Math.min(160, player.maxSta + 3);
+    if (player.maxSta < 180) {
+      player.maxSta = Math.min(180, player.maxSta + 3);
       player.sta = player.maxSta; // 升级瞬间气也回满,爽快些
     }
     toast(`${SKILL_DEFS[k].icon} ${SKILL_DEFS[k].name}提升到 ${s.lv} 级!(${SKILL_DEFS[k].perk};体力上限 ${player.maxSta})`, 3.5);
@@ -1353,12 +1353,24 @@ function pointBlocked(x, z) {
   }
   return false;
 }
+// 雨天湿弦:箭路发飘(暴雨更甚);提示节流,别刷屏
+let wetToastT = 0;
+function wetSpread(mul = 1) {
+  const wet = weather.state === 'storm' ? 0.11 : weather.state === 'rain' ? 0.055 : 0;
+  if (!wet) return 0;
+  if (performance.now() - wetToastT > 12000) {
+    wetToastT = performance.now();
+    toast('🌧️ 雨水打湿了弓弦,箭路发飘……', 2);
+  }
+  return (Math.random() - 0.5) * 2 * wet * mul;
+}
 function shootArrow() {
   // 弓术 5 级专属:一弓双箭(小角度散射)
   const shots = skillLv('archery') >= 5 ? [0, 0.09] : [0];
   for (const off of shots) {
     const mesh = new THREE.Mesh(arrowGeo, arrowMat);
-    const dir = new THREE.Vector3(Math.sin(player.yaw + off), 0.06, Math.cos(player.yaw + off)).normalize();
+    const jit = off + wetSpread();
+    const dir = new THREE.Vector3(Math.sin(player.yaw + jit), 0.06, Math.cos(player.yaw + jit)).normalize();
     const pos = new THREE.Vector3(player.pos.x + dir.x * 0.6, player.pos.y + 1.15, player.pos.z + dir.z * 0.6);
     mesh.position.copy(pos);
     scene.add(mesh);
@@ -1399,7 +1411,7 @@ function arrowHitEntities(a) {
     if (b.hp <= 0) {
       b.dead = true; startFall(b); registerKill(); choreProgress('bandits');
       EVO.kills.arrow++;
-      banditSlain();
+      banditSlain(b);
       if (b.boss) dismissMinions();
       dropCoins(b.pos, b.boss ? 20 : 5);
       if (quest.active && missions[quest.idx].type === 'bandits' && !b.boss && !b.escort && !b.bountyHead && !b.robber && !b.arena && !b.ambient && !b.duel && !b.convict && !b.eventFoe) {
@@ -5238,9 +5250,10 @@ if (hasSave) {
 setWeaponVisual(player.weapon);
 // 基础魔法与生俱来:老档也补上魔光弹
 if (!player.spells.includes('spark')) player.spells.unshift('spark');
-// 体力上限由技能总等级重算(maxSta 不入档,防旧档字段缺失)
-player.maxSta = Math.min(160, 100 + 3 *
-  Object.values(player.skills || {}).reduce((n, s) => n + Math.max(0, (s.lv || 1) - 1), 0));
+// 体力上限由技能总等级 + 军旗战利品重算(maxSta 不入档,防旧档字段缺失)
+player.maxSta = Math.min(180, 100 + 3 *
+  Object.values(player.skills || {}).reduce((n, s) => n + Math.max(0, (s.lv || 1) - 1), 0) +
+  5 * (stats.banners || 0));
 player.sta = player.maxSta;
 setArmorVisual(player.armor);
 applySeason();
@@ -6472,7 +6485,17 @@ function frightenBandits(radius = 14) {
   }
   return fled;
 }
-function banditSlain() {
+function banditSlain(b) {
+  // 阵斩枭首:夺军旗——永久体力上限 +5(封顶 180),外加一把赏金
+  if (b && b.warlord) {
+    stats.banners = (stats.banners || 0) + 1;
+    player.maxSta = Math.min(180, player.maxSta + 5);
+    player.sta = player.maxSta;
+    dropCoins(b.pos, 10);
+    sfx.chest();
+    toast(`🚩 夺得战团军旗!(第 ${stats.banners} 面:体力上限 +5 → ${player.maxSta},当场回满)`, 4.5);
+    remember(`阵斩战团枭首,夺下第 ${stats.banners} 面军旗`, `banner-${stats.banners}`);
+  }
   const now = performance.now();
   streakN = (now - streakT < 6000) ? streakN + 1 : 1;
   streakT = now;
@@ -6573,7 +6596,7 @@ function meleeSweep(dmg, range, arcDot, knock) {
     if (b.hp <= 0) {
       b.dead = true; startFall(b); registerKill(); choreProgress('bandits');
       EVO.kills.melee++;
-      banditSlain();
+      banditSlain(b);
       dropCoins(b.pos, b.boss ? 20 : 5);
       addPickup('heart', b.pos.x, b.pos.z + 1, 30);
       if (b.boss) { toast('⚔️ 血斧巴罗克倒下了!黑石兄弟会土崩瓦解!', 5); dismissMinions(); }
@@ -6593,6 +6616,7 @@ function meleeSweep(dmg, range, arcDot, knock) {
     hitStopT = Math.max(hitStopT, 0.22);
     camShake = Math.max(camShake, 0.45);
     fovKick = 0.4;
+    slowMoT = 0.55;
     if (execTarget) {
       if (player.weapon === 'dagger') {
         // 影袭:黑雾一闪,人已在目标身后收刀
@@ -6821,7 +6845,8 @@ function chargedShot() {
   player.attackDur = WEAPONS.bow.cd * 1.4;
   sfx.arrow();
   camShake = Math.max(camShake, 0.12);
-  const dir = new THREE.Vector3(Math.sin(player.yaw), 0.03, Math.cos(player.yaw)).normalize();
+  const jit = wetSpread(0.5); // 满月拉满弓,受雨影响减半
+  const dir = new THREE.Vector3(Math.sin(player.yaw + jit), 0.03, Math.cos(player.yaw + jit)).normalize();
   const mesh = new THREE.Mesh(arrowGeo, arrowMat);
   const pos = new THREE.Vector3(player.pos.x + dir.x * 0.6, player.pos.y + 1.15, player.pos.z + dir.z * 0.6);
   mesh.position.copy(pos);
@@ -8090,6 +8115,7 @@ function updateEnvIntensity() {
 let moveState = 0; // 0 静止 1 走 2 跑 3 疾驰
 let camShake = 0;
 let fovKick = 0; // 处决瞬间镜头急推
+let slowMoT = 0; // 处决慢镜头(时停之后的余韵)
 const _camOff = new THREE.Vector3();
 const _camTarget = new THREE.Vector3();
 const _camDesired = new THREE.Vector3();
@@ -9170,6 +9196,9 @@ function loop(now) {
   if (hitStopT > 0) {
     hitStopT -= dt;
     dt *= 0.12;
+  } else if (slowMoT > 0) { // 处决余韵:时停之后再来半秒慢镜,看清那一刀的分量
+    slowMoT -= dt;
+    dt *= 0.4;
   }
 
   updateToast(dt);
