@@ -3484,6 +3484,7 @@ const ACH_DEFS = {
   parry:    { name: '见招拆招', desc: '完成 5 次完美弹反' },
   lawless:  { name: '无法无天', desc: '把全城卫兵同时放倒' },
   warbreaker: { name: '破军', desc: '全歼一支盗贼战团' },
+  wallkeeper: { name: '守城人', desc: '与卫兵并肩击退攻城大军' },
   rampage:  { name: '一骑当千', desc: '一场战斗内 8 连杀' },
   chef:     { name: '野炊大师', desc: '在篝火上烤 5 块鹿肉' },
   packmate: { name: '孤狼不再', desc: '驯服白狼「霜牙」' },
@@ -6452,9 +6453,10 @@ function spawnWarband() {
   warband.lootT = 0;
   const a = Math.random() * Math.PI * 2;
   const sx = Math.cos(a) * 120, sz = Math.sin(a) * 120;
-  // 越剿越强:每覆灭一支,下一支多一个喽啰(封顶 8),枭首更硬
-  const grunts = Math.min(8, 4 + warband.wave);
-  const lead = addBandit(sx, sz, { hp: 8 + warband.wave, dmg: 2, speed: 5.4, scale: 1.12 });
+  // 越剿越强:每覆灭一支,下一支多一个喽啰(封顶 8),枭首更硬;每第四波=倾巢攻城
+  warband.siege = (warband.wave + 1) % 4 === 0 && warband.wave > 0;
+  const grunts = warband.siege ? 9 : Math.min(8, 4 + warband.wave);
+  const lead = addBandit(sx, sz, { hp: warband.siege ? 12 : 8 + warband.wave, dmg: 2, speed: 5.4, scale: 1.12 });
   lead.warlord = true;
   lead.duel = true; // 借精英出招库:紫圈重击+二连击
   lead.warband = true;
@@ -6465,8 +6467,13 @@ function spawnWarband() {
     warband.members.push(b);
   }
   const compass = Math.abs(sx) > Math.abs(sz) ? (sx > 0 ? '东' : '西') : (sz > 0 ? '南' : '北');
-  toast(`⚠️ 斥候急报:一支盗贼战团(${warband.members.length} 人)正从${compass}面逼近王都!半路截住他们!` +
-    (warband.wave > 0 ? '(为复仇而来,比上次更凶)' : ''), 5);
+  if (warband.siege) {
+    toast(`🚨 攻城警报!!枭首纠集 ${warband.members.length} 人大队从${compass}面强攻王都!卫兵已列阵迎敌——并肩守城!`, 6);
+    sfx.wanted();
+  } else {
+    toast(`⚠️ 斥候急报:一支盗贼战团(${warband.members.length} 人)正从${compass}面逼近王都!半路截住他们!` +
+      (warband.wave > 0 ? '(为复仇而来,比上次更凶)' : ''), 5);
+  }
   sfx.warn();
 }
 function disbandWarband(escaped) {
@@ -6516,13 +6523,21 @@ function updateWarband(dt) {
     toast(`🗯️ 战团枭首:「${base}」${corpus}`, 3.2);
   }
   if (!alive.length) { // 全歼:犒赏;残党记仇,下一支更大
+    const wasSiege = warband.siege;
     warband.wave++;
     disbandWarband(false);
-    toast('🎖️ 战团覆灭!你护住了王都的安宁。(悬赏 +25 金币)', 4.5);
+    if (wasSiege) {
+      toast('🏰 攻城被击退!!卫兵们冲你抱拳——王都记住了这一天。(犒赏 +80 金币)', 6);
+      player.coins += 80;
+      unlockAch('wallkeeper');
+      remember('与卫兵并肩击退了强攻王都的盗贼大军', `siege-${calendar.day}`);
+    } else {
+      toast('🎖️ 战团覆灭!你护住了王都的安宁。(悬赏 +25 金币)', 4.5);
+      player.coins += 25;
+      unlockAch('warbreaker');
+      remember('在野外截住并全歼了一支盗贼战团', `warband-${calendar.day}`);
+    }
     sfx.fanfare();
-    player.coins += 25;
-    unlockAch('warbreaker');
-    remember('在野外截住并全歼了一支盗贼战团', `warband-${calendar.day}`);
     return;
   }
   // 行军:队伍的"锚点"稳步压向广场;贴近玩家的成员自动切普通战斗 AI
@@ -7168,6 +7183,36 @@ function updateGuards(dt) {
       if (g.stunT <= 0) g.group.rotation.z = 0;
       continue;
     }
+    // 攻城战:卫兵放下巡逻,迎击 40 米内最近的战团匪徒(通缉中还是先抓你)
+    if (warband.siege && warband.active && wanted === 0) {
+      let tgt = null, td = 1600;
+      for (const wb of warband.members) {
+        if (wb.dead || wb.downT > 0) continue;
+        const d2v = dist2(g.pos.x, g.pos.z, wb.pos.x, wb.pos.z);
+        if (d2v < td) { td = d2v; tgt = wb; }
+      }
+      if (tgt) {
+        g.attackCd = Math.max(0, g.attackCd - dt);
+        let moving = false;
+        if (td > 1.7 * 1.7) { moveEntity(g, tgt.pos.x, tgt.pos.z, g.speed, dt); moving = true; }
+        else if (g.attackCd <= 0) {
+          g.attackCd = 1.1;
+          g.swingT = 0.3;
+          tgt.hp -= 1;
+          sfx.clank();
+          spawnDust(tgt.pos.x, 1.0, tgt.pos.z, 2, 0.4, 1.2);
+          showDamage(tgt.pos, 1);
+          if (tgt.hp <= 0) slayBandit(tgt, { companion: true, credit: '卫兵击破' });
+        }
+        g.yaw = angleLerp(g.yaw, Math.atan2(tgt.pos.x - g.pos.x, tgt.pos.z - g.pos.z), dt * 8);
+        g.group.position.copy(g.pos);
+        g.group.rotation.y = g.yaw;
+        g.parts._attackAnim = (g.swingT || 0) > 0;
+        animateLimbs(g.parts, g.walkT, moving, g.group, 1.1);
+        if (g.swingT > 0) { g.swingT -= dt; meleeSwing(g.parts, Math.min(1, 1 - g.swingT / 0.35)); }
+        continue;
+      }
+    }
     if (wanted === 0 && g.state !== 'chase' && entFar(g)) continue; // 无通缉时远处卫兵不巡逻动画
     g.attackCd = Math.max(0, g.attackCd - dt);
     const pd = Math.hypot(player.pos.x - g.pos.x, player.pos.z - g.pos.z);
@@ -7304,6 +7349,34 @@ function updateBandits(dt) {
     if (b._trampleCd > 0) b._trampleCd -= dt;
     const pd = Math.hypot(player.pos.x - b.pos.x, player.pos.z - b.pos.z);
     let moving = false;
+    // 攻城战:玩家不在眼前时,战团匪徒先跟拦路的卫兵拼刀
+    if (b.warband && warband.siege && pd > 6) {
+      let gt = null, gd2 = 900;
+      for (const g2 of guards) {
+        if (g2.downT > 0) continue;
+        const d2v = dist2(b.pos.x, b.pos.z, g2.pos.x, g2.pos.z);
+        if (d2v < gd2) { gd2 = d2v; gt = g2; }
+      }
+      if (gt) {
+        if (gd2 > 1.6 * 1.6) { moveEntity(b, gt.pos.x, gt.pos.z, b.speed, dt); moving = true; }
+        else if (b.attackCd <= 0) {
+          b.attackCd = 1.1;
+          b.swingT = 0.35;
+          gt.hp -= 1;
+          sfx.clank();
+          spawnDust(gt.pos.x, 1.0, gt.pos.z, 2, 0.4, 1.2);
+          showDamage(gt.pos, 1);
+          gt.state = 'chase';
+          if (gt.hp <= 0) downGuard(gt);
+        }
+        b.group.position.copy(b.pos);
+        b.group.rotation.y = b.yaw;
+        b.parts._attackAnim = (b.swingT || 0) > 0;
+        animateLimbs(b.parts, b.walkT, moving, b.group, 1.0);
+        if (b.swingT > 0) { b.swingT -= dt; meleeSwing(b.parts, Math.min(1, 1 - b.swingT / 0.35)); }
+        continue;
+      }
+    }
     // 护送任务的埋伏盗贼优先攻击商人(除非玩家贴脸)
     const mc = questRT.merchant;
     if (b.escort && mc && mc.hp > 0 && pd > 5) {
