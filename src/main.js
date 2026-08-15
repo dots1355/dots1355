@@ -987,7 +987,9 @@ function castSpell() {
     sfx.clear();
     camShake = Math.max(camShake, 0.25);
     spawnDust(player.pos.x, 0.4, player.pos.z, 22, 3.2, 1.6);
-    addFrostPatch(player.pos.x, player.pos.z); // 冰霜留痕:6 秒冰面,踩上减速一半
+    // 冰霜留痕:6 秒冰面(雨天水汽足,冻得住 9 秒),踩上减速一半
+    addFrostPatch(player.pos.x, player.pos.z, 5.5,
+      weather.state === 'rain' || weather.state === 'storm' ? 9 : 6);
     const freeze = (list) => {
       for (const e of list) {
         if (e.dead || e.downT > 0 || e.stunT === undefined) continue;
@@ -1501,7 +1503,8 @@ function updateArrows(dt) {
           dist2(a.pos.x, a.pos.z, e.pos.x, e.pos.z) < 1.6);
         if (near(bandits) || near(wolves) || near(guards) ||
             a.pos.y <= 0.1 || pointBlocked(a.pos.x, a.pos.z) || a.ttl <= 0.05) {
-          explodeAt(a.pos.x, a.pos.z, a.big ? 5 : 3, a.big ? 5.2 : 3.4); // 大火球:范围与伤害俱增
+          const wetMul = weather.state === 'storm' ? 0.75 : weather.state === 'rain' ? 0.85 : 1;
+          explodeAt(a.pos.x, a.pos.z, a.big ? 5 : 3, (a.big ? 5.2 : 3.4) * wetMul); // 雨天火势打折
           disposeArrow(a);
           arrows.splice(i, 1);
           removed = true;
@@ -2141,6 +2144,7 @@ function openJournal() {
     `📜 委托 ${Math.min(quest.idx, missions.length)}/${missions.length} · 🛡️ 纹章 ${crestsFound.length}/${world.crestSpots.length} · 📖 铭文 ${loreRead.length}/${LORE.length} · 🏆 成就 ${achUnlocked.length}/${Object.keys(ACH_DEFS).length}`,
     `🐺 猎狼 ${wolfKills} · 🦌 猎鹿 ${stats.deer || 0} · 🍄 采菇 ${stats.mushrooms || 0} · 🎣 钓鱼 ${stats.fishCaught || 0} · ⚡ 弹反 ${stats.parries || 0}`,
     `🏟️ 竞技场最佳 ${stats.arenaBest || 0} 波 · 🏁 赛马纪录 ${bestRace} · 💀 倒下 ${stats.deaths || 0} 次`,
+    `⚔️ 战团覆灭 ${stats.warbandsWiped || 0} 支 · 🏰 攻城击退 ${stats.siegesHeld || 0} 次 · 🚩 军旗 ${stats.banners || 0} 面`,
     `📈 技艺(用什么涨什么):${Object.entries(SKILL_DEFS).map(([k, d]) =>
       `${d.icon}${d.name} ${player.skills[k].lv} 级`).join(' · ')}` +
       `${shout.learned ? ' · 🐉 冲击战吼' : ''}${mercs.length ? ` · 🪖 佣兵 ×${mercs.length}` : ''}`,
@@ -6608,6 +6612,7 @@ function updateWarband(dt) {
     if (wasSiege) {
       toast('🏰 攻城被击退!!卫兵们冲你抱拳——王都记住了这一天。(犒赏 +80 金币)', 6);
       player.coins += 80;
+      stats.siegesHeld = (stats.siegesHeld || 0) + 1;
       unlockAch('wallkeeper');
       openDialog([
         `📜 守城战报:敌军 ${warband.pKills + warband.gKills} 人授首——你亲斩 ${warband.pKills} 人,卫兵击破 ${warband.gKills} 人。`,
@@ -6617,6 +6622,7 @@ function updateWarband(dt) {
     } else {
       toast('🎖️ 战团覆灭!你护住了王都的安宁。(悬赏 +25 金币)', 4.5);
       player.coins += 25;
+      stats.warbandsWiped = (stats.warbandsWiped || 0) + 1;
       unlockAch('warbreaker');
       remember('在野外截住并全歼了一支盗贼战团', `warband-${calendar.day}`);
     }
@@ -6659,6 +6665,8 @@ function frightenBandits(radius = 14) {
   return fled;
 }
 function banditSlain(b) {
+  // 枭首之刃嗜血:持刃击杀回 4 体力——刀认得血的味道
+  if (player.weapon === 'warblade') player.sta = Math.min(player.maxSta, player.sta + 4);
   // 阵斩枭首:夺军旗——永久体力上限 +5(封顶 180),外加一把赏金
   if (b && b.warlord) {
     stats.banners = (stats.banners || 0) + 1;
