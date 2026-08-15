@@ -218,12 +218,56 @@ export function makeHumanoid(opts = {}) {
   return { group: g, parts };
 }
 
-// ---- Blender 动物模板(马/狼;鹿=马+角) ----
-let HORSE_TPL = null, WOLF_TPL = null;
+// ---- Blender 动物模板(马/狼/霜龙;鹿=马+角) ----
+let HORSE_TPL = null, WOLF_TPL = null, DRAGON_TPL = null;
 export function setFaunaModel(kind, scene) {
   scene.traverse((o) => { if (o.isMesh) o.castShadow = true; });
   if (kind === 'horse') HORSE_TPL = scene;
   else if (kind === 'wolf') WOLF_TPL = scene;
+  else if (kind === 'dragon') DRAGON_TPL = scene;
+}
+
+// 霜龙:Body + 双翼(左翼模板镜像出右翼);眼睛换发光材质
+export function makeDragon() {
+  const group = new THREE.Group();
+  const parts = { wings: [] };
+  if (DRAGON_TPL) {
+    const body = DRAGON_TPL.getObjectByName('Body');
+    const wingT = DRAGON_TPL.getObjectByName('WingL');
+    if (body) {
+      const b = body.clone();
+      b.traverse((o) => {
+        if (o.isMesh && o.name.startsWith('Eye')) {
+          o.material = new THREE.MeshStandardMaterial({
+            color: 0x9fe0ff, emissive: 0x66c4ff, emissiveIntensity: 1.4 });
+        }
+      });
+      group.add(b);
+    }
+    if (wingT) {
+      for (const s of [1, -1]) {
+        const w = wingT.clone();
+        // 肩关节:Blender(±0.55,-1.8,1.35) → glTF(±0.55,1.35,1.8)
+        w.position.set(0.55 * s, 1.35, 1.8);
+        w.scale.x = s;
+        w.rotation.z = -0.15 * s;
+        group.add(w);
+        parts.wings.push(w);
+      }
+    }
+  } else { // 兜底:无模板时的方块龙,别让 Boss 战开天窗
+    const bodyM = lambert(0x6a7c88, { roughness: 0.85 });
+    const b = new THREE.Mesh(new THREE.BoxGeometry(1.2, 1.1, 6), bodyM);
+    b.position.y = 1.1;
+    group.add(b);
+    for (const s of [1, -1]) {
+      const w = new THREE.Mesh(new THREE.PlaneGeometry(3.4, 1.6), lambert(0x9fb4c4, { side: THREE.DoubleSide }));
+      w.position.set(1.8 * s, 1.5, 1.4);
+      group.add(w);
+      parts.wings.push(w);
+    }
+  }
+  return { group, parts };
 }
 function tintClone(node, slots) {
   const c = node.clone();

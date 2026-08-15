@@ -1,7 +1,7 @@
 // 《侠盗猎马人:中世纪王国》主逻辑
 import * as THREE from 'three';
 import { buildWorld } from './world.js';
-import { makeHumanoid, makeHorse, makeWolf, makeChicken, makeSheep, resolveCollisions, angleLerp, dist2, lambert, setHumanModel, setFaunaModel, setWeaponModels, getWeaponModel } from './entities.js';
+import { makeHumanoid, makeHorse, makeWolf, makeChicken, makeSheep, makeDragon, resolveCollisions, angleLerp, dist2, lambert, setHumanModel, setFaunaModel, setWeaponModels, getWeaponModel } from './entities.js';
 import { INTRO, REGIONS, GUARD_LINES, NPCS, MISSIONS, VILLAGERS, DIALOGS, TIME_GREETINGS, LORE } from './story.js';
 import { initAudio, sfx, startMusic, toggleMusic, weatherAudio, setAmbience, setCombatMusic } from './audio.js';
 import { preloadAIAssets, generateRemoteAITextures } from './textures.js';
@@ -263,7 +263,7 @@ try {
   await Promise.all(Object.entries(MODELS_B64).map(([kind, b64]) =>
     new Promise((res) => gltfLoader.parse(b64buf(b64), '', (gltf) => {
       if (kind === 'human') setHumanModel(gltf.scene);
-      else if (kind === 'horse' || kind === 'wolf') setFaunaModel(kind, gltf.scene);
+      else if (kind === 'horse' || kind === 'wolf' || kind === 'dragon') setFaunaModel(kind, gltf.scene);
       else if (kind === 'weapons') setWeaponModels(gltf.scene);
       else if (kind === 'props') {
         const st = gltf.scene.getObjectByName('Stall');
@@ -1123,7 +1123,15 @@ const DRAGON_SKULL = { x: 298, z: -152 };
 const shout = { learned: false, cd: 0 };
 function learnShout() {
   if (shout.learned) {
-    openDialog(['(龙颅空洞的眼窝深处,有风声盘旋。它已无话可教——去吼吧。)']);
+    if (stats.dragonSlain) {
+      openDialog(['(龙颅静默。它的残魂已得安息——而它的力量,在你血脉里。)']);
+    } else if (dragonRT.on) {
+      openDialog(['(骨头是空的。它的主人正在你头顶盘旋。)']);
+    } else if (dayPhase() === 'night') {
+      awakenDragon();
+    } else {
+      openDialog(['(龙颅空洞的眼窝深处,有风声盘旋。夜里再来——骨头缝里有什么在等着。)']);
+    }
     return;
   }
   shout.learned = true;
@@ -1139,7 +1147,7 @@ function learnShout() {
 }
 function doShout() {
   if (!shout.learned || shout.cd > 0 || player.dead || dialog.open) return;
-  shout.cd = 45;
+  shout.cd = stats.dragonSlain ? 22.5 : 45; // 屠龙者:龙魂减半冷却
   sfx.stomp();
   sfx.clear();
   camShake = 0.6;
@@ -1511,6 +1519,19 @@ function updateArrows(dt) {
         }
         continue;
       }
+      if (dragonRT.on && dragonRT.hp > 0) { // 飞龙判定:三维距离,不受地面身位限制
+        const gp = dragonRT.ent.group.position;
+        if (Math.abs(a.pos.y - gp.y - 1.6) < 2.4 && dist2(a.pos.x, a.pos.z, gp.x, gp.z) < 2.6 * 2.6) {
+          if (a.fire) explodeAt(a.pos.x, a.pos.z, 0, 1);
+          damageDragon(a.fire ? (a.big ? 5 : 3) :
+            (a.dmg || arrowBonus(WEAPONS.bow.dmg + (player.swordLv >= 2 ? 1 : 0))), a);
+          skillXp(a.mag || a.fire ? 'destruction' : 'archery', 2);
+          disposeArrow(a);
+          arrows.splice(i, 1);
+          removed = true;
+          continue;
+        }
+      }
       if (arrowHitEntities(a)) {
         skillXp(a.mag ? 'destruction' : 'archery', 2);
         if (a.mag) magBurst(a.pos.x, Math.max(0.4, a.pos.y), a.pos.z); // 命中碎光
@@ -1702,6 +1723,148 @@ function updateDanger(dt) {
     f.ring.position.set(f.e.pos.x, 0.07, f.e.pos.z);
     f.ring.scale.setScalar(2.6 - k * 1.6);        // 大圈收拢到出手半径
     f.ring.material.opacity = 0.25 + 0.55 * k;    // 越接近出手越亮
+  }
+}
+
+// ================= 霜龙苏醒(龙骨之地终局 Boss)=================
+// 学会战吼后,夜里再触龙颅——骨翼重聚血肉。空中盘旋/俯冲/三段吐息;掉血落地喘息时才能近战。
+const dragonRT = { on: false, ent: null, hp: 0, maxHp: 30, phase: 'circle', t: 0, h: 9, ang: 0,
+  landAt: [], _sw: false, _breathed: false };
+function awakenDragon() {
+  const d = makeDragon();
+  d.group.scale.setScalar(1.5);
+  dragonRT.ent = d;
+  dragonRT.on = true;
+  dragonRT.hp = dragonRT.maxHp;
+  dragonRT.phase = 'rise';
+  dragonRT.t = 0;
+  dragonRT.ang = 0;
+  dragonRT.landAt = [22, 14, 7];
+  d.group.position.set(DRAGON_SKULL.x, 0.5, DRAGON_SKULL.z);
+  scene.add(d.group);
+  camShake = 0.6;
+  sfx.wanted();
+  sfx.stomp();
+  toast('🐉 大地震颤——霜龙的残魂闻声而起,骨翼重聚血肉!!(飞行时用弓和法术,等它落地喘息再上刀)', 6);
+  remember('在龙骨之地唤醒了霜龙的残魂', 'dragonwake');
+}
+function damageDragon(nDmg, from) {
+  if (!dragonRT.on || dragonRT.hp <= 0) return;
+  dragonRT.hp -= nDmg;
+  showDamage(dragonRT.ent.group.position, nDmg, nDmg >= 3);
+  sfx.hit();
+  if (dragonRT.hp <= 0) {
+    dragonRT.phase = 'dead';
+    dragonRT.t = 2.2;
+    hitStopT = Math.max(hitStopT, 0.25);
+    slowMoT = 0.8;
+    camShake = 0.8;
+    return;
+  }
+  if (dragonRT.landAt.length && dragonRT.hp <= dragonRT.landAt[0]) {
+    dragonRT.landAt.shift();
+    dragonRT.phase = 'land';
+    dragonRT.t = 8;
+    toast('🐉 霜龙坠地喘息——就是现在,上刀!!', 3);
+    sfx.stomp();
+    camShake = Math.max(camShake, 0.4);
+  }
+}
+function updateDragon(dt) {
+  if (!dragonRT.on) return;
+  const g = dragonRT.ent.group;
+  dragonRT.t -= dt;
+  // 翼拍:飞行大摆,落地收拢
+  const flap = dragonRT.phase === 'land' || dragonRT.phase === 'dead'
+    ? 0.95 : Math.sin(performance.now() * 0.006) * 0.55;
+  const W = dragonRT.ent.parts.wings;
+  if (W.length === 2) {
+    W[0].rotation.z = -0.15 + flap;
+    W[1].rotation.z = 0.15 - flap;
+  }
+  if (dragonRT.phase === 'rise') {
+    g.position.y += dt * 4;
+    if (g.position.y >= dragonRT.h) { dragonRT.phase = 'circle'; dragonRT.t = 6; }
+  } else if (dragonRT.phase === 'circle') {
+    dragonRT.ang += dt * 0.55;
+    const cx = DRAGON_SKULL.x + Math.cos(dragonRT.ang) * 17;
+    const cz = DRAGON_SKULL.z + Math.sin(dragonRT.ang) * 17;
+    g.position.x += (cx - g.position.x) * Math.min(1, dt * 2);
+    g.position.z += (cz - g.position.z) * Math.min(1, dt * 2);
+    g.position.y += (dragonRT.h - g.position.y) * Math.min(1, dt * 2);
+    g.rotation.y = Math.atan2(-Math.sin(dragonRT.ang), Math.cos(dragonRT.ang)); // 沿切线飞
+    g.rotation.z = 0;
+    if (dragonRT.t <= 0 && dist2(player.pos.x, player.pos.z, DRAGON_SKULL.x, DRAGON_SKULL.z) < 3600) {
+      if (Math.random() < 0.55) {
+        dragonRT.phase = 'swoop';
+        dragonRT.t = 3;
+        dragonRT._sw = false;
+        toast('🐉 俯冲!!(翻滚躲开)', 1.4);
+        sfx.warn();
+      } else {
+        dragonRT.phase = 'breath';
+        dragonRT.t = 2.2;
+        dragonRT._breathed = false;
+        sfx.warn();
+      }
+    }
+  } else if (dragonRT.phase === 'swoop') {
+    const dx = player.pos.x - g.position.x, dz = player.pos.z - g.position.z;
+    const dd = Math.hypot(dx, dz) || 1;
+    g.position.x += (dx / dd) * 16 * dt;
+    g.position.z += (dz / dd) * 16 * dt;
+    g.position.y += (1.6 - g.position.y) * Math.min(1, dt * 2.2);
+    g.rotation.y = Math.atan2(dx, dz);
+    if (dd < 2.8 && !dragonRT._sw) {
+      dragonRT._sw = true;
+      damagePlayer(2, null);
+      camShake = Math.max(camShake, 0.4);
+    }
+    if (dragonRT.t <= 0 || dd < 1) { dragonRT.phase = 'circle'; dragonRT.t = 5 + Math.random() * 3; }
+  } else if (dragonRT.phase === 'breath') {
+    g.position.y += (dragonRT.h - g.position.y) * Math.min(1, dt * 2);
+    g.rotation.y = Math.atan2(player.pos.x - g.position.x, player.pos.z - g.position.z);
+    if (!dragonRT._breathed && dragonRT.t <= 1.2) {
+      dragonRT._breathed = true;
+      const bx = g.position.x, bz = g.position.z;
+      const dx = player.pos.x - bx, dz = player.pos.z - bz;
+      const dd = Math.hypot(dx, dz) || 1;
+      for (let i = 1; i <= 3; i++) {
+        const px2 = bx + (dx / dd) * dd * (i / 3), pz2 = bz + (dz / dd) * dd * (i / 3);
+        setTimeout(() => { // 三段冰息:沿线炸开,波及玩家
+          explodeAt(px2, pz2, 2, 2.6);
+          addFrostPatch(px2, pz2, 2.6, 4); // 息后留霜
+          if (!player.dead && dist2(player.pos.x, player.pos.z, px2, pz2) < 2.6 * 2.6) damagePlayer(2, null);
+        }, i * 280);
+      }
+    }
+    if (dragonRT.t <= 0) { dragonRT.phase = 'circle'; dragonRT.t = 5 + Math.random() * 3; }
+  } else if (dragonRT.phase === 'land') {
+    g.position.y += (0 - g.position.y) * Math.min(1, dt * 3);
+    g.rotation.y = angleLerp(g.rotation.y, Math.atan2(player.pos.x - g.position.x, player.pos.z - g.position.z), dt * 3);
+    if (dragonRT.t <= 0) {
+      dragonRT.phase = 'rise';
+      toast('🐉 霜龙振翅,重新升空!', 2);
+    }
+  } else if (dragonRT.phase === 'dead') {
+    g.position.y += (0 - g.position.y) * Math.min(1, dt * 2.5);
+    g.rotation.z = Math.min(0.6, g.rotation.z + dt);
+    if (dragonRT.t <= 0) {
+      dragonRT.on = false;
+      scene.remove(g);
+      stats.dragonSlain = true;
+      player.maxHp += 2;
+      player.hp = player.maxHp;
+      player.coins += 150;
+      unlockAch('dragonslayer');
+      sfx.fanfare();
+      openDialog([
+        '(霜龙的残魂散作漫天冰晶,像一场向上落的雪。)',
+        '🐉 屠龙者!龙魂涌入你的血脉:生命上限 +2、战吼冷却减半、+150 金币!',
+      ]);
+      remember('斩落了龙骨之地的霜龙残魂', 'dragonslain');
+      saveGame();
+    }
   }
 }
 
@@ -3521,6 +3684,7 @@ const ACH_DEFS = {
   warbreaker: { name: '破军', desc: '全歼一支盗贼战团' },
   wallkeeper: { name: '守城人', desc: '与卫兵并肩击退攻城大军' },
   champion:   { name: '阵前斩将', desc: '单挑斩落枭首,吓散整支战团' },
+  dragonslayer: { name: '屠龙者', desc: '斩落龙骨之地的霜龙残魂' },
   rampage:  { name: '一骑当千', desc: '一场战斗内 8 连杀' },
   chef:     { name: '野炊大师', desc: '在篝火上烤 5 块鹿肉' },
   packmate: { name: '孤狼不再', desc: '驯服白狼「霜牙」' },
@@ -6489,8 +6653,10 @@ function updateCombatMusic(dt) {
       if (dist2(player.pos.x, player.pos.z, g.pos.x, g.pos.z) < 16 * 16) { hot = true; break; }
     }
   }
+  if (dragonRT.on && dragonRT.hp > 0 &&
+      dist2(player.pos.x, player.pos.z, dragonRT.ent.group.position.x, dragonRT.ent.group.position.z) < 3600) hot = true;
   combatCalmT = hot ? 4 : Math.max(0, combatCalmT - dt);
-  setCombatMusic(combatCalmT > 0, warband.active && warband.siege);
+  setCombatMusic(combatCalmT > 0, (warband.active && warband.siege) || dragonRT.on); // 屠龙也配战鼓
 }
 // ================= 盗贼战团(骑砍式野战遭遇)=================
 // 每隔几分钟,一支五人战团(枭首+四喽啰)从旷野压向王都:半路截杀=犒赏,放进城=集市遭殃
@@ -6870,6 +7036,17 @@ function meleeSweep(dmg, range, arcDot, knock) {
     sfx.hit();
     crime(2, '你袭击了村民!这是重罪!');
   });
+  // 落地喘息的霜龙:近战窗口
+  if (dragonRT.on && dragonRT.hp > 0 && dragonRT.phase === 'land' && dmg > 0) {
+    const gp = dragonRT.ent.group.position;
+    const ddx = gp.x - player.pos.x, ddz = gp.z - player.pos.z;
+    const dd = Math.hypot(ddx, ddz);
+    if (dd < range + 2.4 && (ddx * fx + ddz * fz) / (dd || 1) > arcDot) {
+      damageDragon(dmg, null);
+      sfx.hitMetal();
+      hitStop(0.05);
+    }
+  }
 }
 
 function tryAttack() {
@@ -8502,6 +8679,8 @@ function updateHUD() {
   const timerType = quest.active && (missions[quest.idx].type === 'deliver' || missions[quest.idx].type === 'race');
   const timer = timerType ? `⏱ ${Math.ceil(quest.timer)} 秒` : '';
   if (timer) missionText = `${timer}${quest.timer < 12 ? ' ⚠️' : ''}\n${missionText}`;
+  if (dragonRT.on) missionText = `🐉 霜龙 ❤${Math.max(0, dragonRT.hp)}/${dragonRT.maxHp}` +
+    `${dragonRT.phase === 'land' ? ' · 落地喘息:上刀!' : ' · 飞行中(弓/法术)'}\n` + missionText;
   if (warband.active) { // 战况横幅:战团还剩几个,一眼可知
     const wbAlive = warband.members.filter((b) => !b.dead).length;
     missionText = `${warband.siege ? '🚨 攻城战' : '⚔️ 战团来袭'}:余 ${wbAlive}/${warband.members.length}` +
@@ -9490,7 +9669,8 @@ window.__gtm = {
   frostPatches, frostSlow, castBigFire, getFireCharge: () => player.fireChargeT || 0,
   warband, spawnWarband, updateWarband,
   getCombatMusic: () => combatCalmT > 0, foeName, registerKill, whiteHot,
-  WARLORD_TAUNTS, getBanners: () => stats.banners || 0, toastQueue, keys,
+  WARLORD_TAUNTS, getBanners: () => stats.banners || 0, toastQueue,
+  dragonRT, awakenDragon, damageDragon, keys,
   getMoveState: () => moveState, saveNow: saveGame,
   SKILL_DEFS, skillXp, toggleSneak, sneakFactor, shout, learnShout, doShout,
   mercs, hireMerc, payMercs, DRAGON_SKULL,
@@ -9645,6 +9825,7 @@ function loop(now) {
   updatePrologue(dt);
   updateLawless(dt);
   updateWarband(dt);
+  updateDragon(dt);
   updateCombatMusic(dt);
   if (player.squashT > 0) {   // 落地挤压回弹
     player.squashT = Math.max(0, player.squashT - dt);
