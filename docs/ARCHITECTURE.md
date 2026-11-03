@@ -11,6 +11,7 @@
 | `src/core/ctx.js` | 共享上下文:main.js 启动时登记玩家/世界/碰撞体与少量回调,拆出的系统模块经它访问(带安全缺省值) |
 | `src/systems/camera.js` | 相机:跟随、锁定越肩、防穿墙/穿岩、震屏与速度感视野;共享镜头状态 `cam` |
 | `src/systems/sky.js` | 天空与昼夜:日月星辰、天穹、远山环、雾与光照随时间变化;群系氛围平滑过渡;视距跟随雾距;`clock.time` 是一天的进度 |
+| `src/ui/maps.js` | 小地图与 M 键王国全图;动态数据每次绘制经 `ctx.mapView()` 取快照,本身不持有玩法状态 |
 | `src/systems/weather.js` | 天气轮换、雷电、雨/雪线段粒子、地面扬尘 |
 | `src/core/timers.js` | 游戏时钟定时器 `later(sec, fn)`:按游戏 dt 结算,暂停即冻结 |
 | `src/core/rng.js` | 可设种子的 `rand()`;玩法与世界生成的随机都走它,测试可复现 |
