@@ -89,7 +89,7 @@ export const gradePass = new ShaderPass({
 // ---- 画风预设:油画(默认)/ 电影 / 动画 / 复古,一键切换、独立持久化 ----
 // mode:0 纯调色 · 1 油画(Kuwahara 笔触)· 2 卡通(色阶+描边)· 3 水墨(宣纸+墨线)· 4 像素(马赛克+抖动)· 5 版画(粗描边+网点)
 export const STYLE_PRESETS = {
-  nordic: { name: '天际写实', mode: 0, contrast: 1.14, sat: 0.8, lift: -0.008, split: [0.028, 0.01, -0.05], vig: 0.26, grain: 0.02, sepia: 0, bloom: 0.24, exposure: 0.98 },
+  nordic: { name: '天际写实', mode: 0, contrast: 1.12, sat: 0.96, lift: -0.006, split: [0.03, 0.012, -0.045], vig: 0.22, grain: 0.015, sepia: 0, bloom: 0.26, exposure: 1.0 },
   oil:    { name: '油画', mode: 1, contrast: 1.1, sat: 1.22, lift: 0, split: [0.04, 0.014, -0.04], vig: 0.2, grain: 0, sepia: 0, bloom: 0.3, exposure: 1.0 },
   toon:   { name: '卡通', mode: 2, contrast: 1.05, sat: 1.4, lift: 0.02, split: [0.02, 0.012, -0.015], vig: 0.06, grain: 0, sepia: 0, bloom: 0.36, exposure: 1.06 },
   ink:    { name: '水墨', mode: 3, contrast: 1.0, sat: 1.0, lift: 0, split: [0, 0, 0], vig: 0.3, grain: 0, sepia: 0, bloom: 0.12, exposure: 1.02 },

@@ -122,10 +122,24 @@ function biomeH(b, x, z) {
       const r = ridge(x / 60 - 5, z / 60 + 2);
       return 6.8 * r * r + 1.8 * fbm(x / 40, z / 40);
     }
-    case 7: // 丘陵
-      return Math.max(0, 16 * (fbm(x / 95 + 1.7, z / 95 - 4.2) - 0.3)) + 0.6 * vnoise(x / 24, z / 24);
+    case 7: { // 丘陵:更高更陡的连绵丘脊(起伏 15m 以上,坡面成片)
+      const r = ridge(x / 48 + 2.3, z / 48 - 1.1);
+      return Math.max(0, 34 * (fbm(x / 62 + 1.7, z / 62 - 4.2) - 0.3)) + 7 * r * r + 0.6 * vnoise(x / 24, z / 24);
+    }
   }
   return 0;
+}
+// 北境山脉:王国北面(z < -175 起)隆起的雪山带,脊状噪声劈出山脊与沟谷,峰高 55~120m;
+// 到无尽荒野交界处收住(荒野另有自己的地形)。陡坡露岩、高处积雪由地表配色自动处理。
+export function mountainH(x, z) {
+  const north = smooth(-175, -265, z);
+  if (north <= 0) return 0;
+  const edge = Math.max(Math.abs(x), Math.abs(z));
+  const fade = 1 - smooth(440, 505, edge);
+  if (fade <= 0) return 0;
+  const r1 = ridge(x / 150 + 3.1, z / 150 - 1.7), r2 = ridge(x / 64 - 2.2, z / 64 + 5.3);
+  const peaks = 55 + 65 * vnoise(x / 260 + 9.1, z / 260 - 4.4);
+  return north * fade * peaks * (0.58 * r1 * r1 + 0.3 * r2 * r2 + 0.12) + north * fade * 4 * vnoise(x / 18, z / 18);
 }
 const _wh = new Float32Array(NB);
 export function terrainH(x, z) {
@@ -134,7 +148,7 @@ export function terrainH(x, z) {
   const w = biomeWeights(x, z, _wh);
   let h = 0;
   for (let i = 0; i < NB; i++) if (w[i] > 0.002) h += w[i] * biomeH(i, x, z);
-  return h * m;
+  return (h + mountainH(x, z)) * m;
 }
 
 // ---------------- 核心区平整蒙版(距离场) ----------------
@@ -338,7 +352,14 @@ export function mapColor(x, z) {
   for (let i = 0; i < NB; i++) { r += MAP_RGB[i][0] * _mw[i]; g += MAP_RGB[i][1] * _mw[i]; b += MAP_RGB[i][2] * _mw[i]; }
   const h = terrainH(cx, cz);
   const shade = Math.max(0.72, Math.min(1.22, 1 + h * 0.018)); // 高处亮、低处暗:一眼看出山丘洼地
-  c = `rgb(${Math.min(255, r * shade) | 0},${Math.min(255, g * shade) | 0},${Math.min(255, b * shade) | 0})`;
+  r *= shade; g *= shade; b *= shade;
+  const mh = mountainH(cx, cz); // 群山:岩灰到雪白
+  if (mh > 6) {
+    const t = smooth(6, 30, mh) * 0.7, s = smooth(34, 60, mh);
+    r += (132 - r) * t; g += (126 - g) * t; b += (118 - b) * t;
+    r += (236 - r) * s; g += (240 - g) * s; b += (246 - b) * s;
+  }
+  c = `rgb(${Math.min(255, r) | 0},${Math.min(255, g) | 0},${Math.min(255, b) | 0})`;
   if (_mapCache.size > 60000) _mapCache.clear();
   _mapCache.set(key, c);
   return c;
@@ -359,6 +380,12 @@ function groundColor(x, z, ny, h, out) {
   const steep = smooth(0.94, 0.8, ny);
   if (steep > 0) out.lerp(ROCK_COL, steep * 0.85);
   if (w[BIOME.snow] > 0.3) out.lerp(SNOWCAP, smooth(6, 12, h) * w[BIOME.snow] * (1 - steep));
+  // 北境群山:山腰裸岩、山顶积雪(按山体自身高度,不看群系)
+  const mh = mountainH(x, z);
+  if (mh > 6) {
+    out.lerp(ROCK_COL, smooth(6, 26, mh) * 0.55);
+    out.lerp(SNOWCAP, smooth(36, 58, mh) * (1 - steep * 0.55));
+  }
   const k = 0.9 + fine * 0.2;
   out.r *= k; out.g *= k; out.b *= k;
   return out;

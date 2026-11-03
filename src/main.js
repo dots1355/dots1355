@@ -8431,8 +8431,13 @@ function updatePlayer(dt) {
       }
     }
     if (moving) {
-      h.pos.x += mv.x * speed * dt;
-      h.pos.z += mv.y * speed * dt;
+      // 坡度:马能爬缓坡,陡坡明显吃力,悬崖上不去;下坡略快
+      const hg0 = groundH(h.pos.x, h.pos.z);
+      const hg1 = groundH(h.pos.x + mv.x * 1.2, h.pos.z + mv.y * 1.2);
+      const hGrade = (hg1 - hg0) / 1.2;
+      const hSlope = hGrade > 0 ? Math.max(0.1, 1 - Math.max(0, hGrade - 0.3) * 1.25) : Math.min(1.1, 1 - hGrade * 0.12);
+      h.pos.x += mv.x * speed * hSlope * dt;
+      h.pos.z += mv.y * speed * hSlope * dt;
       h.yaw = angleLerp(h.yaw, Math.atan2(mv.x, mv.y), dt * 6);
       h.walkT += dt * speed * 1.6;
       if (h.sheep) {
@@ -8511,8 +8516,13 @@ function updatePlayer(dt) {
     (player.gaspT > 0 ? 0.75 : 1) * (player.staggerT > 0 ? 0.35 : 1); // 喘气/踉跄拖腿
   const prevYaw = player.yaw;
   if (moving) {
-    player.pos.x += mv.x * speed * dt;
-    player.pos.z += mv.y * speed * dt;
+    // 坡度:上坡越陡越慢(陡崖几乎爬不动),下坡略快——山才像山
+    const h0 = groundH(player.pos.x, player.pos.z);
+    const h1 = groundH(player.pos.x + mv.x * 0.8, player.pos.z + mv.y * 0.8);
+    const grade = (h1 - h0) / 0.8;
+    const slopeMul = grade > 0 ? Math.max(0.12, 1 - Math.max(0, grade - 0.25) * 1.15) : Math.min(1.12, 1 - grade * 0.15);
+    player.pos.x += mv.x * speed * slopeMul * dt;
+    player.pos.z += mv.y * speed * slopeMul * dt;
     if (!lockFoe) player.yaw = angleLerp(player.yaw, Math.atan2(mv.x, mv.y), dt * 12);
     player.walkT += dt * speed * 2.2;
     if (canSprint) player.sta = Math.max(0, player.sta - 7 * dt);

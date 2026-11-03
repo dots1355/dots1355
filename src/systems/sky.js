@@ -158,8 +158,8 @@ const _UP = new THREE.Vector3(0, 1, 0);
 const _topC = new THREE.Color();
 const _horC = new THREE.Color();
 // 北境天空:压掉糖果蓝,换成高纬度的灰蓝与雾白(天际的天从来不艳)
-const C_DAY_TOP = new THREE.Color(0x4f6e90), C_DAY_HOR = new THREE.Color(0xc4cdd0);
-const C_DUSK_TOP = new THREE.Color(0x3a3550), C_DUSK_HOR = new THREE.Color(0xd2773c);
+const C_DAY_TOP = new THREE.Color(0x5d86b8), C_DAY_HOR = new THREE.Color(0xd0dbe2);
+const C_DUSK_TOP = new THREE.Color(0x3b3a63), C_DUSK_HOR = new THREE.Color(0xe08348);
 const C_NIGHT_TOP = new THREE.Color(0x040814), C_NIGHT_HOR = new THREE.Color(0x0e1830);
 const C_SUN_DAY = new THREE.Color(0xf7ecd4), C_SUN_DUSK = new THREE.Color(0xe86a30);
 let envIntensity = 1;
@@ -167,31 +167,32 @@ let envIntensity = 1;
 // 群系氛围:雾色倍率 rgb、雾近/远倍率、阳光色调 rgb(顺序同 terrain.BIOME_KEYS)
 // 走进沼泽雾气收拢发绿,荒漠热霾泛金,焦土天色发红,雪原清冷透亮
 export const BIOME_ATMO = [
-  [1, 1, 1, 1, 1, 1, 1, 1, 1],                      // plains 平原
-  [0.82, 0.95, 0.84, 0.75, 0.8, 1, 0.97, 0.88, 1],  // forest 林海
-  [1.16, 1.0, 0.76, 0.9, 1.1, 1.1, 0.96, 0.8, 0.88],  // desert 荒漠(亮沙降曝光,免得一片白)
-  [1.04, 1.1, 1.2, 0.72, 0.8, 0.92, 0.98, 1.1, 0.84], // snow 雪原(雪地降曝光)
-  [0.72, 0.84, 0.7, 0.3, 0.45, 0.85, 0.92, 0.74, 1],  // swamp 沼泽
-  [0.86, 0.6, 0.52, 0.45, 0.6, 1.12, 0.78, 0.62, 1.04], // ash 焦土
-  [0.95, 0.95, 0.99, 0.95, 1, 1, 1, 1, 1],          // rock 碎石岗
-  [1.0, 1.03, 0.97, 1.1, 1.15, 1.02, 1.0, 0.96, 1],  // hills 丘陵
+  // 雾 r g b, 雾近, 雾远, 阳光 r g b, 曝光, 光强
+  [1, 1, 1, 1, 1, 1, 1, 1, 1, 1],                          // plains 平原
+  [0.78, 0.92, 0.8, 0.45, 0.62, 0.86, 0.93, 0.78, 0.97, 0.66], // forest 林海:林冠遮天,昏暗发绿
+  [1.18, 1.0, 0.74, 0.9, 1.1, 1.12, 0.96, 0.78, 0.88, 1.08],   // desert 荒漠(亮沙降曝光,免得一片白)
+  [1.04, 1.1, 1.22, 0.72, 0.8, 0.92, 0.98, 1.12, 0.84, 1],     // snow 雪原(雪地降曝光)
+  [0.7, 0.84, 0.68, 0.3, 0.45, 0.85, 0.92, 0.72, 1, 0.8],      // swamp 沼泽
+  [0.9, 0.58, 0.48, 0.45, 0.6, 1.14, 0.74, 0.58, 1.04, 0.92],  // ash 焦土
+  [0.95, 0.95, 0.99, 0.95, 1, 1, 1, 1, 1, 1],                  // rock 碎石岗
+  [1.0, 1.04, 0.96, 1.1, 1.15, 1.03, 1.0, 0.94, 1, 1.04],      // hills 丘陵
 ];
 const _atmoW = new Float32Array(8);
-export const atmo = [1, 1, 1, 1, 1, 1, 1, 1, 1]; // 平滑后的当前氛围(跨群系时缓缓过渡,不跳变)
+export const atmo = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1]; // 平滑后的当前氛围(跨群系时缓缓过渡,不跳变)
 let atmoScan = 0;
-const _atmoT = [1, 1, 1, 1, 1, 1, 1, 1, 1];
+const _atmoT = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1];
 function updateBiomeAtmo(dt) {
   if (atmoScan-- <= 0) { // 每 10 帧取一次群系权重
     atmoScan = 10;
     biomeWeights(ctx.player.pos.x, ctx.player.pos.z, _atmoW);
-    for (let k = 0; k < 9; k++) {
+    for (let k = 0; k < 10; k++) {
       let v = 0;
       for (let b = 0; b < 8; b++) v += _atmoW[b] * BIOME_ATMO[b][k];
       _atmoT[k] = v;
     }
   }
   const a = Math.min(1, dt * 0.8);
-  for (let k = 0; k < 9; k++) atmo[k] += (_atmoT[k] - atmo[k]) * a;
+  for (let k = 0; k < 10; k++) atmo[k] += (_atmoT[k] - atmo[k]) * a;
 }
 export function updateDayNight(dt) {
   updateBiomeAtmo(dt);
@@ -216,11 +217,11 @@ export function updateDayNight(dt) {
   sun.target.position.copy(_snapT);
   const rainDim = 1 - 0.72 * weather.rain;
   const dgnDim = ctx.inDungeon() ? 0.1 : 1; // 地窖里只有火把
-  sun.intensity = 3.2 * day * rainDim * dgnDim;
-  sun.color.copy(C_SUN_DUSK).lerp(C_SUN_DAY, Math.min(1, Math.max(0, elev * 2.2)));
+  sun.intensity = 3.4 * day * rainDim * dgnDim * atmo[9];
+  sun.color.copy(C_SUN_DUSK).lerp(C_SUN_DAY, Math.min(1, Math.max(0, (elev - 0.05) * 2.4)));
   moon.position.set(-sx, Math.max(30, -sy), -sz);
   moon.intensity = 0.55 * night; // 月色提亮:夜里也看得清路
-  hemi.intensity = (0.22 + 0.28 * day) * (1 - 0.3 * weather.rain) * dgnDim;
+  hemi.intensity = (0.22 + 0.28 * day) * (1 - 0.3 * weather.rain) * dgnDim * (0.6 + 0.4 * atmo[9]);
   envIntensity = (0.1 + 0.25 * day) * rainDim * (ctx.inDungeon() ? 0.25 : 1);
   // 随身提灯:入夜自动点起一圈暖光(地窖里已有火把,不重复)
   lantern.intensity = night * 1.2 * (ctx.inDungeon() ? 0 : 1);
@@ -233,9 +234,10 @@ export function updateDayNight(dt) {
   skyUniforms.sunGlow.value = (0.4 + day) * (1 - 0.75 * weather.cover);
   skyUniforms.cover.value = weather.cover;
   let top, hor;
-  if (elev > 0.25) { top = C_DAY_TOP; hor = C_DAY_HOR; }
+  // 黄昏带加宽(太阳仰角 0.4 以下就开始染暖),傍晚真正有晚霞
+  if (elev > 0.4) { top = C_DAY_TOP; hor = C_DAY_HOR; }
   else if (elev > -0.08) {
-    const t = (elev + 0.08) / 0.33;
+    const t = Math.pow((elev + 0.08) / 0.48, 1.4);
     top = _topC.lerpColors(C_DUSK_TOP, C_DAY_TOP, t);
     hor = _horC.lerpColors(C_DUSK_HOR, C_DAY_HOR, t);
   } else {
@@ -261,6 +263,10 @@ export function updateDayNight(dt) {
   sun.color.g *= atmo[6];
   sun.color.b *= atmo[7];
   skyUniforms.horizonColor.value.lerp(scene.fog.color, 0.6); // 地平线与雾同色,远景自然融进天里
+  // 天顶也随群系偏色:荒漠暖、焦土红褐、沼泽绿灰、雪原清冷
+  skyUniforms.topColor.value.r *= 0.65 + 0.35 * atmo[0];
+  skyUniforms.topColor.value.g *= 0.65 + 0.35 * atmo[1];
+  skyUniforms.topColor.value.b *= 0.65 + 0.35 * atmo[2];
   if (dgnDim < 1) {
     // 地窖:天穹熄灭,浓雾收拢,只剩火把撑开的一圈光
     skyUniforms.topColor.value.multiplyScalar(0.05);
