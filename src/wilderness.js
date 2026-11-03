@@ -2,7 +2,8 @@
 // 128×128 一块,随玩家加载/卸载;同一坐标永远生成同样的内容(坐标哈希做种子)
 import * as THREE from 'three';
 import { lambert } from './entities.js';
-import { buildTree, buildPine, buildDeadTree, buildCactus, buildRock, buildBush } from './flora.js';
+import { buildTree, buildPine, buildDeadTree, buildCactus, buildRock, buildBush, natureProp } from './flora.js';
+import { dominantBiome, groundH, buildGroundMesh, getGroundMaterial } from './terrain.js';
 
 export const CHUNK = 128;
 export const VIEW_R = 2;          // 加载半径(区块数)
@@ -32,31 +33,15 @@ function makeRng(seed) {
   return () => { s = (s * 16807) % 2147483647; return (s - 1) / 2147483646; };
 }
 
-// ---- 生物群系(低频值噪声) ----
-const P = new Uint8Array(512);
-{
-  const rng = makeRng(97531);
-  for (let i = 0; i < 512; i++) P[i] = Math.floor(rng() * 256);
-}
-function vnoise(x, z) {
-  const xi = Math.floor(x), zi = Math.floor(z);
-  const xf = x - xi, zf = z - zi;
-  const s = (t) => t * t * (3 - 2 * t);
-  const at = (a, b) => P[(P[(a & 255)] + (b & 255)) & 511] / 255;
-  const a = at(xi, zi), b = at(xi + 1, zi), c = at(xi, zi + 1), d = at(xi + 1, zi + 1);
-  return a + (b - a) * s(xf) + (c - a) * s(zf) + (a - b - c + d) * s(xf) * s(zf);
-}
-export function biomeAt(x, z) {
-  const v = vnoise(x * 0.0011 + 37.7, z * 0.0011 - 11.3);
-  if (v < 0.36) return 'plains';
-  if (v < 0.6) return 'forest';
-  if (v < 0.78) return 'desert';
-  return 'snow';
-}
-const BIOME_NAMES = { plains: '苍绿平原', forest: '茂密林海', desert: '金色瀚海', snow: '白霜旷野' };
+// ---- 生物群系:与地形/地表配色共用 terrain.js 的同一套函数 ----
+export function biomeAt(x, z) { return dominantBiome(x, z); }
+const BIOME_NAMES = {
+  plains: '苍绿平原', forest: '茂密林海', desert: '金色瀚海', snow: '白霜旷野',
+  swamp: '迷雾湿地', ash: '焦土荒原', rock: '碎石岗', hills: '起伏丘陵',
+};
 export function wildRegionName(x, z) {
   const dir = Math.abs(x) > Math.abs(z) ? (x > 0 ? '东境' : '西境') : (z > 0 ? '南境' : '北境');
-  return `${dir}·${BIOME_NAMES[biomeAt(x, z)]}`;
+  return `${dir}·${BIOME_NAMES[biomeAt(x, z)] || '荒野'}`;
 }
 
 // ---- 植被/道具(flora 库:共享几何/材质,区块卸载时不释放) ----
@@ -64,6 +49,12 @@ function addTree(g, rng, x, z, biome, cols) {
   let built;
   if (biome === 'desert') {
     built = rng() < 0.15 ? buildDeadTree(rng, { bark: 0x8a6f4d }) : buildCactus(rng);
+  } else if (biome === 'swamp') {
+    built = rng() < 0.55 ? buildDeadTree(rng, { bark: 0x3d3a2e }) : buildBush(rng, { leaf: 0x4c5a35 });
+  } else if (biome === 'ash') {
+    built = buildDeadTree(rng, { bark: 0x2e2a27 });
+  } else if (biome === 'rock') {
+    built = rng() < 0.6 ? buildPine(rng) : buildDeadTree(rng, { bark: 0x5a5048 });
   } else if (biome === 'snow') {
     built = rng() < 0.85 ? buildPine(rng, { snow: true }) : buildDeadTree(rng, { bark: 0x5a5048 });
   } else if (biome === 'forest') {
@@ -98,6 +89,41 @@ function addRock(g, rng, x, z, cols) {
   cols.push(col);
 }
 
+// ---- 群系地标:每块按群系撒 Blender 地标(期望个数),让每片荒野一眼可辨 ----
+export const LANDMARKS = {
+  plains: [['Outcrop1', 0.35], ['Outcrop2', 0.3], ['Bush1', 0.9], ['Bush2', 0.8], ['Log', 0.25], ['Stump', 0.25]],
+  forest: [['Log', 0.8], ['Stump', 0.7], ['Bush1', 1.2], ['Bush2', 1.0], ['Outcrop2', 0.35], ['DeadTree1', 0.2]],
+  hills: [['Outcrop1', 0.7], ['Outcrop2', 0.6], ['Bush2', 0.6], ['Stump', 0.2]],
+  desert: [['Mesa', 0.55], ['Ribcage', 0.12], ['DeadTree2', 0.35], ['Outcrop2', 0.2]],
+  snow: [['IceRock', 0.8], ['DeadTree1', 0.35], ['Outcrop1', 0.3]],
+  swamp: [['Willow', 1.4], ['DeadTree1', 0.6], ['DeadTree2', 0.5], ['Log', 0.5], ['Stump', 0.4], ['Bush2', 0.5]],
+  ash: [['Spires', 0.9], ['DeadTree2', 0.6], ['DeadTree1', 0.4], ['Ribcage', 0.12]],
+  rock: [['Outcrop1', 0.8], ['Outcrop2', 0.8], ['Spires', 0.4], ['Stump', 0.15]],
+};
+export const BIG_PROP = { Mesa: 1, Outcrop1: 1, Outcrop2: 1, IceRock: 1, Spires: 1 };
+// 放一件地标;avoid(x,z) 返回 true 则跳过。返回是否放成
+export function placeLandmark(parent, rng, name, x, z, cols, colList, yaw = null) {
+  const big = BIG_PROP[name];
+  const built = natureProp(name, rng, big ? 0.8 + rng() * 0.5 : 1, yaw);
+  if (!built) return false;
+  built.group.position.set(x, 0, z);
+  built.group.userData.isProp = true;
+  // 坡地:按足印最低点下沉(宁埋不浮);区块末尾会再统一加上中心点地面高
+  if (big) {
+    const h0 = groundH(x, z), rr = Math.max(1, (built.cols[0] ? built.cols[0].r : 1));
+    let lo = h0;
+    for (let k = 0; k < 4; k++) lo = Math.min(lo, groundH(x + Math.cos(k * 1.57) * rr, z + Math.sin(k * 1.57) * rr));
+    built.group.children[0].position.y += lo - h0;
+  }
+  parent.add(built.group);
+  for (const c of built.cols) {
+    const col = { x: x + c.dx, z: z + c.dz, r: c.r };
+    colList.push(col);
+    if (cols) cols.push(col);
+  }
+  return true;
+}
+
 // ---- 区块生成 ----
 function genChunk(cx, cz) {
   const key = `${cx},${cz}`;
@@ -114,19 +140,13 @@ function genChunk(cx, cz) {
   const centerX = baseX + CHUNK / 2, centerZ = baseZ + CHUNK / 2;
   const biome = biomeAt(centerX, centerZ);
 
-  // 地表色盘(非草地群系铺一块色斑)
-  if (biome === 'desert' || biome === 'snow') {
-    const d = new THREE.Mesh(new THREE.CircleGeometry(CHUNK * 0.72, 10),
-      lambert(biome === 'desert' ? 0xd9c48f : 0xe8edf2, { roughness: 1 }));
-    d.rotation.x = -Math.PI / 2;
-    d.position.set(centerX, 0.012 + (((cx * 7 + cz * 13) % 5) * 0.0008), centerZ);
-    d.receiveShadow = true;
-    g.add(d);
-  }
+  // 地表:按地形烘焙的一块起伏网格(群系配色已在顶点色里)
+  g.add(buildGroundMesh(baseX, baseZ, CHUNK, getGroundMaterial()));
 
   // 植被密度按群系
-  const treeN = biome === 'forest' ? 10 + Math.floor(rng() * 6)
-    : biome === 'plains' ? 2 + Math.floor(rng() * 3)
+  const treeN = biome === 'forest' ? 12 + Math.floor(rng() * 8)
+    : biome === 'plains' || biome === 'hills' ? 3 + Math.floor(rng() * 4)
+    : biome === 'swamp' ? 5 + Math.floor(rng() * 4)
     : 3 + Math.floor(rng() * 3);
   for (let i = 0; i < treeN; i++) {
     addTree(g, rng, baseX + rng() * CHUNK, baseZ + rng() * CHUNK, biome, cols);
@@ -150,7 +170,9 @@ function genChunk(cx, cz) {
     colliders.circles.push(col);
     cols.push(col);
   };
+  const prop = (name, x, z, yaw = null) => placeLandmark(g, rng, name, x, z, cols, colliders.circles, yaw);
   const campfire = (x, z) => {
+    if (prop('Campfire', x, z)) return;
     for (let i = 0; i < 5; i++) {
       const a = (i / 5) * Math.PI * 2;
       const st = new THREE.Mesh(new THREE.IcosahedronGeometry(0.25, 0), lambert(0x66625c));
@@ -159,6 +181,8 @@ function genChunk(cx, cz) {
     }
   };
   const tentAt = (x, z, color = 0x6a5540) => {
+    // 帐篷门朝向营地中心(篝火一侧)
+    if (prop(color === 0x3a3a42 ? 'TentDark' : 'Tent', x, z, Math.atan2(z - pz, -(x - px)) + Math.PI)) return;
     const tent = new THREE.Mesh(new THREE.ConeGeometry(1.6, 2, 5), lambert(color, { roughness: 1 }));
     tent.position.set(x, 1, z);
     tent.castShadow = true;
@@ -168,7 +192,8 @@ function genChunk(cx, cz) {
   if (roll < 0.07) {
     // 废弃营地:篝火 + 帐篷 + 金币
     campfire(px, pz);
-    tentAt(px + 3, pz + 1);
+    tentAt(px + 3.4, pz + 1.2);
+    prop('Log', px - 2.2, pz + 0.6);
     for (let i = 0; i < 5; i++) drop(px + (rng() - 0.5) * 5, pz + (rng() - 0.5) * 5);
   } else if (roll < 0.12) {
     // 无名石碑 + 金币环
@@ -197,8 +222,10 @@ function genChunk(cx, cz) {
     }
   } else if (roll < 0.34 && biome !== 'snow') {
     // 盗贼窝点:黑帐 + 守财匪 + 金币堆
-    tentAt(px, pz, 0x3a3a42);
+    tentAt(px - 1.6, pz - 1.2, 0x3a3a42);
     campfire(px + 2.5, pz + 1);
+    prop('Banner', px - 4.2, pz + 1.5); // 匪帮的血色旗:远远就知道这里有人
+    prop('Crates', px + 1.2, pz - 3.6);
     for (let i = 0, n = 2; i < n; i++) {
       const b = hooks.spawnBandit(px + (rng() - 0.5) * 6, pz + (rng() - 0.5) * 6, key);
       if (b) spawned.push(b);
@@ -206,13 +233,19 @@ function genChunk(cx, cz) {
     for (let i = 0; i < 7; i++) drop(px + (rng() - 0.5) * 4, pz + (rng() - 0.5) * 4);
   } else if (roll < 0.38) {
     // 猎人营地(安全补给):帐篷 + 一颗心 + 可烤肉的篝火
-    tentAt(px, pz, 0x5a6a45);
+    tentAt(px - 1.4, pz, 0x5a6a45);
     campfire(px + 2.2, pz);
+    prop('Log', px + 2.4, pz + 2.6, 0); // 篝火边的坐木
     hooks.registerSpot('campfire', px + 2.2, pz, key);
     dropH(px + 1, pz + 2);
     drop(px - 1.5, pz + 1);
   } else if (roll < 0.42) {
-    // 废弃哨塔:断塔 + 木箱 + 金币
+    // 废弃哨塔:断塔 + 木箱 + 金币(有 Blender 断塔就用它:塔里能走进去,金币撒在塔内外)
+    if (prop('BrokenTower', px, pz)) {
+      prop('Crates', px + 4.2, pz + 1.6);
+      prop('Banner', px - 3.6, pz - 2.2);
+      for (let i = 0; i < 6; i++) drop(px + (rng() - 0.5) * 3, pz + (rng() - 0.5) * 3);
+    } else {
     const t = new THREE.Mesh(new THREE.CylinderGeometry(1.8, 2.2, 4 + rng() * 3, 8), lambert(0x8d8476, { roughness: 0.95 }));
     t.position.set(px, 2.2, pz);
     t.rotation.z = (rng() - 0.5) * 0.12;
@@ -229,6 +262,7 @@ function genChunk(cx, cz) {
       g.add(cr);
     }
     for (let i = 0; i < 6; i++) drop(px + (rng() - 0.5) * 6, pz + (rng() - 0.5) * 6);
+    }
   } else if (roll < 0.46 && biome === 'forest') {
     // 蘑菇圈:一圈红菇 + 一颗心
     for (let i = 0; i < 8; i++) {
@@ -276,7 +310,13 @@ function genChunk(cx, cz) {
     hooks.registerSpot('spring', px, pz, key);
   } else if (roll < 0.62) {
     // 遗迹小教堂:断墙 + 石坛,祈祷得庇佑
-    for (const [wx, wz, ww] of [[px - 2.4, pz, 0.5], [px + 2.4, pz, 0.5]]) {
+    const chapelYaw = rng() * Math.PI * 2;
+    let chapelProps = false;
+    if (prop('Ruin', px - Math.cos(chapelYaw + Math.PI / 2) * 2.8, pz + Math.sin(chapelYaw + Math.PI / 2) * 2.8, chapelYaw) &&
+        prop('Ruin', px + Math.cos(chapelYaw + Math.PI / 2) * 2.8, pz - Math.sin(chapelYaw + Math.PI / 2) * 2.8, chapelYaw + Math.PI)) {
+      prop('Shrine', px, pz - 1.4, Math.PI / 2);
+      chapelProps = true;
+    } else for (const [wx, wz, ww] of [[px - 2.4, pz, 0.5], [px + 2.4, pz, 0.5]]) {
       const wall = new THREE.Mesh(new THREE.BoxGeometry(ww, 2.2 + rng(), 4.5), lambert(0x9d9486, { roughness: 0.95 }));
       wall.position.set(wx, 1.1, wz);
       wall.rotation.z = (rng() - 0.5) * 0.08;
@@ -286,10 +326,12 @@ function genChunk(cx, cz) {
       colliders.circles.push(col);
       cols.push(col);
     }
-    const altar = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.9, 0.7), lambert(0xb8b0a2, { roughness: 0.9 }));
-    altar.position.set(px, 0.45, pz - 1.4);
-    altar.castShadow = true;
-    g.add(altar);
+    if (!chapelProps) {
+      const altar = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.9, 0.7), lambert(0xb8b0a2, { roughness: 0.9 }));
+      altar.position.set(px, 0.45, pz - 1.4);
+      altar.castShadow = true;
+      g.add(altar);
+    }
     hooks.registerSpot('chapel', px, pz, key);
     drop(px + 1, pz + 1);
     drop(px - 1, pz + 1.5);
@@ -309,6 +351,12 @@ function genChunk(cx, cz) {
     for (let i = 0; i < 5; i++) drop(px + (rng() - 0.5) * 5, pz + (rng() - 0.5) * 5);
   } else if (roll < 0.69 && biome !== 'snow') {
     // 商队残骸:翻倒的货车 + 散落钱箱 + 一个劫道的
+    if (prop('Cart', px, pz)) {
+      const cart = g.children[g.children.length - 1];
+      cart.children[0].rotation.z = 0.5; // 车翻在路边
+      cart.children[0].position.y += 0.35;
+      prop('Crates', px + 2.5, pz - 1.5);
+    } else {
     const bed = new THREE.Mesh(new THREE.BoxGeometry(2.4, 0.3, 1.4), lambert(0x8a6a45, { roughness: 0.95 }));
     bed.position.set(px, 0.6, pz);
     bed.rotation.z = 0.7;
@@ -328,11 +376,26 @@ function genChunk(cx, cz) {
     const col = { x: px, z: pz, r: 1.2 };
     colliders.circles.push(col);
     cols.push(col);
+    }
     const b = hooks.spawnBandit(px + 4, pz + 2, key);
     if (b) spawned.push(b);
     for (let i = 0; i < 6; i++) drop(px + (rng() - 0.5) * 4, pz + (rng() - 0.5) * 4);
   }
 
+  // 群系地标(避开兴趣点中心,免得把营地/窝点压住)
+  for (const [name, expect] of LANDMARKS[biome] || []) {
+    const n = Math.floor(expect + rng());
+    for (let i = 0; i < n; i++) {
+      const x = baseX + 6 + rng() * (CHUNK - 12), z = baseZ + 6 + rng() * (CHUNK - 12);
+      if (Math.hypot(x - px, z - pz) < 14) continue;
+      placeLandmark(g, rng, name, x, z, cols, colliders.circles);
+    }
+  }
+
+  for (const o of g.children) {
+    if (!o.userData.isGround) o.position.y += groundH(o.position.x, o.position.z);
+  }
+  g.userData.noSnap = true;
   scene.add(g);
   chunks.set(key, { group: g, cols, spawned, key, cx, cz });
   colliders.dirty = true; // 通知碰撞网格重建

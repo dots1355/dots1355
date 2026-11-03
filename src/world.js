@@ -1025,12 +1025,8 @@ export function buildWorld(scene) {
   chest(-104, 60, 90);    // 渔村
 
   // ================= 外环八区 =================
+  // 区域底色改由地形顶点色(terrain.js 群系)负责;这里只登记小地图色块
   const zoneDisc = (x, z, r, color, type) => {
-    const d = new THREE.Mesh(new THREE.CircleGeometry(r, 26), lambert(color, { roughness: 1 }));
-    d.rotation.x = -Math.PI / 2;
-    d.position.set(x, 0.018, z);
-    d.receiveShadow = true;
-    scene.add(d);
     feat(type, x, z, r * 2, r * 2);
   };
 
@@ -1183,17 +1179,10 @@ export function buildWorld(scene) {
   chest(295, -172, 40);
 
   // ---- 迷途丘陵(极东) ----
+  // 起伏由 terrain.js 的 hills 生物群系真实生成;这里只登记小地图上的丘陵轮廓
   for (let i = 0; i < 9; i++) {
     const a = (i / 9) * 6.28, rr = 18 + (i % 3) * 20;
-    const dx = 380 + Math.cos(a) * rr, dz = 60 + Math.sin(a) * rr;
-    const dome = new THREE.Mesh(new THREE.SphereGeometry(9 + (i % 4) * 3, 10, 8),
-      lambert(0x4f8a4a, { roughness: 1 }));
-    dome.scale.y = 0.32;
-    dome.position.set(dx, 0, dz);
-    dome.receiveShadow = dome.castShadow = true;
-    scene.add(dome);
-    circle(dx, dz, (9 + (i % 4) * 3) * 0.8);
-    feat('dome', dx, dz, 18, 18);
+    feat('dome', 380 + Math.cos(a) * rr, 60 + Math.sin(a) * rr, 18, 18);
   }
   road(155, 26, 355, 56, 3);
   coinLine(165, 30, 350, 55, 10);
@@ -1304,62 +1293,8 @@ export function buildWorld(scene) {
     }
   }
 
-  // ---- 实例化草丛(纯视觉,不参与碰撞)----
-  {
-    // 三丛尖叶交叉,读作草而不是方块
-    const bladeGeo = new THREE.BufferGeometry();
-    const verts = new Float32Array([
-      -0.26, 0, 0, 0.26, 0, 0, 0, 0.8, 0,
-      -0.13, 0, -0.22, 0.13, 0, 0.22, 0, 0.7, 0,
-      -0.13, 0, 0.22, 0.13, 0, -0.22, 0, 0.75, 0,
-    ]);
-    bladeGeo.setAttribute('position', new THREE.BufferAttribute(verts, 3));
-    bladeGeo.setIndex([0, 1, 2, 3, 4, 5, 6, 7, 8]);
-    bladeGeo.computeVertexNormals();
-    const bladeMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1, side: THREE.DoubleSide });
-    const COUNT = 4000;
-    const grass = new THREE.InstancedMesh(bladeGeo, bladeMat, COUNT);
-    grass.receiveShadow = true;
-    const blockedRects = [
-      [0, 33, 8, 55], [38, 0, 62, 8], [105, 9, 70, 9], [0, 67, 8, 20], [10, 85, 26, 18],
-      [24, 88, 26, 16], [-18, 92, 22, 14], [52, 96, 20, 12], [0, -40, 26, 18], [-38, 0, 62, 8],
-    ];
-    const isBlocked = (x, z) => {
-      if (Math.hypot(x, z - 5) < 13) return true;                    // 广场
-      if (Math.hypot(x + 100, z - 100) < 35) return true;            // 湖
-      if (Math.abs(x + 95) < 6 && z < 72 && z > -228) return true;   // 河
-      if (Math.hypot(x + 170, z + 90) < 16) return true;             // 要塞
-      if (z < -165) return true;                                     // 群山
-      if (Math.hypot(x - 300, z - 190) < 94) return true;            // 荒漠
-      if (Math.hypot(x + 290, z - 240) < 80) return true;            // 沼泽
-      if (Math.hypot(x + 380, z + 40) < 76) return true;             // 灰烬
-      if (Math.hypot(x + 260, z + 150) < 60) return true;            // 霜原
-      for (const [cx, cz, w, d] of blockedRects) {
-        if (Math.abs(x - cx) < w / 2 + 1 && Math.abs(z - cz) < d / 2 + 1) return true;
-      }
-      return false;
-    };
-    const dummy = new THREE.Object3D();
-    const c = new THREE.Color();
-    let placed = 0, guard = 0;
-    while (placed < COUNT && guard++ < COUNT * 6) {
-      const x = (Math.random() - 0.5) * 480;
-      const z = (Math.random() - 0.5) * 480;
-      if (isBlocked(x, z)) continue;
-      dummy.position.set(x, 0, z);
-      dummy.rotation.y = Math.random() * Math.PI;
-      const s = 0.7 + Math.random() * 0.9;
-      dummy.scale.set(s, s * (0.8 + Math.random() * 0.6), s);
-      dummy.updateMatrix();
-      grass.setMatrixAt(placed, dummy.matrix);
-      c.setHSL(0.25 + Math.random() * 0.06, 0.48, 0.4 + Math.random() * 0.16);
-      grass.setColorAt(placed, c);
-      placed++;
-    }
-    grass.count = placed;
-    scene.add(grass);
-    var grassMesh = grass; // 供季节换色
-  }
+  // 草丛/野花等地表植被由 vegetation.js 围绕玩家流式散布(旧的尖刺草已退役)
+  const grassMesh = null;
 
   // 世界边界:±500000,总幅面 1000000×1000000(核心之外由荒野系统程序化生成)
   box(0, -500020, 1000100, 40); box(0, 500020, 1000100, 40);

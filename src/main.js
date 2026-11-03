@@ -5,12 +5,14 @@ import { makeHumanoid, makeHorse, makeWolf, makeChicken, makeSheep, makeDragon, 
 import { INTRO, REGIONS, GUARD_LINES, NPCS, MISSIONS, VILLAGERS, DIALOGS, TIME_GREETINGS, LORE } from './story.js';
 import { initAudio, sfx, startMusic, toggleMusic, weatherAudio, setAmbience, setCombatMusic } from './audio.js';
 import { preloadAIAssets, generateRemoteAITextures } from './textures.js';
-import { initWilderness, updateWilderness, wildRegionName, CORE } from './wilderness.js';
+import { initWilderness, updateWilderness, wildRegionName, CORE, LANDMARKS, BIG_PROP } from './wilderness.js';
 import * as BANKS from './dialogue-banks.js';
 import { ShaderPass } from '../lib/jsm/postprocessing/ShaderPass.js';
 import { GLTFLoader } from '../lib/jsm/loaders/GLTFLoader.js';
-import { setTreeModel, setBuildingModel, setRockGeos } from './flora.js';
+import { setTreeModel, setBuildingModel, setRockGeos, setNatureModels, hasNature, buildNatureInstances, NATURE_SPEC, specCols, NIGHT_GLOW } from './flora.js';
 import { MODELS_B64 } from './models-data.js';
+import { buildMasks, buildCoreGround, getGroundMaterial, groundH, maskAt, vegAllowed, dominantBiome, biomeWeights } from './terrain.js';
+import { initVegetation, updateVegetation, setVegetationSeason, setVegetationDensity } from './vegetation.js';
 import { EffectComposer } from '../lib/jsm/postprocessing/EffectComposer.js';
 import { RenderPass } from '../lib/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from '../lib/jsm/postprocessing/UnrealBloomPass.js';
@@ -21,6 +23,19 @@ import { RoomEnvironment } from '../lib/jsm/environments/RoomEnvironment.js';
 
 // ================= 基础渲染 =================
 const container = document.getElementById('game');
+// 游戏时钟定时器:按游戏内 dt 结算(暂停即冻结、慢镜同步变慢),取代改玩法状态的 setTimeout
+const timers = [];
+function later(sec, fn) { timers.push({ t: sec, fn }); }
+function updateTimers(dt) {
+  for (let i = timers.length - 1; i >= 0; i--) {
+    const tm = timers[i];
+    tm.t -= dt;
+    if (tm.t <= 0) {
+      timers.splice(i, 1);
+      try { tm.fn(); } catch (err) { console.error(err); }
+    }
+  }
+}
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5)); // 1.5 上限:SMAA 在,肉眼无差,填充率省一半
@@ -95,14 +110,132 @@ const gradePass = new ShaderPass({
     }`,
 });
 // ---- 画风预设:油画(默认)/ 电影 / 动画 / 复古,一键切换、独立持久化 ----
+// mode:0 纯调色 · 1 油画(Kuwahara 笔触)· 2 卡通(色阶+描边)· 3 水墨(宣纸+墨线)· 4 像素(马赛克+抖动)· 5 版画(粗描边+网点)
 const STYLE_PRESETS = {
-  nordic: { name: '天际', contrast: 1.14, sat: 0.8, lift: -0.008, split: [0.028, 0.01, -0.05], vig: 0.26, grain: 0.02, sepia: 0, bloom: 0.24, exposure: 0.98 },
-  oil:    { name: '油画', contrast: 1.07, sat: 1.16, lift: 0, split: [0.04, 0.014, -0.04], vig: 0.18, grain: 0, sepia: 0, bloom: 0.32, exposure: 1.0 },
-  film:   { name: '电影', contrast: 1.15, sat: 1.02, lift: -0.012, split: [0.065, 0.012, -0.06], vig: 0.34, grain: 0.028, sepia: 0, bloom: 0.26, exposure: 1.04 },
-  anime:  { name: '动画', contrast: 1.03, sat: 1.36, lift: 0.03, split: [0.02, 0.012, -0.015], vig: 0.08, grain: 0, sepia: 0, bloom: 0.46, exposure: 1.07 },
-  retro:  { name: '复古', contrast: 1.08, sat: 0.82, lift: 0.01, split: [0.03, 0.01, -0.02], vig: 0.42, grain: 0.06, sepia: 0.45, bloom: 0.2, exposure: 0.97 },
+  nordic: { name: '天际写实', mode: 0, contrast: 1.14, sat: 0.8, lift: -0.008, split: [0.028, 0.01, -0.05], vig: 0.26, grain: 0.02, sepia: 0, bloom: 0.24, exposure: 0.98 },
+  oil:    { name: '油画', mode: 1, contrast: 1.1, sat: 1.22, lift: 0, split: [0.04, 0.014, -0.04], vig: 0.2, grain: 0, sepia: 0, bloom: 0.3, exposure: 1.0 },
+  toon:   { name: '卡通', mode: 2, contrast: 1.05, sat: 1.4, lift: 0.02, split: [0.02, 0.012, -0.015], vig: 0.06, grain: 0, sepia: 0, bloom: 0.36, exposure: 1.06 },
+  ink:    { name: '水墨', mode: 3, contrast: 1.0, sat: 1.0, lift: 0, split: [0, 0, 0], vig: 0.3, grain: 0, sepia: 0, bloom: 0.12, exposure: 1.02 },
+  pixel:  { name: '像素', mode: 4, contrast: 1.12, sat: 1.25, lift: 0, split: [0.03, 0.01, -0.03], vig: 0.1, grain: 0, sepia: 0, bloom: 0.2, exposure: 1.02 },
+  print:  { name: '版画', mode: 5, contrast: 1.2, sat: 0.9, lift: 0, split: [0.05, 0.02, -0.04], vig: 0.22, grain: 0, sepia: 0.2, bloom: 0.15, exposure: 1.0 },
+  film:   { name: '电影', mode: 0, contrast: 1.15, sat: 1.02, lift: -0.012, split: [0.065, 0.012, -0.06], vig: 0.34, grain: 0.028, sepia: 0, bloom: 0.26, exposure: 1.04 },
+  retro:  { name: '复古', mode: 0, contrast: 1.08, sat: 0.82, lift: 0.01, split: [0.03, 0.01, -0.02], vig: 0.42, grain: 0.06, sepia: 0.45, bloom: 0.2, exposure: 0.97 },
 };
-const STYLE_ORDER = ['nordic', 'oil', 'film', 'anime', 'retro'];
+const STYLE_ORDER = ['nordic', 'oil', 'toon', 'ink', 'pixel', 'print', 'film', 'retro'];
+
+// 风格化着色器:在调色之后、抗锯齿之前对整帧重绘(显示域 LDR)
+const stylePass = new ShaderPass({
+  uniforms: {
+    tDiffuse: { value: null },
+    uMode: { value: 0 },
+    uRes: { value: new THREE.Vector2(window.innerWidth * renderer.getPixelRatio(), window.innerHeight * renderer.getPixelRatio()) },
+    uTime: { value: 0 },
+  },
+  vertexShader: `
+    varying vec2 vUv;
+    void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+  fragmentShader: `
+    uniform sampler2D tDiffuse;
+    uniform int uMode;
+    uniform vec2 uRes;
+    uniform float uTime;
+    varying vec2 vUv;
+    float lum(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+    float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+    // 亮度 Sobel:描边强度
+    float edge(vec2 uv, float s) {
+      vec2 t = s / uRes;
+      float tl = lum(texture2D(tDiffuse, uv + vec2(-t.x, t.y)).rgb), tc = lum(texture2D(tDiffuse, uv + vec2(0.0, t.y)).rgb);
+      float tr = lum(texture2D(tDiffuse, uv + t).rgb), ml = lum(texture2D(tDiffuse, uv - vec2(t.x, 0.0)).rgb);
+      float mr = lum(texture2D(tDiffuse, uv + vec2(t.x, 0.0)).rgb), bl = lum(texture2D(tDiffuse, uv - t).rgb);
+      float bc = lum(texture2D(tDiffuse, uv - vec2(0.0, t.y)).rgb), br = lum(texture2D(tDiffuse, uv + vec2(t.x, -t.y)).rgb);
+      float gx = -tl - 2.0 * ml - bl + tr + 2.0 * mr + br;
+      float gy = -tl - 2.0 * tc - tr + bl + 2.0 * bc + br;
+      return sqrt(gx * gx + gy * gy);
+    }
+    // 四象限 Kuwahara:取方差最小的象限均值 → 油画笔触
+    vec3 kuwahara(vec2 uv) {
+      vec2 t = 1.0 / uRes;
+      vec3 m[4]; vec3 s2[4];
+      for (int k = 0; k < 4; k++) { m[k] = vec3(0.0); s2[k] = vec3(0.0); }
+      for (int j = 0; j <= 3; j++) {
+        for (int i = 0; i <= 3; i++) {
+          vec3 a = texture2D(tDiffuse, uv + vec2(-float(i), -float(j)) * t * 1.5).rgb;
+          vec3 b = texture2D(tDiffuse, uv + vec2(float(i), -float(j)) * t * 1.5).rgb;
+          vec3 c = texture2D(tDiffuse, uv + vec2(float(i), float(j)) * t * 1.5).rgb;
+          vec3 d = texture2D(tDiffuse, uv + vec2(-float(i), float(j)) * t * 1.5).rgb;
+          m[0] += a; s2[0] += a * a; m[1] += b; s2[1] += b * b;
+          m[2] += c; s2[2] += c * c; m[3] += d; s2[3] += d * d;
+        }
+      }
+      vec3 best = vec3(0.0); float bv = 1e9;
+      for (int k = 0; k < 4; k++) {
+        vec3 mu = m[k] / 16.0;
+        vec3 v = abs(s2[k] / 16.0 - mu * mu);
+        float vs = v.r + v.g + v.b;
+        if (vs < bv) { bv = vs; best = mu; }
+      }
+      return best;
+    }
+    void main() {
+      vec4 c = texture2D(tDiffuse, vUv);
+      vec3 col = c.rgb;
+      if (uMode == 1) {
+        col = kuwahara(vUv);
+        // 画布纹理:细微的织物颗粒
+        float cv = hash(floor(vUv * uRes / 2.0)) * 0.05 - 0.025;
+        col += cv;
+      } else if (uMode == 2) {
+        // 卡通:亮度分 4 阶,保留色相;粗黑描边
+        float l = lum(col);
+        float q = floor(l * 4.0 + 0.5) / 4.0;
+        col = col * (q / max(l, 0.05));
+        col = mix(col, col * 1.08, 0.5);
+        float e = smoothstep(0.22, 0.48, edge(vUv, 1.2));
+        col = mix(col, vec3(0.06, 0.05, 0.08), e * 0.9);
+      } else if (uMode == 3) {
+        // 水墨:灰阶分层 + 浓淡墨线 + 宣纸底色与纤维
+        float l = lum(col);
+        float tone = floor(pow(l, 0.85) * 5.0) / 5.0;
+        tone = mix(tone, l, 0.35);
+        vec3 paper = vec3(0.93, 0.9, 0.82);
+        vec3 ink = vec3(0.1, 0.09, 0.08);
+        col = mix(ink, paper, tone);
+        float e = smoothstep(0.12, 0.42, edge(vUv, 1.5));
+        col = mix(col, ink, e * 0.85);
+        float fib = hash(floor(vUv * uRes / 1.5)) * 0.06 + hash(floor(vUv * uRes / 9.0) + 3.1) * 0.04;
+        col -= fib * 0.5;
+        // 远景晕染:画面上部偏淡(留白)
+        col = mix(col, paper, smoothstep(0.55, 1.0, vUv.y) * 0.25);
+      } else if (uMode == 4) {
+        // 像素:按分辨率自适应的马赛克块 + 每通道 6 阶 + 4×4 Bayer 抖动
+        float bs = max(3.0, floor(uRes.y / 200.0));
+        vec2 cell = floor(vUv * uRes / bs);
+        vec2 suv = (cell + 0.5) * bs / uRes;
+        col = texture2D(tDiffuse, suv).rgb;
+        int bx = int(mod(cell.x, 4.0)), by = int(mod(cell.y, 4.0));
+        float bayer[16];
+        bayer[0] = 0.0; bayer[1] = 8.0; bayer[2] = 2.0; bayer[3] = 10.0;
+        bayer[4] = 12.0; bayer[5] = 4.0; bayer[6] = 14.0; bayer[7] = 6.0;
+        bayer[8] = 3.0; bayer[9] = 11.0; bayer[10] = 1.0; bayer[11] = 9.0;
+        bayer[12] = 15.0; bayer[13] = 7.0; bayer[14] = 13.0; bayer[15] = 5.0;
+        float d = (bayer[by * 4 + bx] / 16.0 - 0.5) / 6.0;
+        col = floor((col + d) * 6.0 + 0.5) / 6.0;
+      } else if (uMode == 5) {
+        // 版画:双色调 + 网点 + 粗刻线
+        float l = lum(col);
+        vec2 g = vUv * uRes / 5.0;
+        vec2 f = fract(g) - 0.5;
+        float dotR = sqrt(clamp(1.0 - l, 0.0, 1.0)) * 0.62;
+        float dotK = 1.0 - smoothstep(dotR - 0.08, dotR + 0.08, length(f));
+        vec3 paper = vec3(0.95, 0.91, 0.82), inkC = mix(vec3(0.16, 0.12, 0.1), col * 0.5, 0.35);
+        col = mix(paper, inkC, max(dotK * 0.85, smoothstep(0.75, 0.2, l) * 0.55));
+        float e = smoothstep(0.18, 0.45, edge(vUv, 1.4));
+        col = mix(col, vec3(0.08, 0.06, 0.05), e);
+      }
+      gl_FragColor = vec4(clamp(col, 0.0, 1.0), c.a);
+    }`,
+});
 let styleKey = 'nordic';
 try { if (STYLE_PRESETS[localStorage.getItem('gth-style')]) styleKey = localStorage.getItem('gth-style'); } catch { /* 隐私模式 */ }
 function applyStyle(key) {
@@ -118,6 +251,8 @@ function applyStyle(key) {
   u.uGrain.value = p.grain;
   u.uSepia.value = p.sepia;
   bloom.strength = p.bloom;
+  stylePass.uniforms.uMode.value = p.mode || 0;
+  stylePass.enabled = (p.mode || 0) > 0;
   renderer.toneMappingExposure = p.exposure;
   styleExp = p.exposure;          // 昼夜循环每帧重算曝光/泛光,预设作为基准乘子参与
   styleBloomMul = p.bloom / 0.32;
@@ -134,6 +269,7 @@ applyStyle(styleKey); // 上次选的画风,开局就生效
 composer.addPass(new OutputPass());
 gradePass.enabled = !LOWFX;
 composer.addPass(gradePass);
+composer.addPass(stylePass); // 风格化不受"流畅"画质开关影响:画风是玩家的选择
 const smaa = new SMAAPass(window.innerWidth, window.innerHeight);
 smaa.enabled = !LOWFX;
 composer.addPass(smaa);
@@ -143,6 +279,7 @@ window.addEventListener('resize', () => {
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
   composer.setSize(window.innerWidth, window.innerHeight);
+  stylePass.uniforms.uRes.value.set(window.innerWidth * renderer.getPixelRatio(), window.innerHeight * renderer.getPixelRatio());
 });
 
 // 光照
@@ -233,11 +370,13 @@ const sky = new THREE.Mesh(
       }`,
   }));
 sky.renderOrder = -1;
+sky.userData.noSnap = true;
 scene.add(sky);
 
 // 月亮/星星
 const moonBall = new THREE.Mesh(new THREE.SphereGeometry(7, 12, 10),
   new THREE.MeshBasicMaterial({ color: 0xeef2ff, fog: false }));
+moonBall.userData.noSnap = true;
 scene.add(moonBall);
 const starGeo = new THREE.BufferGeometry();
 {
@@ -250,6 +389,7 @@ const starGeo = new THREE.BufferGeometry();
 }
 const starMat = new THREE.PointsMaterial({ color: 0xffffff, size: 1.6, transparent: true, opacity: 0, fog: false, sizeAttenuation: false });
 const stars = new THREE.Points(starGeo, starMat);
+stars.userData.noSnap = true;
 scene.add(stars);
 
 // ================= 世界 =================
@@ -271,6 +411,7 @@ try {
         if (st) setBuildingModel('stall', st);
         if (br) setBuildingModel('barrel', br);
       } else if (kind === 'house' || kind === 'keep') setBuildingModel(kind, gltf.scene);
+      else if (kind === 'nature' || kind === 'camp') setNatureModels(gltf.scene);
       else if (kind === 'rocks') {
         const geos = [];
         gltf.scene.traverse((o) => { if (o.isMesh) geos.push(o.geometry); });
@@ -320,6 +461,90 @@ const vistaNear = vistaRing(300, 52, 4.9, 0x67757f); // 近脊:略深一层,错�
 
 const world = buildWorld(scene);
 const { colliders } = world;
+
+// ---- 地形:平整蒙版 → 核心王国起伏地表(替换旧的无限平面)----
+buildMasks(world);
+{
+  const oldGround = world.ground;
+  const core = buildCoreGround(getGroundMaterial(oldGround.material.normalMap));
+  scene.remove(oldGround);
+  oldGround.geometry.dispose();
+  scene.add(core);
+  world.ground = core;
+  // 远景垫底:跟着玩家走的平面,填补地平线上尚未加载的荒野区块(压在地形下面)
+  const under = new THREE.Mesh(new THREE.PlaneGeometry(2600, 2600),
+    new THREE.MeshLambertMaterial({ color: 0x7f7c55 }));
+  under.rotation.x = -Math.PI / 2;
+  under.position.y = -1.2;
+  under.userData.noSnap = true;
+  scene.add(under);
+  world.underlay = under;
+}
+initVegetation(scene); // 草丛/野花/蕨/芦苇/碎石:围绕玩家流式散布
+// 核心王国的群系地标:按群系撒 Blender 地标(露头/台地/玄武柱/冰岩/垂柳/枯树/倒木…),
+// 远离道路建筑(压平蒙版≈1 处才放大件),实例化合批;碰撞圆进全局碰撞网格
+if (hasNature()) {
+  let seed = 0x2f6b9e1d;
+  const rng = () => { // mulberry32:确定性,每次开局同一片风景
+    seed = (seed + 0x6D2B79F5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const list = [];
+  const CELL = 22;
+  for (let gx = -460; gx < 460; gx += CELL) {
+    for (let gz = -460; gz < 460; gz += CELL) {
+      const x = gx + rng() * CELL, z = gz + rng() * CELL;
+      const recipe = LANDMARKS[dominantBiome(x, z)];
+      if (!recipe) continue;
+      for (const [name, expect] of recipe) {
+        if (rng() >= expect * 0.045) continue;
+        const big = BIG_PROP[name];
+        if (maskAt(x, z) < (big ? 0.8 : 0.45) || !vegAllowed(x, z)) break;
+        const spec = NATURE_SPEC[name];
+        const sc = (big ? 0.8 + rng() * 0.5 : 1) * (0.85 + rng() * 0.35);
+        let h = groundH(x, z);
+        const rr = Math.max(0.6, spec.r * sc);
+        for (let k = 0; k < 4; k++) h = Math.min(h, groundH(x + Math.cos(k * 1.57) * rr, z + Math.sin(k * 1.57) * rr));
+        const yaw = rng() * Math.PI * 2;
+        list.push({ name, x, y: h - spec.sink * sc, z, yaw, s: sc });
+        for (const c of specCols(spec, sc, yaw)) colliders.circles.push({ x: x + c.dx, z: z + c.dz, r: c.r });
+        break; // 一格至多一件
+      }
+    }
+  }
+  // 道路两旁的生活痕迹:城外大路每 ~34 米一盏路灯(左右交替),路口立路牌
+  const roadside = (name, x, z, yaw) => {
+    const spec = NATURE_SPEC[name];
+    list.push({ name, x, y: groundH(x, z) - spec.sink, z, yaw, s: 1 });
+    for (const c of specCols(spec, 1, yaw)) colliders.circles.push({ x: x + c.dx, z: z + c.dz, r: c.r });
+  };
+  let side = 1;
+  for (const f of world.features) {
+    if (f.type !== 'road' || f.h < 40) continue;
+    const dirX = Math.sin(f.rot || 0), dirZ = Math.cos(f.rot || 0); // 道路走向(feat 的 rot 为 atan2(dx,dz))
+    const nX = dirZ, nZ = -dirX;
+    const n = Math.floor(f.h / 34);
+    for (let i = 0; i <= n; i++) {
+      const t = -f.h / 2 + (i + 0.5) * (f.h / (n + 1));
+      side = -side;
+      const x = f.x + dirX * t + nX * side * (f.w / 2 + 1.3), z = f.z + dirZ * t + nZ * side * (f.w / 2 + 1.3);
+      if (Math.abs(x) < 84 && Math.abs(z) < 70) continue; // 城里有火把
+      if (Math.max(Math.abs(x), Math.abs(z)) > 460) continue;
+      roadside('LanternPost', x, z, Math.atan2(side * nZ, -side * nX)); // 灯臂伸向路面
+    }
+    // 路牌立在路的一端
+    const ex = f.x + dirX * f.h / 2 + nX * (f.w / 2 + 1.6), ez = f.z + dirZ * f.h / 2 + nZ * (f.w / 2 + 1.6);
+    if (!(Math.abs(ex) < 84 && Math.abs(ez) < 70) && Math.max(Math.abs(ex), Math.abs(ez)) < 460) {
+      roadside('Signpost', ex, ez, (f.rot || 0) + Math.PI / 2);
+    }
+  }
+  world.landmarks = buildNatureInstances(list);
+  scene.add(world.landmarks);
+  colliders.dirty = true;
+  console.info('核心地标', list.length, '件');
+}
 
 // ---- 运行时 AI 贴图生成(玩家浏览器联网时,后台生成照片级贴图并热替换)----
 const aiStatusEl = document.getElementById('ai-status');
@@ -760,12 +985,12 @@ function updateWolves(dt) {
   }
 }
 
-function killWolf(w) {
+function killWolf(w, opts = {}) {
   w.dead = true;
   w.respawnT = (w.arena || w._prol) ? 99999 : (todaySpecial()?.key === 'wolfmoon' ? 22 : 45);
   startFall(w);
-  registerKill();
-  setTimeout(() => { if (w.dead) w.group.visible = false; }, 2500);
+  if (!opts.env) registerKill(); // 环境击杀(龙息等)不进玩家连杀
+  later(2.5, () => { if (w.dead) w.group.visible = false; });
   dropCoins(w.pos, 2);
   wolfKills++;
   EVO.wolfPressure++; // 猎杀压力:选择的原料
@@ -829,7 +1054,9 @@ function cycleSpell() {
   toast(`${SPELLS[k].icon} ${SPELLS[k].name}`, 1.2);
 }
 // 范围爆破:火球命中点的 AoE(打卫兵照样算犯罪)
-function explodeAt(x, z, dmg = 3, radius = 3.4) {
+// src:'player'(默认,火球/火油罐)或环境伤害(如 'dragon'):环境伤害不进连杀、不算卫兵罪行
+function explodeAt(x, z, dmg = 3, radius = 3.4, src = 'player') {
+  const env = src !== 'player';
   camShake = Math.max(camShake, 0.35);
   sfx.stomp();
   spawnDust(x, 0.5, z, 16, radius * 0.5, 2.2);
@@ -843,6 +1070,11 @@ function explodeAt(x, z, dmg = 3, radius = 3.4) {
       if (e.hp <= 0) onDead(e);
     }
   };
+  if (env) {
+    boom(bandits, (b) => slayBandit(b, { companion: true, coins: 2 }));
+    boom(wolves, (w) => killWolf(w, { env: true }));
+    return; // 卫兵不受龙息之类的环境爆炸牵连,也不会因此通缉你
+  }
   boom(bandits, (b) => slayBandit(b));
   boom(wolves, (w) => killWolf(w));
   boom(guards, (g) => downGuard(g));
@@ -1370,9 +1602,16 @@ function setArmorVisual(level) {
   player.group.add(vest);
   player.armorMesh = vest;
 }
+// 生命上限只在这里计算:护甲 + 湖神恩赐 + 屠龙者,读档/买甲/奇遇都走这一处
+function recomputeMaxHp() {
+  player.maxHp = 10 + ((ARMORS[player.armor] && ARMORS[player.armor].bonus) || 0) +
+    (lakeBlessed ? 2 : 0) + (stats.dragonSlain ? 2 : 0);
+  player.hp = Math.min(player.hp, player.maxHp);
+  return player.maxHp;
+}
 function applyArmor(level) {
   player.armor = level;
-  player.maxHp = 10 + ARMORS[level].bonus + (lakeBlessed ? 2 : 0);
+  recomputeMaxHp();
   player.hp = Math.min(player.hp + ARMORS[level].bonus, player.maxHp);
   setArmorVisual(level);
 }
@@ -1456,17 +1695,8 @@ function arrowHitEntities(a) {
     }
     b.hp -= dmg; sfx.hit(); hitFX(b, 0.4); showDamage(b.pos, dmg);
     if (b.hp <= 0) {
-      b.dead = true; startFall(b); registerKill(); choreProgress('bandits');
+      slayBandit(b); // 统一死亡结算(连杀/村务/军旗/任务进度/掉落)
       EVO.kills.arrow++;
-      if (b.warband) warband.pKills = (warband.pKills || 0) + 1;
-      banditSlain(b);
-      if (b.boss) dismissMinions();
-      dropCoins(b.pos, b.boss ? 20 : 5);
-      if (quest.active && missions[quest.idx].type === 'bandits' && !b.boss && !b.escort && !b.bountyHead && !b.robber && !b.arena && !b.ambient && !b.duel && !b.convict && !b.eventFoe) {
-        quest.progress++;
-        toast(`击败盗贼 ${quest.progress}/3`, 2);
-        if (quest.progress >= 3) completeMission();
-      }
     }
   })) return true;
   if (tryHit(wolves, (w) => {
@@ -1628,7 +1858,7 @@ function showDamage(pos, text, crit = false) {
   d.el.className = crit ? 'dmgnum crit' : 'dmgnum';
   d.el.textContent = text;
   d.t = 0.75;
-  d.p.set(pos.x, (pos.y || 0) + 1.5, pos.z);
+  d.p.set(pos.x, (pos.y || 0) + 1.5 + groundH(pos.x, pos.z), pos.z);
 }
 function updateDamageNums(dt) {
   for (const d of dmgPool) {
@@ -1703,7 +1933,7 @@ function telegraphFlash(e, dur = 0.45, heavy = false) {
   const ring = new THREE.Mesh(new THREE.RingGeometry(0.55, 0.8, 1, 24), dangerMat.clone());
   if (heavy) ring.material.color.setHex(0xb040ff); // 紫圈=破盾重击:别格挡,滚!
   ring.rotation.x = -Math.PI / 2;
-  ring.position.set(e.pos.x, 0.07, e.pos.z);
+  ring.position.set(e.pos.x, 0.12, e.pos.z);
   scene.add(ring);
   dangerFX.push({ ring, e, t: 0, dur });
 }
@@ -1720,7 +1950,7 @@ function updateDanger(dt) {
       dangerFX.splice(i, 1);
       continue;
     }
-    f.ring.position.set(f.e.pos.x, 0.07, f.e.pos.z);
+    f.ring.position.set(f.e.pos.x, 0.12, f.e.pos.z);
     f.ring.scale.setScalar(2.6 - k * 1.6);        // 大圈收拢到出手半径
     f.ring.material.opacity = 0.25 + 0.55 * k;    // 越接近出手越亮
   }
@@ -1831,11 +2061,11 @@ function updateDragon(dt) {
       const dd = Math.hypot(dx, dz) || 1;
       for (let i = 1; i <= 3; i++) {
         const px2 = bx + (dx / dd) * dd * (i / 3), pz2 = bz + (dz / dd) * dd * (i / 3);
-        setTimeout(() => { // 三段冰息:沿线炸开,波及玩家
-          explodeAt(px2, pz2, 2, 2.6);
+        later(i * 0.28, () => { // 三段冰息:沿线炸开,波及玩家(龙的伤害不算你的罪,也不算你的连杀)
+          explodeAt(px2, pz2, 2, 2.6, 'dragon');
           addFrostPatch(px2, pz2, 2.6, 4); // 息后留霜
           if (!player.dead && dist2(player.pos.x, player.pos.z, px2, pz2) < 2.6 * 2.6) damagePlayer(2, null);
-        }, i * 280);
+        });
       }
     }
     if (dragonRT.t <= 0) { dragonRT.phase = 'circle'; dragonRT.t = 5 + Math.random() * 3; }
@@ -1853,7 +2083,7 @@ function updateDragon(dt) {
       dragonRT.on = false;
       scene.remove(g);
       stats.dragonSlain = true;
-      player.maxHp += 2;
+      recomputeMaxHp();
       player.hp = player.maxHp;
       player.coins += 150;
       unlockAch('dragonslayer');
@@ -2069,7 +2299,7 @@ function killDeer(d) {
   d.dead = true;
   d.respawnT = 300;
   startFall(d);
-  setTimeout(() => { if (d.dead) d.group.visible = false; }, 2500);
+  later(2.5, () => { if (d.dead) d.group.visible = false; });
   player.venison++;
   stats.deer = (stats.deer || 0) + 1;
   if (stats.deer >= 5) unlockAch('hunter');
@@ -2332,7 +2562,7 @@ function openJournal() {
 let photoMode = false;
 const PHOTO_HIDE = ['hearts', 'coins', 'equip', 'wanted', 'mission', 'region', 'minimap',
   'prompt', 'controls-hint', 'combo', 'weather', 'bubble', 'toast',
-  'stamina', 'lockhp', 'bosshp', 'save-icon'];
+  'stamina', 'lockhp', 'bosshp', 'save-icon', 'actionbar', 'keyhint'];
 function togglePhoto() {
   photoMode = !photoMode;
   for (const id of PHOTO_HIDE) {
@@ -2361,7 +2591,7 @@ function prayAltar() {
     return;
   }
   lakeBlessed = true;
-  player.maxHp += 2;
+  recomputeMaxHp();
   player.hp = player.maxHp;
   sfx.fanfare();
   remember('在湖心沉没神殿的祭坛前,得到了湖神的恩赐', 'lakegift');
@@ -4341,7 +4571,7 @@ function updateBubble(dt) {
     bubbleEl.style.display = 'none';
     return;
   }
-  _bubbleV.copy(bubble.anchor.pos).y += 2.1;
+  _bubbleV.copy(bubble.anchor.pos).y += 2.1 + groundH(bubble.anchor.pos.x, bubble.anchor.pos.z); // 逻辑 y 是离地高度
   _bubbleV.project(camera);
   if (_bubbleV.z > 1) { bubbleEl.style.display = 'none'; return; }
   bubbleEl.style.display = 'block';
@@ -4380,22 +4610,61 @@ function villagerChatter() {
   }
 }
 
-// ================= 操作说明:20 秒后淡出,按 H 呼出 =================
+// ================= 操作说明:按 H 弹出的分组面板(不再常驻字墙) =================
 const hintEl = document.getElementById('controls-hint');
-let hintFadeT = 20;
-let hintVisible = true;
-function updateHintFade(dt) {
-  if (!started || !hintVisible || hintFadeT <= 0) return;
-  hintFadeT -= dt;
-  if (hintFadeT <= 0) {
-    hintVisible = false;
-    hintEl.style.opacity = 0;
-  }
-}
+let hintVisible = false;
+function updateHintFade() { /* 面板由 H 键开关,不再自动淡出 */ }
 function toggleHint() {
   hintVisible = !hintVisible;
   hintEl.style.opacity = hintVisible ? 1 : 0;
-  hintFadeT = hintVisible ? 20 : 0;
+}
+
+// ================= 技能栏:按键 + 图标 + 冷却遮罩(新玩家一眼看懂能干什么) =================
+const abEl = document.getElementById('actionbar');
+const AB_SLOTS = [
+  { key: 'F', name: '攻击', icon: () => WEAPONS[player.weapon].icon,
+    cd: () => (player.attackT > 0 ? player.attackT / (player.attackDur || 0.3) : 0) },
+  { key: '右键', name: '格挡', icon: () => '🛡️', on: () => player.blocking, off: () => player.weapon === 'bow' },
+  { key: 'C', name: '翻滚', icon: () => '🌀', cd: () => Math.max(0, player.rollCd || 0) / 0.95 },
+  { key: 'R', name: () => (player.spells.length ? SPELLS[player.spells[player.spellIdx]].name : '法术'),
+    icon: () => (player.spells.length ? SPELLS[player.spells[player.spellIdx]].icon : '✴️'),
+    cd: () => (player.spells.length ? Math.max(0, player.castT) / SPELLS[player.spells[player.spellIdx]].cd : 0),
+    sub: () => `${Math.floor(player.mp)}`, off: () => !player.spells.length },
+  { key: 'X', name: '战吼', icon: () => '🐉', show: () => shout.learned,
+    cd: () => Math.max(0, shout.cd) / (stats.dragonSlain ? 22.5 : 45) },
+  { key: 'Tab', name: '锁定', icon: () => '🎯', on: () => !!lockFoe },
+  { key: 'Z', name: '潜行', icon: () => '🤫', on: () => player.sneaking },
+  { key: 'Q', name: '换武器', icon: () => '🔄', show: () => player.weaponsOwned.length > 1 },
+];
+for (const sl of AB_SLOTS) {
+  const d = document.createElement('div');
+  d.className = 'ab-slot';
+  d.innerHTML = '<div class="ab-icon"></div><div class="ab-cd"></div><div class="ab-key"></div>' +
+    '<div class="ab-sub"></div><div class="ab-name"></div>';
+  abEl.appendChild(d);
+  sl.el = d;
+  sl.iconEl = d.children[0]; sl.cdEl = d.children[1]; sl.subEl = d.children[3]; sl.nameEl = d.children[4];
+  d.children[2].textContent = sl.key;
+  sl.last = {};
+}
+function updateActionBar() {
+  abEl.style.display = started && !player.dead ? 'flex' : 'none';
+  for (const sl of AB_SLOTS) {
+    const L = sl.last;
+    const show = !sl.show || sl.show();
+    if (L.show !== show) { L.show = show; sl.el.style.display = show ? 'block' : 'none'; }
+    if (!show) continue;
+    const icon = sl.icon();
+    if (L.icon !== icon) { L.icon = icon; sl.iconEl.textContent = icon; }
+    const nm = typeof sl.name === 'function' ? sl.name() : sl.name;
+    if (L.name !== nm) { L.name = nm; sl.nameEl.textContent = nm; }
+    const cdv = sl.cd ? Math.round(Math.min(1, sl.cd()) * 20) * 5 : 0;
+    if (L.cd !== cdv) { L.cd = cdv; sl.cdEl.style.height = `${cdv}%`; }
+    const cls = `ab-slot${sl.on && sl.on() ? ' on' : ''}${sl.off && sl.off() ? ' off' : ''}`;
+    if (L.cls !== cls) { L.cls = cls; sl.el.className = cls; }
+    const sub = sl.sub ? sl.sub() : '';
+    if (L.sub !== sub) { L.sub = sub; sl.subEl.textContent = sub; }
+  }
 }
 
 // ================= 暂停菜单(唯一系统菜单,ESC 弹出) =================
@@ -4408,7 +4677,9 @@ function setPaused(p) {
 }
 function setQuality(high) {
   fxHigh = high;
+  setVegetationDensity(high ? 1 : 0.5); // 流畅档:草木减半、半径收窄
   gtao.enabled = bloom.enabled = smaa.enabled = gradePass.enabled = high;
+  if (STYLE_PRESETS[styleKey].mode === 4) smaa.enabled = false; // 像素风不要抗锯齿糊掉方块
   document.getElementById('btn-quality').textContent = `画质:${high ? '精致' : '流畅'}`;
   try { localStorage.setItem('gth-fx', high ? 'hi' : 'lo'); } catch { /* 忽略 */ }
 }
@@ -4421,6 +4692,7 @@ document.getElementById('btn-quality').onclick = () => setQuality(!fxHigh);
 document.getElementById('btn-style').textContent = `画风:${STYLE_PRESETS[styleKey].name}`;
 document.getElementById('btn-style').onclick = () => {
   document.getElementById('btn-style').textContent = `画风:${cycleStyle()}`;
+  smaa.enabled = fxHigh && STYLE_PRESETS[styleKey].mode !== 4;
 };
 document.getElementById('btn-music').onclick = (ev) => {
   ev.target.textContent = `音乐:${toggleMusic() ? '开' : '关'}`;
@@ -4444,41 +4716,72 @@ scene.add(interactMarker);
 let promptTargetPos = null;
 
 // ================= 命中反馈:白闪 + 击退 =================
+// 受击闪白只作用于该实体自己的材质副本:人形/怪物的材质在全场共享,
+// 直接改共享材质会让"砍一刀全城一起闪"。首次受击时把材质克隆为私有
+// (同参数材质共用着色器程序,克隆开销很小),之后闪白/还原都只动自己。
+const flashing = new Set();
+function ownMaterials(e) {
+  if (e._ownMats) return;
+  e._ownMats = true;
+  e.group.traverse((o) => {
+    if (!o.material) return;
+    o.material = Array.isArray(o.material) ? o.material.map((m) => m.clone()) : o.material.clone();
+  });
+}
+function setFlash(e, on) {
+  e.group.traverse((o) => {
+    const mats = Array.isArray(o.material) ? o.material : o.material ? [o.material] : null;
+    if (!mats) return;
+    for (const m of mats) {
+      if (!m.emissive) continue;
+      if (on) {
+        if (m._e0 === undefined) { m._e0 = m.emissive.getHex(); m._ei0 = m.emissiveIntensity; }
+        m.emissive.setHex(0xffffff);
+        m.emissiveIntensity = 0.8;
+      } else if (m._e0 !== undefined) {
+        m.emissive.setHex(m._e0);
+        m.emissiveIntensity = m._ei0;
+        delete m._e0; delete m._ei0;
+      }
+    }
+  });
+}
+function flashEntity(e, t = 0.09) {
+  if (!e || !e.group) return;
+  ownMaterials(e);
+  if (!(e._flashT > 0)) setFlash(e, true);
+  e._flashT = t;
+  flashing.add(e);
+}
+// 受击弹跳与闪白按游戏时钟结算(暂停/卡顿时不会错位)
+function updateFlashes(dt) {
+  for (const e of flashing) {
+    if (e._popT > 0) {
+      e._popT -= dt;
+      if (e._popT <= 0) { e.group.scale.x /= 1.14; e.group.scale.z /= 1.14; e._popT = 0; }
+    }
+    if (e._flashT > 0) {
+      e._flashT -= dt;
+      if (e._flashT <= 0) { e._flashT = 0; setFlash(e, false); }
+    }
+    if (!(e._popT > 0) && !(e._flashT > 0)) flashing.delete(e);
+  }
+}
 function hitFX(e, push = 0.55) {
   hitStop(0.035);
   spawnDust(e.pos.x, 1.0, e.pos.z, 3, 0.45, 1.4); // 命中扬尘:刀刀有反馈
   // 受击弹跳:横向鼓一下再弹回,肉眼可见的"挨了一记"
-  if (!e._popping) {
-    e._popping = true;
+  if (!(e._popT > 0)) {
     e.group.scale.x *= 1.14;
     e.group.scale.z *= 1.14;
-    setTimeout(() => { e.group.scale.x /= 1.14; e.group.scale.z /= 1.14; e._popping = false; }, 90);
   }
+  e._popT = 0.09;
   const dx = e.pos.x - player.pos.x, dz = e.pos.z - player.pos.z;
   const d = Math.hypot(dx, dz) || 1;
   e.pos.x += (dx / d) * push;
   e.pos.z += (dz / d) * push;
   resolveCollisions(e.pos, 0.4, colliders);
-  e.group.traverse((o) => {
-    const m = o.material;
-    if (m && m.emissive && m._e0 === undefined) {
-      m._e0 = m.emissive.getHex();
-      m._ei0 = m.emissiveIntensity;
-      m.emissive.setHex(0xffffff);
-      m.emissiveIntensity = 0.8;
-    }
-  });
-  setTimeout(() => {
-    e.group.traverse((o) => {
-      const m = o.material;
-      if (m && m._e0 !== undefined) {
-        m.emissive.setHex(m._e0);
-        m.emissiveIntensity = m._ei0;
-        delete m._e0;
-        delete m._ei0;
-      }
-    });
-  }, 90);
+  flashEntity(e);
 }
 
 // ================= 人群软碰撞(不再穿过 NPC) =================
@@ -4555,27 +4858,13 @@ function todaySpecial() {
 }
 
 // 季节换装:地表与草皮随季节改色,冬季积雪盖地
-const SEASON_GROUND = [0xf2ead8, 0xe8e2c8, 0xd8a860, 0xdfe6ec]; // tussock 调:春秋金棕,夏钝卡其
+const SEASON_GROUND = [0xffffff, 0xf6f3e6, 0xf3d9a6, 0xf2f6fb]; // 乘在群系顶点色上的季节色调
 function applySeason() {
   const s = seasonIdx();
   const gm = world.ground.material;
-  if (!gm.userData.baseMap) { gm.userData.baseMap = gm.map; gm.userData.baseNormal = gm.normalMap; }
-  gm.map = s === 3 ? null : gm.userData.baseMap; // 冬:雪盖住草地纹理
-  gm.normalMap = s === 3 ? null : gm.userData.baseNormal;
-  gm.needsUpdate = true;
   gm.color.setHex(SEASON_GROUND[s]);
-  const grass = world.grassMesh;
-  if (!grass) return;
-  const c = new THREE.Color();
-  for (let i = 0; i < grass.count; i++) {
-    const r = Math.abs(Math.sin(i * 12.9898) * 43758.5453) % 1; // 每株草稳定的伪随机
-    if (s === 0) c.setHSL(0.14 + r * 0.05, 0.22, 0.38 + r * 0.12);      // 春:灰卡其草甸(tussock)
-    else if (s === 1) c.setHSL(0.17 + r * 0.05, 0.24, 0.35 + r * 0.11); // 夏:钝橄榄
-    else if (s === 2) c.setHSL(0.08 + r * 0.04, 0.32, 0.4 + r * 0.11);  // 秋:金棕
-    else c.setHSL(0.56 + r * 0.04, 0.05, 0.6 + r * 0.13);               // 冬:霜白
-    grass.setColorAt(i, c);
-  }
-  grass.instanceColor.needsUpdate = true;
+  if (gm.userData.uSnow) gm.userData.uSnow.value = s === 3 ? 0.88 : 0; // 冬:平地积雪,陡坡露土
+  setVegetationSeason(s);
 }
 
 let festGrantedDay = 0; // 已发过节庆彩头的游戏日(存档携带,防读档反复刷金币)
@@ -5292,13 +5581,17 @@ const SAVE_KEY = 'gth-save-v1';
 const FRESH_START = !localStorage.getItem(SAVE_KEY); // 新档才演序章
 let crestsFound = [];
 let saveIconTimer = null;
+let saveBlocked = false; // 读档失败时置真:不自动覆盖原档
+const SAVE_VERSION = 2;
 function saveGame() {
+  if (saveBlocked) return;
   const icon = document.getElementById('save-icon');
   icon.style.opacity = 1;
   clearTimeout(saveIconTimer);
   saveIconTimer = setTimeout(() => { icon.style.opacity = 0; }, 1000);
   try {
     localStorage.setItem(SAVE_KEY, JSON.stringify({
+      v: SAVE_VERSION,
       coins: player.coins, questIdx: quest.idx, crests: crestsFound,
       swordLv: player.swordLv, royalHorse: player.royalHorse,
       kingRewarded: namedNPCs.find((n) => n.key === 'king')?.rewarded || false,
@@ -5319,9 +5612,18 @@ function saveGame() {
   } catch { /* 隐私模式等 */ }
 }
 function loadGame() {
+  let s;
   try {
-    const s = JSON.parse(localStorage.getItem(SAVE_KEY));
-    if (!s) return false;
+    s = JSON.parse(localStorage.getItem(SAVE_KEY));
+  } catch {
+    // 存档本身坏了(不是合法 JSON):保留原文备份,不读也不覆盖
+    saveBlocked = true;
+    try { localStorage.setItem(SAVE_KEY + '-bak', localStorage.getItem(SAVE_KEY)); } catch { /* 忽略 */ }
+    setTimeout(() => toast('⚠️ 存档已损坏:已备份原文件,本局不会覆盖它', 6), 1500);
+    return false;
+  }
+  if (!s || typeof s !== 'object') return false;
+  try {
     player.coins = s.coins || 0;
     quest.idx = Math.min(s.questIdx || 0, missions.length);
     crestsFound = Array.isArray(s.crests) ? s.crests : [];
@@ -5343,14 +5645,7 @@ function loadGame() {
     frostfang.feed = s.wolfFeed || 0;
     player.relic = !!s.relic;
     if (s.chore && s.chore.active) Object.assign(sideQuest, s.chore);
-    if (s.lake) {
-      lakeBlessed = true;
-      // 无护甲存档:此处直接补上限;有护甲存档由下方护甲分支统一计算
-      if (!s.armor || !ARMORS[s.armor]) {
-        player.maxHp = 10 + 2;
-        player.hp = player.maxHp;
-      }
-    }
+    if (s.lake) lakeBlessed = true;
     if (s.wolf && !frostfang.tamed) {
       frostfang.tamed = true;
       frostfang.ent = frostfang.wary;
@@ -5393,13 +5688,18 @@ function loadGame() {
     player.loot = s.loot || 0;
     vendetta.stage = [0, 1, 2, 3].includes(s.vendetta) ? s.vendetta : 0;
     player.blackstoneToken = !!s.bsToken;
-    if (s.armor && ARMORS[s.armor]) {
-      player.armor = s.armor;
-      player.maxHp = 10 + ARMORS[s.armor].bonus + (lakeBlessed ? 2 : 0);
-      player.hp = player.maxHp;
-    }
+    if (s.armor && ARMORS[s.armor]) player.armor = s.armor;
+    recomputeMaxHp();
+    player.hp = player.maxHp;
     return true;
-  } catch { return false; }
+  } catch (err) {
+    // 读到一半出错:本局不再自动存档,免得把半截状态写回去覆盖好档;原档另存一份备份
+    saveBlocked = true;
+    try { localStorage.setItem(SAVE_KEY + '-bak', localStorage.getItem(SAVE_KEY)); } catch { /* 存储已满等 */ }
+    console.error('读档失败,已停用本局自动存档', err);
+    setTimeout(() => toast('⚠️ 存档读取出错:本局不会覆盖原存档(备份已保留)', 6), 1500);
+    return true;
+  }
 }
 
 // 目标光柱
@@ -5525,6 +5825,12 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyJ' && started && !dialog.open) openJournal();
   if (e.code === 'KeyT' && dialog.open) deepTalk();
   if (e.code === 'KeyH') toggleHint();
+  if (e.code === 'KeyK') { // 画风随手切:写实/油画/卡通/水墨/像素/版画/电影/复古
+    const nm = cycleStyle();
+    smaa.enabled = fxHigh && STYLE_PRESETS[styleKey].mode !== 4;
+    document.getElementById('btn-style').textContent = `画风:${nm}`;
+    toast(`🎨 画风:${nm}(K 键继续切换)`, 1.6);
+  }
   if (e.code === 'KeyQ') cycleWeapon();
   // 施法键做冗余判定:部分输入法/键盘布局下 e.code 会被吞,补上 e.key 兜底
   if ((e.code === 'KeyR' || e.key === 'r' || e.key === 'R') && !dialog.open) castSpell();
@@ -5733,6 +6039,7 @@ const rainMat = new THREE.LineBasicMaterial({ color: 0x9fb8d0, transparent: true
 const rainLines = new THREE.LineSegments(rainGeo, rainMat);
 rainLines.frustumCulled = false;
 rainLines.visible = false;
+rainLines.userData.noSnap = true; // 雨幕自己按玩家脚下高度对齐
 scene.add(rainLines);
 const drops = new Float32Array(RAIN_N * 3);
 for (let i = 0; i < RAIN_N; i++) {
@@ -5748,6 +6055,7 @@ function updateRain(dt) {
   rainLines.visible = weather.rain > 0.03;
   if (!rainLines.visible) return;
   const cx = player.pos.x, cz = player.pos.z;
+  rainLines.position.y = groundH(cx, cz);
   const wind = snow ? 1.4 : 4.5;
   const fall = snow ? 6.5 : 30;
   const t = performance.now() * 0.001;
@@ -5779,6 +6087,7 @@ const dustMat = new THREE.PointsMaterial({
   color: 0xc9b08a, size: 0.38, transparent: true, opacity: 0.5, depthWrite: false });
 const dustPts = new THREE.Points(dustGeo, dustMat);
 dustPts.frustumCulled = false;
+dustPts.userData.noSnap = true; // 粒子缓冲里已是绝对坐标
 scene.add(dustPts);
 const dust = [];
 const dustFree = [...Array(DUST_MAX).keys()];
@@ -5788,11 +6097,12 @@ function spawnDust(x, y, z, n = 3, spread = 0.5, up = 1.4) {
   for (let k = 0; k < n; k++) {
     const i = dustFree.pop();
     if (i === undefined) return;
+    const gy = groundH(x, z);
     dustPos[i * 3] = x + (Math.random() - 0.5) * spread;
-    dustPos[i * 3 + 1] = y + Math.random() * 0.2;
+    dustPos[i * 3 + 1] = gy + y + Math.random() * 0.2;
     dustPos[i * 3 + 2] = z + (Math.random() - 0.5) * spread;
     dust.push({
-      i,
+      i, floor: gy + 0.04,
       vx: (Math.random() - 0.5) * 1.3, vy: up * (0.5 + Math.random() * 0.7), vz: (Math.random() - 0.5) * 1.3,
       life: 0, max: 0.45 + Math.random() * 0.4,
     });
@@ -5812,7 +6122,7 @@ function updateDust(dt) {
     }
     p.vy -= 2.0 * dt;
     dustPos[p.i * 3] += p.vx * dt;
-    dustPos[p.i * 3 + 1] = Math.max(0.04, dustPos[p.i * 3 + 1] + p.vy * dt);
+    dustPos[p.i * 3 + 1] = Math.max(p.floor, dustPos[p.i * 3 + 1] + p.vy * dt);
     dustPos[p.i * 3 + 2] += p.vz * dt;
   }
   dustGeo.attributes.position.needsUpdate = true;
@@ -6703,11 +7013,11 @@ function disbandWarband(escaped) {
   for (const b of warband.members) {
     if (escaped && !b.dead) { b.dead = true; b.group.visible = false; }
     const gone = b;
-    setTimeout(() => { // 尸体躺一会儿再收,别当场蒸发
+    later(4, () => { // 尸体躺一会儿再收,别当场蒸发
       scene.remove(gone.group);
       const i = bandits.indexOf(gone);
       if (i >= 0) bandits.splice(i, 1);
-    }, 4000);
+    });
   }
   warband.members = [];
   warband.active = false;
@@ -6743,7 +7053,7 @@ function updateWarband(dt) {
       for (const b of warband.members) if (!b.dead) { b._truce = false; b.fleeT = 9; }
       warband.active = false;
       warband.cd = 150 + Math.random() * 120;
-      setTimeout(() => disbandWarband(true), 3500); // 跑出视野再散伙
+      later(3.5, () => disbandWarband(true)); // 跑出视野再散伙
       toast('⚔️🏆 枭首伏诛!战团夺气,作鸟兽散——兵不血刃!(+100 金币)', 6);
       sfx.fanfare();
       player.coins += 100;
@@ -6856,7 +7166,13 @@ function banditSlain(b) {
   }
 }
 let meleeExecBase = 0; // 处决基准伤害:出手前由 tryAttack/heavyAttack 填入(不含弹反/偷袭乘区)
-// 盗贼死亡统一出口:任何来源(法术/爆炸/战吼/佣兵/白狼)都走全套结算,漏一项就是审计单上的 bug
+// 特殊身份的盗贼(剧情首领/押解/悬赏/劫匪/竞技/单挑/囚犯/事件):不算"普通盗贼",各处判定共用这一张表
+const SPECIAL_BANDIT = ['boss', 'escort', 'bountyHead', 'robber', 'arena', 'duel', 'convict', 'eventFoe'];
+function specialBandit(b) {
+  for (const k of SPECIAL_BANDIT) if (b[k]) return true;
+  return false;
+}
+// 盗贼死亡统一出口:任何来源(弓/剑/践踏/法术/爆炸/战吼/佣兵/白狼)都走全套结算
 function slayBandit(b, opts = {}) {
   if (b.dead) return;
   b.dead = true;
@@ -6867,8 +7183,7 @@ function slayBandit(b, opts = {}) {
   if (b.boss) dismissMinions();
   if (b.warband) warband[opts.companion ? 'gKills' : 'pKills'] = (warband[opts.companion ? 'gKills' : 'pKills'] || 0) + 1;
   dropCoins(b.pos, b.boss ? 20 : opts.coins ?? 5);
-  if (quest.active && missions[quest.idx].type === 'bandits' && !b.boss && !b.escort && !b.bountyHead &&
-      !b.robber && !b.arena && !b.ambient && !b.duel && !b.convict && !b.eventFoe) {
+  if (quest.active && missions[quest.idx].type === 'bandits' && !specialBandit(b) && !b.ambient) {
     quest.progress++;
     toast(`击败盗贼 ${quest.progress}/3${opts.credit ? `(${opts.credit}!)` : ''}`, 2);
     if (quest.progress >= 3) completeMission();
@@ -6969,18 +7284,10 @@ function meleeSweep(dmg, range, arcDot, knock) {
       toast('🛡️💥 破防!(踉跄中挨刀=处决 ×5)', 1.2);
     }
     if (b.hp <= 0) {
-      b.dead = true; startFall(b); registerKill(); choreProgress('bandits');
+      if (b.boss) toast('⚔️ 血斧巴罗克倒下了!黑石兄弟会土崩瓦解!', 5);
+      slayBandit(b); // 统一死亡结算(连杀/村务/军旗/任务进度/掉落/遣散喽啰)
       EVO.kills.melee++;
-      if (b.warband) warband.pKills = (warband.pKills || 0) + 1;
-      banditSlain(b);
-      dropCoins(b.pos, b.boss ? 20 : 5);
-      addPickup('heart', b.pos.x, b.pos.z + 1, 30);
-      if (b.boss) { toast('⚔️ 血斧巴罗克倒下了!黑石兄弟会土崩瓦解!', 5); dismissMinions(); }
-      if (quest.active && missions[quest.idx].type === 'bandits' && !b.boss && !b.escort && !b.bountyHead && !b.robber && !b.arena && !b.ambient && !b.duel && !b.convict && !b.eventFoe) {
-        quest.progress++;
-        toast(`击败盗贼 ${quest.progress}/3`, 2);
-        if (quest.progress >= 3) completeMission();
-      }
+      addPickup('heart', b.pos.x, b.pos.z + 1, 30); // 近战击杀的额外犒赏
     }
   });
   hitOne(wolves, (w) => {
@@ -7573,8 +7880,7 @@ function updateBandits(dt) {
       }
       continue;
     }
-    if (!b.boss && !b.escort && !b.robber && !b.convict && !b.bountyHead &&
-        !b.duel && !b.arena && !b.eventFoe && !b.warband && entFar(b)) continue; // 远处匪徒待机(战团要行军,不休眠)
+    if (!specialBandit(b) && !b.warband && entFar(b)) continue; // 远处匪徒待机(特殊身份/战团要行军,不休眠)
     // Boss 二阶段:血量过半即狂暴——提速、加伤、召两名亲卫
     if (b.boss && !b.enraged && b.hp <= 6) {
       b.enraged = true;
@@ -7966,7 +8272,7 @@ function updatePlayer(dt) {
           skillXp('riding', 2);
           if (e.hp <= 0) {
             if (wolves.includes(e)) killWolf(e);
-            else { e.dead = true; startFall(e); registerKill(); dropCoins(e.pos, 5); }
+            else slayBandit(e); // 践踏致死同样走完整结算(任务/军旗/村务不漏)
           }
         }
       }
@@ -8338,7 +8644,38 @@ function updatePickups(dt) {
 }
 
 // ================= 任务更新 =================
+// 城墙寻路:人在城里、目标在城外(或反之)时,光柱与小地图箭头先指向顺路的城门,
+// 免得新手顶着城墙原地打转(城墙矩形 x:-70..70, z:-55..55;城门见 world.gates)
+function insideTown(x, z) { return Math.abs(x) < 70 && Math.abs(z) < 55; }
+function routeVia(tx, tz) {
+  if (inDungeon()) return null;
+  if (insideTown(player.pos.x, player.pos.z) === insideTown(tx, tz)) return null;
+  let best = null, bd = Infinity;
+  for (const g of world.gates) {
+    const d = Math.hypot(g.x - player.pos.x, g.z - player.pos.z) + Math.hypot(tx - g.x, tz - g.z);
+    if (d < bd) { bd = d; best = g; }
+  }
+  if (best && Math.hypot(best.x - player.pos.x, best.z - player.pos.z) < 7) return null; // 已到门洞
+  return best;
+}
+let beaconRouted = null; // 被改道到城门时记下真目标,下一帧先还原再让任务逻辑更新
 function updateQuest(dt) {
+  if (beaconRouted) {
+    beacon.position.x = beaconRouted.x;
+    beacon.position.z = beaconRouted.z;
+    beaconRouted = null;
+  }
+  updateQuestTarget(dt);
+  if (beacon.visible) {
+    const via = routeVia(beacon.position.x, beacon.position.z);
+    if (via) {
+      beaconRouted = { x: beacon.position.x, z: beacon.position.z };
+      beacon.position.x = via.x;
+      beacon.position.z = via.z;
+    }
+  }
+}
+function updateQuestTarget(dt) {
   exGroup.visible = quest.idx < missions.length && !quest.active;
   exGroup.position.x = steward.pos.x;
   exGroup.position.z = steward.pos.z;
@@ -8479,7 +8816,37 @@ const C_NIGHT_TOP = new THREE.Color(0x040814), C_NIGHT_HOR = new THREE.Color(0x0
 const C_SUN_DAY = new THREE.Color(0xf7ecd4), C_SUN_DUSK = new THREE.Color(0xe86a30);
 let envIntensity = 1;
 
+// 群系氛围:雾色倍率 rgb、雾近/远倍率、阳光色调 rgb(顺序同 terrain.BIOME_KEYS)
+// 走进沼泽雾气收拢发绿,荒漠热霾泛金,焦土天色发红,雪原清冷透亮
+const BIOME_ATMO = [
+  [1, 1, 1, 1, 1, 1, 1, 1],                    // plains 平原
+  [0.82, 0.95, 0.84, 0.75, 0.8, 1, 0.97, 0.88], // forest 林海
+  [1.16, 1.0, 0.76, 0.9, 1.1, 1.1, 0.96, 0.8],  // desert 荒漠
+  [1.04, 1.1, 1.2, 0.72, 0.8, 0.92, 0.98, 1.1], // snow 雪原
+  [0.72, 0.84, 0.7, 0.3, 0.45, 0.85, 0.92, 0.74], // swamp 沼泽
+  [0.86, 0.6, 0.52, 0.45, 0.6, 1.12, 0.78, 0.62], // ash 焦土
+  [0.95, 0.95, 0.99, 0.95, 1, 1, 1, 1],         // rock 碎石岗
+  [1.0, 1.03, 0.97, 1.1, 1.15, 1.02, 1.0, 0.96], // hills 丘陵
+];
+const _atmoW = new Float32Array(8);
+const atmo = [1, 1, 1, 1, 1, 1, 1, 1]; // 平滑后的当前氛围(跨群系时缓缓过渡,不跳变)
+let atmoScan = 0;
+const _atmoT = [1, 1, 1, 1, 1, 1, 1, 1];
+function updateBiomeAtmo(dt) {
+  if (atmoScan-- <= 0) { // 每 10 帧取一次群系权重
+    atmoScan = 10;
+    biomeWeights(player.pos.x, player.pos.z, _atmoW);
+    for (let k = 0; k < 8; k++) {
+      let v = 0;
+      for (let b = 0; b < 8; b++) v += _atmoW[b] * BIOME_ATMO[b][k];
+      _atmoT[k] = v;
+    }
+  }
+  const a = Math.min(1, dt * 0.8);
+  for (let k = 0; k < 8; k++) atmo[k] += (_atmoT[k] - atmo[k]) * a;
+}
 function updateDayNight(dt) {
+  updateBiomeAtmo(dt);
   dayTime = (dayTime + dt / 240) % 1;
   const ang = dayTime * Math.PI * 2 - Math.PI / 2;
   const elev = Math.sin(ang);
@@ -8536,6 +8903,16 @@ function updateDayNight(dt) {
   scene.fog.color.copy(hor).multiplyScalar(rainSkyDim);
   scene.fog.near = 130 - 80 * weather.rain;
   scene.fog.far = 430 - 230 * weather.rain;
+  // 群系氛围叠加(地窖内由下方覆盖)
+  scene.fog.color.r = Math.min(1, scene.fog.color.r * atmo[0]);
+  scene.fog.color.g = Math.min(1, scene.fog.color.g * atmo[1]);
+  scene.fog.color.b = Math.min(1, scene.fog.color.b * atmo[2]);
+  scene.fog.near *= atmo[3];
+  scene.fog.far *= atmo[4];
+  sun.color.r *= atmo[5];
+  sun.color.g *= atmo[6];
+  sun.color.b *= atmo[7];
+  skyUniforms.horizonColor.value.lerp(scene.fog.color, 0.6); // 地平线与雾同色,远景自然融进天里
   if (dgnDim < 1) {
     // 地窖:天穹熄灭,浓雾收拢,只剩火把撑开的一圈光
     skyUniforms.topColor.value.multiplyScalar(0.05);
@@ -8556,6 +8933,8 @@ function updateDayNight(dt) {
   renderer.toneMappingExposure = (0.85 + day * 0.25) * styleExp;
   bloom.strength = (0.28 + night * 0.4) * styleBloomMul;
 
+  // 路灯与神龛烛火:入夜才亮
+  for (const m of NIGHT_GLOW) m.emissiveIntensity = 0.12 + night * 2.6;
   // 火把与窗户
   for (const t of world.torches) {
     const flick = 0.8 + Math.sin(performance.now() * 0.013 + (t.light ? t.light.position.x : 0)) * 0.2;
@@ -8593,9 +8972,11 @@ const _camTarget = new THREE.Vector3();
 const _camDesired = new THREE.Vector3();
 const _camRay = new THREE.Raycaster();
 const _camDir = new THREE.Vector3();
+let camSnapNext = false;
 function updateCamera(dt) {
   const dist = player.mounted ? (player.mounted.sheep ? 6 : 9) : 6.2;
-  const ty = player.pos.y + (player.mounted ? (player.mounted.sheep ? 1.7 : 2.6) : 1.7);
+  const ty = player.pos.y + groundH(player.pos.x, player.pos.z) +
+    (player.mounted ? (player.mounted.sheep ? 1.7 : 2.6) : 1.7);
   // 醉酒:地平线跟着晃
   if (player.drunkT > 0) {
     camera.up.set(Math.sin(performance.now() * 0.0011) * 0.16, 1, 0).normalize();
@@ -8619,8 +9000,9 @@ function updateCamera(dt) {
     target.z += (lockFoe.pos.z - player.pos.z) * 0.22;
   }
   const desired = _camDesired.copy(target).add(_camOff);
-  desired.y = Math.max(0.6, desired.y);
-  camera.position.lerp(desired, 1 - Math.pow(0.0001, dt));
+  desired.y = Math.max(groundH(desired.x, desired.z) + 0.6, desired.y); // 镜头不钻进山坡
+  camera.position.lerp(desired, camSnapNext ? 1 : 1 - Math.pow(0.0001, dt)); // 传送后一帧到位
+  camSnapNext = false;
   // 相机防穿墙:从视点向相机打射线,撞到墙体/建筑就把相机拉近
   _camDir.copy(camera.position).sub(target);
   const camLen = _camDir.length();
@@ -8703,14 +9085,11 @@ function updateHUD() {
   wantedEl.style.display = wanted > 0 ? 'block' : 'none';
   missionEl.textContent = missionText;
   const wDef = WEAPONS[player.weapon];
-  equipEl.textContent =
+  equipEl.textContent = // 法术/冷却改由底部技能栏显示,这里只留装备与法力
     `${wDef.icon} ${wDef.name}${player.swordLv >= 2 ? '+1' : ''}${player.relic ? '·☀️' : ''}` +
     (player.armor ? ` · 🛡️ ${ARMORS[player.armor].name}` : '') +
-    (player.weaponsOwned.length > 1 ? '(Q 切换)' : '') +
     (player.spells.length
-      ? ` · ${SPELLS[player.spells[player.spellIdx]].icon}${SPELLS[player.spells[player.spellIdx]].name}(R/鼠标中键)` +
-        ` ${'🔹'.repeat(Math.floor(player.mp))}${'▫'.repeat(player.maxMp - Math.floor(player.mp))}`
-      : '');
+      ? ` · 法力 ${'🔹'.repeat(Math.floor(player.mp))}${'▫'.repeat(player.maxMp - Math.floor(player.mp))}` : '');
   promptEl.textContent = promptText;
   promptEl.style.display = promptText ? 'block' : 'none';
   // Boss 血条(仅 Boss 战期间)
@@ -9663,6 +10042,14 @@ window.__gtm = {
   dangerFX, telegraphFlash,
   toggleLock, getLock: () => lockFoe, getLockMark: () => lockMark.visible,
   getFov: () => camera.fov,
+  renderer, scene, camera, // 诊断用:渲染统计/取景
+  snapCamera: () => { camSnapNext = true; },
+  // 固定步长推进模拟(不渲染):测试用,比等真实帧快得多也稳定得多
+  step: (n = 1, dt = 1 / 60) => {
+    unsnapScene();
+    for (let i = 0; i < n; i++) { nowMs += dt * 1000; tick(dt, nowMs); }
+    snapScene();
+  },
   prologue, startPrologue, skipPrologue, spendSta,
   downGuard, getLawless: () => lawlessT, getAch: (k) => achUnlocked.includes(k),
   frightenBandits, banditSlain,
@@ -9692,17 +10079,49 @@ window.__gtm = {
   dialogOpen: () => dialog.open,
   getDialog: () => ({ open: dialog.open, page: dialog.pages[dialog.idx], speaker: dialog.speaker && dialog.speaker.name }),
   getRevenge: () => revengeT,
+  slayBandit, killWolf, stats, recomputeMaxHp, getSaveBlocked: () => saveBlocked, loadGame,
+  getTimers: () => timers.length, flashing,
+  getBeacon: () => ({ x: beacon.position.x, z: beacon.position.z, v: beacon.visible }),
 };
 
 let last = performance.now();
 let frameNo = 0;
+// ================= 贴地:逻辑里的 y 都是离地高度,渲染前统一加上地面高度 =================
+// 顶层物体在"更新前取消、渲染前加上"地面偏移;位置没动就复用上次的高度,几乎零开销。
+// 绝对坐标的东西(地表网格、天空、粒子缓冲)标 userData.noSnap 跳过。
+function unsnapScene() {
+  const ch = scene.children;
+  for (let i = 0; i < ch.length; i++) {
+    const u = ch[i].userData;
+    if (u.snapped) { ch[i].position.y -= u.gOff; u.snapped = false; }
+  }
+}
+function snapScene() {
+  const ch = scene.children;
+  for (let i = 0; i < ch.length; i++) {
+    const o = ch[i], u = o.userData;
+    if (u.snapped || u.noSnap) continue;
+    const p = o.position;
+    if (u.gX !== p.x || u.gZ !== p.z) { u.gX = p.x; u.gZ = p.z; u.gOff = groundH(p.x, p.z); }
+    p.y += u.gOff;
+    u.snapped = true;
+  }
+}
+
 function loop(now) {
   requestAnimationFrame(loop);
-  let dt = Math.min(0.05, (now - last) / 1000);
+  const dt = Math.min(0.05, (now - last) / 1000);
   last = now;
   nowMs = now;
-  if (!started) { composer.render(); return; }
-  if (paused) { composer.render(); return; } // 暂停:世界冻结,仅渲染
+  if (started && !paused) { // 暂停:世界冻结,仅渲染
+    unsnapScene();
+    tick(dt, now);
+  }
+  snapScene();
+  composer.render();
+}
+// 一帧的全部模拟(不含渲染):主循环与测试步进(__gtm.step)共用
+function tick(dt, now) {
   // 击杀慢动作
   if (hitStopT > 0) {
     hitStopT -= dt;
@@ -9714,6 +10133,8 @@ function loop(now) {
 
   updateToast(dt);
   updateHintFade(dt);
+  updateFlashes(dt);
+  updateTimers(dt);
 
   // 交互目标标记
   if (promptTargetPos && !dialog.open) {
@@ -9909,10 +10330,10 @@ function loop(now) {
   updateWorkspace(dt);
   updateIdle(dt);
   updateWilderness(player.pos.x, player.pos.z); // 无尽荒野区块流式加载
-  // 地表随玩家延伸:按草皮贴图周期吸附,肉眼看不出接缝
-  const GP = 1600 / 90;
-  world.ground.position.x = Math.round(player.pos.x / GP) * GP;
-  world.ground.position.z = Math.round(player.pos.z / GP) * GP;
+  updateVegetation(dt, player.pos.x, player.pos.z, 1 + weather.rain * (weather.state === 'storm' ? 1.6 : 0.8));
+  // 远景垫底跟着玩家走(地形网格本身是静态的)
+  world.underlay.position.x = Math.round(player.pos.x / 64) * 64;
+  world.underlay.position.z = Math.round(player.pos.z / 64) * 64;
   updateCamera(dt);
 
   // 风车与砖块动画
@@ -9948,8 +10369,8 @@ function loop(now) {
   }
   if (frameNo % 3 === 0 || fishing.active || player.carrying || player.mounted) computePrompt();
   updateHUD();
+  updateActionBar();
   if (frameNo++ % 2 === 0) drawMinimap(); // 小地图 30Hz 足够
   gradePass.uniforms.uTime.value = now * 0.00025; // 胶片颗粒的抖动时钟
-  composer.render();
 }
 requestAnimationFrame(loop);

@@ -74,9 +74,35 @@
     max-width: 44%; text-align: center; font-size: 14px; color: #f5e9cf;
     background: rgba(16,11,6,0.85); border: 1px solid #b08d3e88; border-radius: 20px;
     padding: 7px 18px; opacity: 0; transition: opacity 0.35s; box-shadow: 0 3px 10px rgba(0,0,0,0.4); }
-  #controls-hint { position: absolute; bottom: 14px; right: 16px; font-size: 12px;
-    color: rgba(255,255,255,0.55); text-align: right; line-height: 1.6;
-    transition: opacity 1.2s; }
+  /* 操作说明:按 H 弹出的分组面板(不再常驻一堵字墙) */
+  #controls-hint { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    width: min(880px, 92vw); max-height: 80vh; overflow: auto; opacity: 0; pointer-events: none;
+    background: rgba(14,10,6,0.92); border: 1px solid #b08d3e; border-radius: 14px;
+    padding: 18px 22px 14px; color: #f0e4c8; font-size: 13px; line-height: 1.75;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.6); transition: opacity 0.25s; z-index: 6; }
+  #controls-hint h3 { margin: 0 0 10px; color: #ffd83d; font-size: 17px; letter-spacing: 2px; text-align: center; }
+  #controls-hint .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 6px 22px; }
+  #controls-hint h4 { margin: 4px 0 2px; color: #e8c770; font-size: 14px; }
+  #controls-hint .k { display: inline-block; min-width: 18px; text-align: center; background: #3a2e1a;
+    border: 1px solid #8a6d32; border-radius: 4px; padding: 0 5px; margin-right: 4px;
+    font-family: monospace; color: #ffd83d; font-size: 12px; }
+  #controls-hint .foot { margin-top: 10px; text-align: center; color: #b8a77a; font-size: 12px; }
+  #keyhint { position: absolute; right: 16px; bottom: 16px; font-size: 12px; color: rgba(255,240,210,0.6);
+    text-shadow: 0 1px 2px #000; }
+  #keyhint b { color: #ffd83d; font-weight: normal; font-family: monospace; }
+  /* 技能栏:按键 + 图标 + 冷却遮罩 */
+  #actionbar { position: absolute; bottom: 14px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 6px; pointer-events: none; }
+  .ab-slot { position: relative; width: 54px; height: 54px; border-radius: 10px; overflow: hidden;
+    background: rgba(16,11,6,0.78); border: 1px solid #7a6330; box-shadow: 0 3px 10px rgba(0,0,0,0.45); }
+  .ab-slot.on { border-color: #ffd83d; box-shadow: 0 0 12px rgba(255,216,61,0.55); }
+  .ab-slot.off { opacity: 0.38; }
+  .ab-icon { position: absolute; top: 4px; left: 0; right: 0; text-align: center; font-size: 22px; line-height: 26px; }
+  .ab-name { position: absolute; bottom: 3px; left: 0; right: 0; text-align: center; font-size: 10px; color: #e8dcc0; }
+  .ab-key { position: absolute; top: 2px; left: 3px; font-size: 9px; color: #ffd83d; font-family: monospace;
+    background: rgba(0,0,0,0.55); border-radius: 3px; padding: 0 3px; }
+  .ab-sub { position: absolute; top: 2px; right: 3px; font-size: 9px; color: #9fd0ff; }
+  .ab-cd { position: absolute; left: 0; right: 0; top: 0; height: 0%; background: rgba(0,0,0,0.62); }
   #flash { position: absolute; inset: 0; background: radial-gradient(ellipse, rgba(200,0,0,0.25), rgba(160,0,0,0.6));
     opacity: 0; transition: opacity 0.35s; }
   #lightning { position: absolute; inset: 0; background: #eef4ff; opacity: 0; pointer-events: none; }
@@ -187,16 +213,44 @@
     <canvas id="minimap" width="200" height="200"></canvas>
     <div id="prompt"></div>
     <div id="toast"></div>
+    <div id="actionbar"></div>
+    <div id="keyhint"><b>H</b> 操作说明 · <b>K</b> 切换画风 · <b>J</b> 手账 · <b>Esc</b> 菜单</div>
     <div id="controls-hint" class="hud-text">
-      WASD 移动 · Shift 疾跑 · 空格 跳跃/二段跳 · C 翻滚(带无敌帧) · Tab 锁定目标(环绕对峙)<br>
-      红圈=敌人出手预警(翻滚或弹反) · 紫圈=破盾重击(必须翻滚躲开)<br>
-      体力条:出手/翻滚/疾跑/格挡都耗体力,耗尽=力竭喘气、盾会被砸开;完美弹反回气<br>
-      方向攻击(骑砍式):W+攻=突刺(够得远) · S+攻=下劈(重,可破防) · 平移/站定=横斩(大弧)<br>
-      E 互动 · F/左键 攻击(疾跑出手=突斩 · 空中出手=跳劈 · 举盾出手=盾击 · 连续三剑=连斩 · 打踉跄的敌人=处决 ×5) · 右键按住 格挡(出手瞬间举盾=弹反,弹反后速攻=还击 ×2.5) · Q 切换武器<br>
-      按住 F 蓄力:刀剑=重击 · 短匕=掷飞刀 · 猎弓=满月贯穿箭<br>
-      R 或 鼠标中键 施法(✴️魔光弹开局自带,1 蓝速射;进阶法术去女巫/教堂/湖心祭坛/回响之镜习得) · V 切换法术(1-4 直选) · Z 潜行(近身出手=偷袭 ×3) · X 战吼(龙骨之地龙颅习得)<br>
-      马上可挥剑骑砍 · 疾驰撞人=冲锋践踏 · 旅店可雇佣兵随行 · 技艺越用越精(J 手账可查)<br>
-      G 抢劫路人 · J 旅程手账 · P 拍照模式 · M 音乐 · H 显示/隐藏本说明 · 骑马可开弓
+      <h3>操 作 说 明</h3>
+      <div class="cols">
+        <div>
+          <h4>🏃 移动</h4>
+          <span class="k">WASD</span>移动 <span class="k">Shift</span>疾跑(耗体力)<br>
+          <span class="k">空格</span>跳跃 / 二段跳 <span class="k">C</span>翻滚(无敌帧)<br>
+          <span class="k">E</span>上马 / 对话 / 开箱 / 互动<br>
+          <span class="k">Z</span>潜行(近身偷袭 ×3)
+        </div>
+        <div>
+          <h4>⚔️ 近战(骑砍式)</h4>
+          <span class="k">F</span>/<span class="k">左键</span>横斩 · <span class="k">W</span>+攻 突刺 · <span class="k">S</span>+攻 下劈(破防)<br>
+          按住 <span class="k">F</span> 蓄力重击 · 连按三下=连斩<br>
+          <span class="k">右键</span>按住格挡 · 出手瞬间举盾=<b>弹反</b> → 还击 ×2.5<br>
+          打踉跄的敌人 = <b>处决 ×5</b> · <span class="k">Tab</span> 锁定目标
+        </div>
+        <div>
+          <h4>✨ 魔法与技能</h4>
+          <span class="k">R</span>/<span class="k">中键</span>施法(按住连发)· 魔光弹开局就会<br>
+          <span class="k">V</span>/<span class="k">1-4</span>换法术 · 火球按住可蓄力<br>
+          <span class="k">X</span>战吼(龙骨之地习得) · <span class="k">Q</span>换武器
+        </div>
+        <div>
+          <h4>👁️ 读招</h4>
+          红圈 = 敌人要出手(翻滚或弹反)<br>
+          紫圈 = 破盾重击(必须翻滚)<br>
+          体力耗尽会喘气,举盾时耗尽盾会被砸开
+        </div>
+        <div>
+          <h4>🗺️ 其他</h4>
+          <span class="k">J</span>旅程手账 · <span class="k">K</span>切换画风 · <span class="k">P</span>拍照<br>
+          <span class="k">M</span>音乐 · <span class="k">G</span>抢劫路人 · <span class="k">Esc</span>暂停菜单
+        </div>
+      </div>
+      <div class="foot">再按 H 关闭</div>
     </div>
   </div>
 

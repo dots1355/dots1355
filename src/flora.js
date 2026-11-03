@@ -132,6 +132,119 @@ export function setBuildingModel(kind, group) {
   BUILDING_MODELS[kind] = group;
 }
 export function getBuildingModel(kind) { return BUILDING_MODELS[kind] || null; }
+// ---- 群系地标(nature.glb):露头/台地/玄武柱/冰岩/枯树/垂柳/倒木/树桩/灌木/巨兽骨 ----
+// 克隆共享几何与材质;r 为碰撞半径(按 1 倍缩放),sink 为埋入地面的深度(坡地不悬空)
+const NATURE = {};
+export const NATURE_SPEC = {
+  Outcrop1: { r: 3.0, sink: 0.35 }, Outcrop2: { r: 2.5, sink: 0.4 }, IceRock: { r: 2.4, sink: 0.35 },
+  Mesa: { r: 5.2, sink: 0.6 }, Spires: { r: 1.9, sink: 0.3 }, DeadTree1: { r: 0.45, sink: 0.1 },
+  DeadTree2: { r: 0.45, sink: 0.1 }, Willow: { r: 0.55, sink: 0.1 }, Log: { r: 0, sink: 0.12, log: true },
+  Stump: { r: 0.6, sink: 0.08 }, Bush1: { r: 0, sink: 0.15 }, Bush2: { r: 0, sink: 0.15 },
+  Ribcage: { r: 0, sink: 0.25 },
+  // camp.glb:营地与路边
+  Tent: { r: 1.5, sink: 0.04 }, TentDark: { r: 1.5, sink: 0.04 }, Campfire: { r: 0, sink: 0.03 },
+  Cart: { r: 0, sink: 0.05, line: [-1.2, 0, 1.1], lr: 0.8 }, Well: { r: 1.25, sink: 0.05 },
+  Fence: { r: 0, sink: 0.1, line: [-2, -1, 0, 1, 2], lr: 0.22 }, LanternPost: { r: 0.22, sink: 0.05 },
+  Signpost: { r: 0.18, sink: 0.05 }, Ruin: { r: 0, sink: 0.12, line: [-2.4, -1.2, 0, 1.2, 2.4], lr: 0.5 },
+  Crates: { r: 0.85, sink: 0.02 }, Haystack: { r: 1.5, sink: 0.1 }, Banner: { r: 0.15, sink: 0.05 },
+  BrokenTower: { r: 0, sink: 0.15, ring: { R: 2.2, n: 12, r: 0.62, door: 0 } }, Shrine: { r: 0.65, sink: 0.04 },
+};
+// 夜里才亮的玻璃灯罩(路灯/神龛蜡烛):由主循环按昼夜调亮度
+export const NIGHT_GLOW = [];
+// 按 spec 生成相对放置点的碰撞圆(已含缩放与朝向):单圆 / 沿长轴一串 / 一圈(留门)
+export function specCols(spec, s, yaw) {
+  const cols = [];
+  const ax = Math.cos(yaw), az = -Math.sin(yaw); // 本地 +X 轴在世界里的方向
+  if (spec.log) {
+    for (const t of [-2, 0, 2]) cols.push({ dx: ax * t * s, dz: az * t * s, r: 0.45 * s });
+  } else if (spec.line) {
+    for (const t of spec.line) cols.push({ dx: ax * t * s, dz: az * t * s, r: spec.lr * s });
+  } else if (spec.ring) {
+    const { R, n, r, door } = spec.ring;
+    for (let i = 0; i < n; i++) {
+      const a = (i / n) * Math.PI * 2;
+      if (door !== undefined && Math.abs(Math.atan2(Math.sin(a - door), Math.cos(a - door))) < 0.35) continue;
+      // 本地 (cos a, sin a) 在 XY 平面(Blender)→ 导出后为 three 的 (x, -z);再绕 Y 转 yaw
+      const lx = Math.cos(a) * R, lz = -Math.sin(a) * R;
+      const c = Math.cos(yaw), sn = Math.sin(yaw);
+      cols.push({ dx: (lx * c + lz * sn) * s, dz: (-lx * sn + lz * c) * s, r: r * s });
+    }
+  } else if (spec.r > 0) cols.push({ dx: 0, dz: 0, r: spec.r * s });
+  return cols;
+}
+export function setNatureModels(root) {
+  for (const name of Object.keys(NATURE_SPEC)) {
+    const o = root.getObjectByName(name);
+    if (!o) continue;
+    o.traverse((m) => {
+      if (!m.isMesh) return;
+      m.castShadow = true;
+      m.receiveShadow = true;
+      m.geometry.userData.shared = true;
+      (Array.isArray(m.material) ? m.material : [m.material]).forEach((mt) => {
+        mt.userData.shared = true;
+        if (mt.name === 'glass' && !NIGHT_GLOW.includes(mt)) NIGHT_GLOW.push(mt);
+      });
+    });
+    o.position.set(0, 0, 0);
+    NATURE[name] = o;
+  }
+}
+export function hasNature() { return Object.keys(NATURE).length > 0; }
+// 大批量静态地标:按种类×材质合成 InstancedMesh(几百件地标只占几十次绘制)
+// list: [{ name, x, y, z, yaw, s }],y 为绝对高度(已含地面),返回的 Group 不参与贴地
+export function buildNatureInstances(list) {
+  const byName = new Map();
+  for (const p of list) {
+    if (!NATURE[p.name]) continue;
+    if (!byName.has(p.name)) byName.set(p.name, []);
+    byName.get(p.name).push(p);
+  }
+  const root = new THREE.Group();
+  const M = new THREE.Matrix4(), P = new THREE.Matrix4(), Q = new THREE.Quaternion();
+  const S = new THREE.Vector3(), T = new THREE.Vector3(), UP = new THREE.Vector3(0, 1, 0);
+  for (const [name, arr] of byName) {
+    const tpl = NATURE[name];
+    tpl.updateMatrixWorld(true);
+    const inv = new THREE.Matrix4().copy(tpl.matrixWorld).invert();
+    tpl.traverse((m) => {
+      if (!m.isMesh) return;
+      const rel = new THREE.Matrix4().multiplyMatrices(inv, m.matrixWorld);
+      const im = new THREE.InstancedMesh(m.geometry, m.material, arr.length);
+      arr.forEach((p, i) => {
+        Q.setFromAxisAngle(UP, p.yaw);
+        S.setScalar(p.s);
+        T.set(p.x, p.y, p.z);
+        P.compose(T, Q, S);
+        M.multiplyMatrices(P, rel);
+        im.setMatrixAt(i, M);
+      });
+      im.instanceMatrix.needsUpdate = true;
+      im.castShadow = true;
+      im.receiveShadow = true;
+      im.frustumCulled = false;
+      root.add(im);
+    });
+  }
+  root.userData.noSnap = true;
+  return root;
+}
+// 返回 { group, cols:[{dx,dz,r}] };cols 是相对放置点的碰撞圆(已含缩放与朝向)
+export function natureProp(name, rng, scale = 1, fixedYaw = null) {
+  const tpl = NATURE[name];
+  if (!tpl) return null;
+  const spec = NATURE_SPEC[name];
+  const g = new THREE.Group();
+  const inner = tpl.clone();
+  const s = scale * (0.85 + rng() * 0.35);
+  inner.scale.setScalar(s);
+  const yaw = fixedYaw ?? rng() * Math.PI * 2;
+  inner.rotation.y = yaw;
+  inner.position.y = -spec.sink * s;
+  g.add(inner);
+  return { group: g, cols: specCols(spec, s, yaw) };
+}
+
 export function setRockGeos(geos) {
   if (!geos.length) return;
   ROCKS.length = 0;

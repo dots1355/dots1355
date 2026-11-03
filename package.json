@@ -8,12 +8,14 @@
     "start": "electron .",
     "dist": "electron-builder",
     "web": "python3 -m http.server 8000",
-    "dist:web": "node tools/build-desktop.mjs"
+    "dist:web": "node tools/build-desktop.mjs",
+    "test": "node tests/run.mjs"
   },
   "devDependencies": {
     "electron": "^28.2.0",
     "electron-builder": "^24.13.3",
-    "esbuild": "^0.24.0"
+    "esbuild": "^0.24.0",
+    "playwright-core": "^1.49.0"
   },
   "build": {
     "appId": "com.eldoria.grandthefthorse",
