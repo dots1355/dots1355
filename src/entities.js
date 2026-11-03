@@ -183,7 +183,6 @@ function applyHumanProps(g, parts, opts) {
 export function makeHumanoid(opts = {}) {
   const {
     skin = 0xf1c27d, shirt = 0x2f8f4e, pants = 0x4a3320,
-    hair = 0x3a2a1a, helmet = false, cap = false, hood = false, sword = false,
   } = opts;
   // Blender 写实人体路径:细分曲面部件 + 染色共享材质,枢轴与积木人逐位一致
   if (HUMAN_TPL) {

@@ -18,7 +18,7 @@ import { rand, seed as seedRng } from './core/rng.js';
 import { initAmbient, updateAmbient } from './ambient.js';
 import { LIGHT_POOL, lightPool, initLightPool, addLightSource, removeLightSource, updateLightPool, pooledMat, releaseMat } from './gfx/pools.js';
 import { mergeGeometries } from '../lib/jsm/utils/BufferGeometryUtils.js';
-import { container, renderer, scene, camera, pmrem, LOWFX, composer, gtao, bloom, gradePass, STYLE_PRESETS, STYLE_ORDER, stylePass, smaa, styleKey, styleExp, styleBloomMul, applyStyle, cycleStyle } from './gfx/core.js';
+import { renderer, scene, camera, LOWFX, composer, gtao, bloom, gradePass, STYLE_PRESETS, stylePass, smaa, styleKey, styleExp, styleBloomMul, applyStyle, cycleStyle } from './gfx/core.js';
 
 // ================= 基础渲染 =================
 
@@ -334,7 +334,6 @@ function setTitleArt(bitmap) {
   t.style.backgroundSize = 'cover';
   t.style.backgroundPosition = 'center';
 }
-let aiSwapped = 0;
 generateRemoteAITextures({
   onStatus(state, done, total) {
     if (!aiStatusEl) return;
@@ -352,7 +351,6 @@ generateRemoteAITextures({
         if (mat.normalMap && set.has(mat.normalMap.image)) mat.normalMap.needsUpdate = true;
       }
     });
-    aiSwapped++;
     if (started) toast(`🎨 AI 材质已应用:${name}`, 1.5);
   },
   onTitle: setTitleArt,
@@ -361,7 +359,7 @@ generateRemoteAITextures({
 // ================= HUD 引用 =================
 const $ = (id) => document.getElementById(id);
 const heartsEl = $('hearts'), coinsEl = $('coins'), wantedEl = $('wanted'),
-  missionEl = $('mission'), timerEl = $('timer'), promptEl = $('prompt'),
+  missionEl = $('mission'), promptEl = $('prompt'),
   toastEl = $('toast'), flashEl = $('flash'), titleEl = $('title'),
   gameoverEl = $('gameover'), gameoverText = $('gameover-text'),
   minimap = $('minimap'), mm = minimap.getContext('2d'),
@@ -6019,7 +6017,7 @@ function updatePrologue(dt) {
   if (!prologue.on) return;
   prologue.t += dt;
   const P = prologue, F = P.flags;
-  const w0 = P.wolves[0], w1 = P.wolves[1], w2 = P.wolves[2];
+  const w0 = P.wolves[0], w1 = P.wolves[1];
   if (player.hp < 3) player.hp = 3; // 教学里不让人倒下:学会比惩罚重要
   if (P.step === 0 && P.t > 1.4) {
     P.step = 1;
@@ -6261,7 +6259,7 @@ function updateDust(dt) {
 }
 
 // ================= 通缉系统 =================
-let wanted = 0, heat = 0, evadeT = 0;
+let wanted = 0, evadeT = 0;
 function crime(n, msg) {
   const old = wanted;
   wanted = Math.min(5, wanted + n);

@@ -356,17 +356,7 @@ export function buildWorld(scene) {
   feat('house', 52, 12, 10, 5);
 
   // ---- 树(顶点扰动的有机树冠)----
-  function jitterGeo(geo, amt) {
-    const p = geo.attributes.position;
-    for (let i = 0; i < p.count; i++) {
-      p.setXYZ(i,
-        p.getX(i) + (rand() - 0.5) * amt,
-        p.getY(i) + (rand() - 0.5) * amt,
-        p.getZ(i) + (rand() - 0.5) * amt);
-    }
-    geo.computeVertexNormals();
-    return geo;
-  }
+
   function tree(x, z, pine = false) {
     const scale = 0.85 + rand() * 0.5;
     const built = pine ? buildPine(rand) : (rand() < 0.12 ? buildBush(rand) : buildTree(rand));
@@ -1364,22 +1354,4 @@ function makeRuneTextures() {
   map.colorSpace = THREE.SRGBColorSpace;
   const glowT = new THREE.CanvasTexture(glow);
   return { map, glow: glowT };
-}
-function makeQuestionTexture() {
-  const c = document.createElement('canvas');
-  c.width = c.height = 64;
-  const g = c.getContext('2d');
-  g.fillStyle = '#e6a817';
-  g.fillRect(0, 0, 64, 64);
-  g.fillStyle = '#c78a0a';
-  g.fillRect(0, 0, 64, 5); g.fillRect(0, 59, 64, 5);
-  g.fillRect(0, 0, 5, 64); g.fillRect(59, 0, 5, 64);
-  g.fillStyle = '#fff';
-  g.font = 'bold 40px sans-serif';
-  g.textAlign = 'center';
-  g.textBaseline = 'middle';
-  g.fillText('?', 32, 34);
-  const tex = new THREE.CanvasTexture(c);
-  tex.magFilter = THREE.NearestFilter;
-  return tex;
 }
