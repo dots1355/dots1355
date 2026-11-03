@@ -137,7 +137,7 @@ export function getBuildingModel(kind) { return BUILDING_MODELS[kind] || null; }
 const NATURE = {};
 export const NATURE_SPEC = {
   Outcrop1: { r: 3.0, sink: 0.35 }, Outcrop2: { r: 2.5, sink: 0.4 }, IceRock: { r: 2.4, sink: 0.35 },
-  Mesa: { r: 5.2, sink: 0.6 }, Spires: { r: 1.9, sink: 0.3 }, DeadTree1: { r: 0.45, sink: 0.1 },
+  Mesa: { r: 5.2, sink: 0.6 }, Spires: { r: 2.3, sink: 0.3 }, DeadTree1: { r: 0.45, sink: 0.1 },
   DeadTree2: { r: 0.45, sink: 0.1 }, Willow: { r: 0.55, sink: 0.1 }, Log: { r: 0, sink: 0.12, log: true },
   Stump: { r: 0.6, sink: 0.08 }, Bush1: { r: 0, sink: 0.15 }, Bush2: { r: 0, sink: 0.15 },
   Ribcage: { r: 0, sink: 0.25 },
@@ -191,25 +191,39 @@ export function setNatureModels(root) {
   }
 }
 export function hasNature() { return Object.keys(NATURE).length > 0; }
-// 大批量静态地标:按种类×材质合成 InstancedMesh(几百件地标只占几十次绘制)
+// 其他 GLB 模板(写实橡树/白桦/松树)也登记进实例化管线:核心森林几百棵树只占十来次绘制
+export function registerNatureTemplate(name, obj, spec) {
+  obj.updateMatrixWorld(true);
+  NATURE[name] = obj;
+  NATURE_SPEC[name] = spec;
+}
+// 大批量静态地标:按"160m 格 × 种类 × 材质"合成 InstancedMesh——几百上千件地标/树只占几十次绘制,
+// 而且每格各自做视锥剔除(身后和雾外的格子整格不画,三角形不白算)
 // list: [{ name, x, y, z, yaw, s }],y 为绝对高度(已含地面),返回的 Group 不参与贴地
+const NAT_CELL = 160;
 export function buildNatureInstances(list) {
-  const byName = new Map();
+  const groups = new Map();
   for (const p of list) {
     if (!NATURE[p.name]) continue;
-    if (!byName.has(p.name)) byName.set(p.name, []);
-    byName.get(p.name).push(p);
+    const key = `${p.name}|${Math.floor(p.x / NAT_CELL)},${Math.floor(p.z / NAT_CELL)}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(p);
   }
   const root = new THREE.Group();
   const M = new THREE.Matrix4(), P = new THREE.Matrix4(), Q = new THREE.Quaternion();
   const S = new THREE.Vector3(), T = new THREE.Vector3(), UP = new THREE.Vector3(0, 1, 0);
-  for (const [name, arr] of byName) {
+  const rels = new Map();
+  for (const [key, arr] of groups) {
+    const name = key.slice(0, key.indexOf('|'));
     const tpl = NATURE[name];
-    tpl.updateMatrixWorld(true);
-    const inv = new THREE.Matrix4().copy(tpl.matrixWorld).invert();
-    tpl.traverse((m) => {
-      if (!m.isMesh) return;
-      const rel = new THREE.Matrix4().multiplyMatrices(inv, m.matrixWorld);
+    if (!rels.has(name)) {
+      tpl.updateMatrixWorld(true);
+      const inv = new THREE.Matrix4().copy(tpl.matrixWorld).invert();
+      const parts = [];
+      tpl.traverse((m) => { if (m.isMesh) parts.push({ m, rel: new THREE.Matrix4().multiplyMatrices(inv, m.matrixWorld) }); });
+      rels.set(name, parts);
+    }
+    for (const { m, rel } of rels.get(name)) {
       const im = new THREE.InstancedMesh(m.geometry, m.material, arr.length);
       arr.forEach((p, i) => {
         Q.setFromAxisAngle(UP, p.yaw);
@@ -220,11 +234,13 @@ export function buildNatureInstances(list) {
         im.setMatrixAt(i, M);
       });
       im.instanceMatrix.needsUpdate = true;
+      im.computeBoundingSphere();
       im.castShadow = true;
       im.receiveShadow = true;
-      im.frustumCulled = false;
+      im.frustumCulled = true;
+      im.matrixAutoUpdate = false;
       root.add(im);
-    });
+    }
   }
   root.userData.noSnap = true;
   return root;

@@ -94,9 +94,47 @@ function humClone(tpl, colors) {
 }
 // 帽盔/兜帽/头发/佩剑:两条构建路径共用
 function applyHumanProps(g, parts, opts) {
-  const { hair = 0x3a2a1a, helmet = false, cap = false, hood = false, sword = false } = opts;
+  const { hair = 0x3a2a1a, helmet = false, cap = false, hood = false, sword = false, ranger = false } = opts;
   const head = parts.head;
-  if (helmet) {
+  if (ranger) {
+    // 游侠兜帽:包住头顶与两颊、脸前敞开,脑后一个软尖;肩上一圈披肩,背后一袭短披风(跑起来会飘)
+    const cloth = lambert(0x6a8a42, { roughness: 0.96 }); // 苔绿(北境调色会压低饱和度)
+    const lining = lambert(0x4a3a28, { roughness: 1 });
+    const hoodM = new THREE.Mesh(
+      new THREE.SphereGeometry(0.245, 16, 10, Math.PI / 2 + 0.62, Math.PI * 2 - 1.24, 0, Math.PI * 0.64), cloth);
+    hoodM.scale.set(1, 1.08, 1.06);
+    hoodM.position.set(0, 0.02, -0.015);
+    hoodM.castShadow = true;
+    head.add(hoodM);
+    const rim = new THREE.Mesh(new THREE.TorusGeometry(0.2, 0.025, 6, 16, Math.PI * 1.15), lining); // 兜帽前沿翻边
+    rim.rotation.set(0, 0, Math.PI * 0.42);
+    rim.position.set(0, 0.03, 0.115);
+    head.add(rim);
+    const tip = new THREE.Mesh(new THREE.ConeGeometry(0.075, 0.24, 7), cloth);
+    tip.rotation.x = -2.2;
+    tip.position.set(0, 0.06, -0.24);
+    head.add(tip);
+    const mantle = new THREE.Mesh(new THREE.CylinderGeometry(0.17, 0.33, 0.2, 14, 1, true), cloth);
+    mantle.position.set(0, 0.33, 0);
+    mantle.castShadow = true;
+    if (parts.body) parts.body.add(mantle);
+    const capeGeo = new THREE.PlaneGeometry(0.6, 0.86, 2, 6);
+    const cp = capeGeo.attributes.position;
+    for (let i = 0; i < cp.count; i++) { // 微微兜起的弧面,下摆更宽
+      const y = cp.getY(i), x = cp.getX(i);
+      const t = (0.43 - y) / 0.86;
+      cp.setX(i, x * (1 + t * 0.35));
+      cp.setZ(i, -Math.abs(x) * 0.25 - t * 0.05);
+    }
+    capeGeo.computeVertexNormals();
+    capeGeo.translate(0, -0.43, 0); // 轴心在领口,便于摆动
+    const capeMat = lambert(0x5f7d3c, { roughness: 0.96, side: THREE.DoubleSide });
+    const cape = new THREE.Mesh(capeGeo, capeMat);
+    cape.position.set(0, 0.28, -0.2);
+    cape.castShadow = true;
+    if (parts.body) parts.body.add(cape);
+    parts.cape = cape;
+  } else if (helmet) {
     const metal = lambert(0x9aa4ad, { roughness: 0.32, metalness: 0.85 });
     const h = new THREE.Mesh(new THREE.SphereGeometry(0.22, 10, 8, 0, Math.PI * 2, 0, Math.PI * 0.62), metal);
     h.position.y = 0.02;

@@ -374,17 +374,20 @@ function makeDetailTexture() {
   g.fillStyle = '#d6d6d6';
   g.fillRect(0, 0, 256, 256);
   // 细碎的颗粒与短草茎:中性灰,只提供明暗细节,颜色交给顶点色
+  // 每个笔触在贴图四边"环绕"重画一遍:贴图严格无缝,地面上看不到 7m 一条的接缝
   for (let i = 0; i < 5200; i++) {
     const x = Math.random() * 256, y = Math.random() * 256;
     const l = 150 + Math.random() * 105;
     g.fillStyle = `rgba(${l},${l},${l},${0.25 + Math.random() * 0.35})`;
-    if (Math.random() < 0.55) g.fillRect(x, y, 1 + Math.random() * 2, 1 + Math.random() * 2);
-    else {
-      g.save();
-      g.translate(x, y);
-      g.rotate(Math.random() * Math.PI);
-      g.fillRect(0, 0, 1, 3 + Math.random() * 5);
-      g.restore();
+    const dot = Math.random() < 0.55;
+    const w = 1 + Math.random() * 2, h = dot ? 1 + Math.random() * 2 : 3 + Math.random() * 5, rot = Math.random() * Math.PI;
+    for (const ox of [0, -256, 256]) {
+      for (const oy of [0, -256, 256]) {
+        const px = x + ox, py = y + oy;
+        if (px < -10 || px > 266 || py < -10 || py > 266) continue;
+        if (dot) g.fillRect(px, py, w, h);
+        else { g.save(); g.translate(px, py); g.rotate(rot); g.fillRect(0, 0, 1, h); g.restore(); }
+      }
     }
   }
   const t = new THREE.CanvasTexture(c);

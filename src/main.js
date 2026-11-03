@@ -9,12 +9,13 @@ import { initWilderness, updateWilderness, wildRegionName, CORE, LANDMARKS, BIG_
 import * as BANKS from './dialogue-banks.js';
 import { ShaderPass } from '../lib/jsm/postprocessing/ShaderPass.js';
 import { GLTFLoader } from '../lib/jsm/loaders/GLTFLoader.js';
-import { setTreeModel, setBuildingModel, setRockGeos, setNatureModels, hasNature, buildNatureInstances, NATURE_SPEC, specCols, NIGHT_GLOW } from './flora.js';
+import { setTreeModel, setBuildingModel, setRockGeos, setNatureModels, hasNature, buildNatureInstances, NATURE_SPEC, specCols, NIGHT_GLOW, registerNatureTemplate } from './flora.js';
 import { MODELS_B64 } from './models-data.js';
 import { buildMasks, buildCoreGround, getGroundMaterial, groundH, maskAt, vegAllowed, dominantBiome, biomeWeights, mapColor } from './terrain.js';
 import { initVegetation, updateVegetation, setVegetationSeason, setVegetationDensity } from './vegetation.js';
 import { EffectComposer } from '../lib/jsm/postprocessing/EffectComposer.js';
 import { staticBatch } from './batch.js';
+import { initAmbient, updateAmbient } from './ambient.js';
 import { mergeGeometries } from '../lib/jsm/utils/BufferGeometryUtils.js';
 import { RenderPass } from '../lib/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from '../lib/jsm/postprocessing/UnrealBloomPass.js';
@@ -480,7 +481,12 @@ try {
         const geos = [];
         gltf.scene.traverse((o) => { if (o.isMesh) geos.push(o.geometry); });
         setRockGeos(geos);
-      } else setTreeModel(kind, gltf.scene);
+      } else {
+        setTreeModel(kind, gltf.scene);
+        if (kind === 'oak' || kind === 'pine' || kind === 'birch') {
+          registerNatureTemplate('Tree_' + kind, gltf.scene, { r: 0.45, sink: 0.12 });
+        }
+      }
       res();
     }, () => res()))));
 } catch (e) { console.warn('树模型解析失败,回退程序化树:', e); }
@@ -547,6 +553,7 @@ buildMasks(world);
   world.underlay = under;
 }
 initVegetation(scene); // 草丛/野花/蕨/芦苇/碎石:围绕玩家流式散布
+initAmbient(scene); // 群系环境粒子:雪/沙/余烬/落叶/萤火/花粉
 // 核心王国的群系地标:按群系撒 Blender 地标(露头/台地/玄武柱/冰岩/垂柳/枯树/倒木…),
 // 远离道路建筑(压平蒙版≈1 处才放大件),实例化合批;碰撞圆进全局碰撞网格
 if (hasNature()) {
@@ -577,6 +584,29 @@ if (hasNature()) {
         list.push({ name, x, y: h - spec.sink * sc, z, yaw, s: sc });
         for (const c of specCols(spec, sc, yaw)) colliders.circles.push({ x: x + c.dx, z: z + c.dz, r: c.r });
         break; // 一格至多一件
+      }
+    }
+  }
+  // 树林:按群系权重种树(林海成片、雪原松林、平原丘陵零星),全部实例化
+  {
+    const wts = new Float32Array(8);
+    const TREE_CELL = 11;
+    for (let gx = -455; gx < 455; gx += TREE_CELL) {
+      for (let gz = -455; gz < 455; gz += TREE_CELL) {
+        const x = gx + rng() * TREE_CELL, z = gz + rng() * TREE_CELL;
+        biomeWeights(x, z, wts);
+        // 每格种树概率:林海 0.85、雪原(松)0.45、丘陵 0.1、平原 0.06
+        const pForest = wts[1] * 0.85, pSnow = wts[3] * 0.45, pOpen = wts[7] * 0.1 + wts[0] * 0.06;
+        const roll = rng();
+        if (roll > pForest + pSnow + pOpen) continue;
+        if (maskAt(x, z) < 0.4 || !vegAllowed(x, z)) continue;
+        if (Math.abs(x) < 82 && Math.abs(z) < 68) continue; // 城里不种
+        const name = roll < pForest ? (rng() < 0.62 ? 'Tree_oak' : rng() < 0.5 ? 'Tree_birch' : 'Tree_pine')
+          : roll < pForest + pSnow ? 'Tree_pine' : (rng() < 0.6 ? 'Tree_oak' : 'Tree_birch');
+        if (!NATURE_SPEC[name]) continue;
+        const sc = 1.0 + rng() * 0.45;
+        list.push({ name, x, y: groundH(x, z) - 0.12 * sc, z, yaw: rng() * Math.PI * 2, s: sc });
+        colliders.circles.push({ x, z, r: 0.45 * sc });
       }
     }
   }
@@ -695,7 +725,7 @@ function updateToast(dt) {
 
 // ================= 玩家 =================
 const player = {
-  ...makeHumanoid({ shirt: 0x2f8f4e, pants: 0x6b4a2f, cap: true, sword: true }),
+  ...makeHumanoid({ shirt: 0x4b5e3c, pants: 0x5a4430, ranger: true, sword: true }), // 游侠:苔绿兜帽 + 短披风
   pos: world.playerSpawn.clone(),
   vy: 0, yaw: 0, onGround: true, jumps: 0,
   hp: 10, maxHp: 10, coins: 0,
@@ -8325,6 +8355,10 @@ function moveEntity(e, tx, tz, speed, dt) {
 // 人形动画:四肢摆动 + 身体起伏 + 奔跑前倾 + 呼吸怠速 + 头部环视
 let nowMs = performance.now(); // 主循环每帧更新,免得几十个实体各查一次时钟
 function animateLimbs(p, walkT, moving, group = null, speedNorm = 0.6) {
+  if (p.cape) { // 披风:跑得越快扬得越高,步伐里轻轻起伏
+    const goal = moving ? -0.18 - speedNorm * 0.55 + Math.sin(walkT * 2) * 0.06 : -0.06 + Math.sin(performance.now() * 0.0015) * 0.03;
+    p.cape.rotation.x += (goal - p.cape.rotation.x) * 0.15;
+  }
   const now = nowMs;
   const swing = moving ? Math.sin(walkT) * (0.45 + 0.35 * speedNorm) : 0;
   p.legL.rotation.x = swing;
@@ -9087,14 +9121,16 @@ function updatePlayer(dt) {
           headY > b.y - 0.5 && headY < b.y + 0.2) {
         b.used = true;
         b.bump = 0.25;
-        b.mesh.material = new THREE.MeshLambertMaterial({ color: 0x8a7a5a });
+        b.mesh.material.emissiveIntensity = 0; // 符文熄灭,只剩一块旧石头
+        b.mesh.material.color.setHex(0x8f8a80);
+        magBurst(b.x, b.y, b.z);
         player.vy = -1;
         sfx.block();
         for (let i = 0; i < 5; i++) {
           const a = Math.random() * 6.28;
           addPickup('coin', b.x + Math.cos(a) * 1.2, b.z + Math.sin(a) * 1.2, 30);
         }
-        toast('+5 金币!', 1.5);
+        callout('符文碎光 +5 金币', 'blue', { x: b.x, y: b.y - 1.2, z: b.z });
       }
     }
   }
@@ -9475,31 +9511,31 @@ let envIntensity = 1;
 // 群系氛围:雾色倍率 rgb、雾近/远倍率、阳光色调 rgb(顺序同 terrain.BIOME_KEYS)
 // 走进沼泽雾气收拢发绿,荒漠热霾泛金,焦土天色发红,雪原清冷透亮
 const BIOME_ATMO = [
-  [1, 1, 1, 1, 1, 1, 1, 1],                    // plains 平原
-  [0.82, 0.95, 0.84, 0.75, 0.8, 1, 0.97, 0.88], // forest 林海
-  [1.16, 1.0, 0.76, 0.9, 1.1, 1.1, 0.96, 0.8],  // desert 荒漠
-  [1.04, 1.1, 1.2, 0.72, 0.8, 0.92, 0.98, 1.1], // snow 雪原
-  [0.72, 0.84, 0.7, 0.3, 0.45, 0.85, 0.92, 0.74], // swamp 沼泽
-  [0.86, 0.6, 0.52, 0.45, 0.6, 1.12, 0.78, 0.62], // ash 焦土
-  [0.95, 0.95, 0.99, 0.95, 1, 1, 1, 1],         // rock 碎石岗
-  [1.0, 1.03, 0.97, 1.1, 1.15, 1.02, 1.0, 0.96], // hills 丘陵
+  [1, 1, 1, 1, 1, 1, 1, 1, 1],                      // plains 平原
+  [0.82, 0.95, 0.84, 0.75, 0.8, 1, 0.97, 0.88, 1],  // forest 林海
+  [1.16, 1.0, 0.76, 0.9, 1.1, 1.1, 0.96, 0.8, 0.88],  // desert 荒漠(亮沙降曝光,免得一片白)
+  [1.04, 1.1, 1.2, 0.72, 0.8, 0.92, 0.98, 1.1, 0.84], // snow 雪原(雪地降曝光)
+  [0.72, 0.84, 0.7, 0.3, 0.45, 0.85, 0.92, 0.74, 1],  // swamp 沼泽
+  [0.86, 0.6, 0.52, 0.45, 0.6, 1.12, 0.78, 0.62, 1.04], // ash 焦土
+  [0.95, 0.95, 0.99, 0.95, 1, 1, 1, 1, 1],          // rock 碎石岗
+  [1.0, 1.03, 0.97, 1.1, 1.15, 1.02, 1.0, 0.96, 1],  // hills 丘陵
 ];
 const _atmoW = new Float32Array(8);
-const atmo = [1, 1, 1, 1, 1, 1, 1, 1]; // 平滑后的当前氛围(跨群系时缓缓过渡,不跳变)
+const atmo = [1, 1, 1, 1, 1, 1, 1, 1, 1]; // 平滑后的当前氛围(跨群系时缓缓过渡,不跳变)
 let atmoScan = 0;
-const _atmoT = [1, 1, 1, 1, 1, 1, 1, 1];
+const _atmoT = [1, 1, 1, 1, 1, 1, 1, 1, 1];
 function updateBiomeAtmo(dt) {
   if (atmoScan-- <= 0) { // 每 10 帧取一次群系权重
     atmoScan = 10;
     biomeWeights(player.pos.x, player.pos.z, _atmoW);
-    for (let k = 0; k < 8; k++) {
+    for (let k = 0; k < 9; k++) {
       let v = 0;
       for (let b = 0; b < 8; b++) v += _atmoW[b] * BIOME_ATMO[b][k];
       _atmoT[k] = v;
     }
   }
   const a = Math.min(1, dt * 0.8);
-  for (let k = 0; k < 8; k++) atmo[k] += (_atmoT[k] - atmo[k]) * a;
+  for (let k = 0; k < 9; k++) atmo[k] += (_atmoT[k] - atmo[k]) * a;
 }
 function updateDayNight(dt) {
   updateBiomeAtmo(dt);
@@ -9586,7 +9622,7 @@ function updateDayNight(dt) {
   starMat.opacity = Math.max(0, -elev * 2.2);
 
   // 曝光与泛光随昼夜变化
-  renderer.toneMappingExposure = (0.85 + day * 0.25) * styleExp;
+  renderer.toneMappingExposure = (0.85 + day * 0.25) * styleExp * atmo[8];
   bloom.strength = (0.28 + night * 0.4) * styleBloomMul;
 
   // 路灯与神龛烛火:入夜才亮
@@ -9629,6 +9665,43 @@ const _camDesired = new THREE.Vector3();
 const _camRay = new THREE.Raycaster();
 const _camDir = new THREE.Vector3();
 let camSnapNext = false;
+// 大碰撞圆(r≥1.4:岩石地标/塔基)按 32m 格索引,碰撞圆数量变化时重建
+const camRockGrid = new Map();
+let camRockLen = -1;
+function rebuildCamRocks() {
+  camRockGrid.clear();
+  for (const c of colliders.circles) {
+    if (c.r < 1.4) continue;
+    const k = `${Math.floor(c.x / 32)},${Math.floor(c.z / 32)}`;
+    if (!camRockGrid.has(k)) camRockGrid.set(k, []);
+    camRockGrid.get(k).push(c);
+  }
+  camRockLen = colliders.circles.length;
+}
+function pullCameraFromRocks(target) {
+  if (camRockLen !== colliders.circles.length) rebuildCamRocks();
+  const cx = camera.position.x, cz = camera.position.z;
+  const dx = cx - target.x, dz = cz - target.z;
+  const len = Math.hypot(dx, dz);
+  if (len < 0.5) return;
+  // 沿视线从人物往相机走,遇到第一块岩石就停在它外面
+  for (let i = 1; i <= 6; i++) {
+    const t = i / 6;
+    const px = target.x + dx * t, pz = target.z + dz * t;
+    const cell = camRockGrid.get(`${Math.floor(px / 32)},${Math.floor(pz / 32)}`);
+    if (!cell) continue;
+    for (const c of cell) {
+      const rr = c.r * 1.35 + 0.4; // 岩石的轮廓比碰撞圆更大:相机要离得更远才不钻进去
+      if ((px - c.x) * (px - c.x) + (pz - c.z) * (pz - c.z) < rr * rr) {
+        const k = Math.max(0.18, (i - 1) / 6);
+        camera.position.x = target.x + dx * k;
+        camera.position.z = target.z + dz * k;
+        camera.position.y = Math.max(camera.position.y, target.y + 0.4);
+        return;
+      }
+    }
+  }
+}
 function updateCamera(dt) {
   const dist = player.mounted ? (player.mounted.sheep ? 6 : 9) : 6.2;
   const ty = player.pos.y + groundH(player.pos.x, player.pos.z) +
@@ -9659,6 +9732,8 @@ function updateCamera(dt) {
   desired.y = Math.max(groundH(desired.x, desired.z) + 0.6, desired.y); // 镜头不钻进山坡
   camera.position.lerp(desired, camSnapNext ? 1 : 1 - Math.pow(0.0001, dt)); // 传送后一帧到位
   camSnapNext = false;
+  // 相机防穿岩:大块地标(台地/玄武柱/露头/冰岩/断塔)没有遮挡网格,按碰撞圆把相机拉到岩石外侧
+  pullCameraFromRocks(target);
   // 相机防穿墙:从视点向相机打射线,撞到墙体/建筑就把相机拉近
   _camDir.copy(camera.position).sub(target);
   const camLen = _camDir.length();
@@ -11110,6 +11185,12 @@ function tick(dt, now) {
     }
   }
   updateRain(dt);
+  if (!inDungeon()) {
+    const elevA = Math.sin(dayTime * Math.PI * 2 - Math.PI / 2);
+    updateAmbient(dt, nowMs * 0.001, camera.position, groundH(player.pos.x, player.pos.z), player.pos.x, player.pos.z,
+      biomeWeights, { night: 1 - Math.max(0, Math.min(1, elevA * 2 + 0.25)), rain: weather.rain, windX: 0.94, windZ: 0.33,
+        pixelH: renderer.domElement.height }, qualityIdx === 0 ? 0.6 : 1);
+  }
   updateDust(dt);
   updateDayNight(dt);
   updateLightPool();
