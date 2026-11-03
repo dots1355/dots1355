@@ -259,7 +259,7 @@ const TESTS = {
       until(() => P.step >= 5, 30); log.push(P.step);
       g.player.castT = 0; g.player.mp = 6;
       g.castSpell();
-      until(() => P.step >= 6, 30); log.push(P.step);
+      until(() => P.step >= 6, 90); log.push(P.step);
       for (const w of P.wolves) if (!w.dead) g.killWolf(w);
       until(() => P.step >= 7, 30); log.push(P.step);
       until(() => !P.on, 400);
@@ -322,6 +322,49 @@ const TESTS = {
     if (!r.dialog) throw new Error('按 E 没有和管家对话');
     if (!/宝箱/.test(r.chestPrompt)) throw new Error(`宝箱旁的提示不对:${r.chestPrompt}`);
     if (!r.chestOpened) throw new Error('按 E 没有打开宝箱');
+  },
+  // 流程:自己的马比 NPC 近时 E=上马;走远对话自动收;城外穿城的光柱绕墙角;没委托时光柱指埃隆
+  async playFlow(page) {
+    await boot(page);
+    const r = await page.evaluate(() => {
+      const g = window.__gtm, out = {};
+      // 1) 上马优先
+      const h = g.player.horse;
+      const v = g.villagers.find((x) => !x.sleeping && !(x.downT > 0));
+      if (h && v) {
+        g.player.pos.set(v.pos.x + 2.4, 0, v.pos.z);
+        h.pos.set(v.pos.x + 3.6, 0, v.pos.z); h.group.position.copy(h.pos);
+        g.step(1);
+        out.prompt = g.getPrompt();
+      }
+      // 2) 对话走远自动收起
+      g.player.pos.set(v.pos.x + 1.5, 0, v.pos.z);
+      g.step(1);
+      g.tryInteract();
+      out.opened = g.dialogOpen();
+      g.player.pos.set(v.pos.x + 20, 0, v.pos.z);
+      g.step(2);
+      out.closed = !g.dialogOpen();
+      // 3) 没委托时光柱在埃隆身上
+      g.quest.active = false;
+      g.player.pos.set(g.steward.pos.x + 30, 0, g.steward.pos.z + 3);
+      g.step(2);
+      const b0 = g.getBeacon();
+      out.stewardBeacon = b0.v && Math.hypot(b0.x - g.steward.pos.x, b0.z - g.steward.pos.z) < 2;
+      // 4) 城外西侧去东边磨坊:光柱先指墙角,不是直穿城墙
+      const i = g.missions.findIndex((m) => m.type === 'deliver');
+      g.quest.idx = i; g.quest.active = true; g.quest.timer = 99;
+      g.player.pos.set(-90, 0, 4);
+      g.step(2);
+      out.beacon = g.getBeacon();
+      return out;
+    });
+    if (r.prompt !== undefined && !/马/.test(r.prompt)) throw new Error(`自己的马更近,提示却是:${r.prompt}`);
+    if (!r.opened) throw new Error('贴着村民按 E 没开对话');
+    if (!r.closed) throw new Error('走出 20 米对话还挂着');
+    if (!r.stewardBeacon) throw new Error('没有委托时光柱没指向埃隆');
+    const b = r.beacon;
+    if (!(Math.abs(Math.abs(b.x) - 79) < 1 && Math.abs(Math.abs(b.z) - 64) < 1)) throw new Error(`城外穿城的光柱应先指墙角,实际 ${JSON.stringify(b)}`);
   },
   // 生命上限只有一个来源:护甲 + 湖神 + 屠龙
   async maxhp(page) {

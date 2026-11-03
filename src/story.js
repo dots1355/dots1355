@@ -99,9 +99,9 @@ export const MISSIONS = [
     brief: '埃隆:这包文件要立刻送到磨坊主手里。骑马去,别耽搁!',
   },
   {
-    title: '③ 剿灭盗贼', type: 'bandits', goal: 3, reward: 50,
-    desc: '击败幽暗森林盗贼营地的 3 名盗贼',
-    brief: '埃隆:黑石兄弟会在西边森林扎了营。去,给他们点颜色。',
+    title: '③ 剿灭盗贼', type: 'bandits', goal: 4, reward: 50,
+    desc: '端掉幽暗森林的盗贼营地:3 名喽啰和他们的营地头目',
+    brief: '埃隆:黑石兄弟会在西边森林扎了营,领头的是个使双手斧的狠角色——他抡圆了的那一下,盾是挡不住的。去,给他们点颜色。',
   },
   {
     title: '④ 农场竞速', type: 'race', time: 75, reward: 40,
@@ -126,7 +126,7 @@ export const MISSIONS = [
   {
     title: '⑧ 黑石要塞', type: 'boss', reward: 120,
     desc: '攻入黑石要塞,击败盗贼头目「血斧巴罗克」',
-    brief: '埃隆:巴罗克就躲在西南的黑石要塞。了结这一切吧,勇士!',
+    brief: '埃隆:巴罗克就躲在西北的黑石要塞。了结这一切吧,勇士!',
   },
 ];
 

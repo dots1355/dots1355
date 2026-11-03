@@ -238,14 +238,34 @@ const heartsEl = $('hearts'), coinsEl = $('coins'), wantedEl = $('wanted'),
 // 顶部细条通知:队列化,一次一条,不遮挡视野
 let toastTimer = 0; // >0 显示中,<0 淡出间隔
 const toastQueue = [];
-// 提示排队:每条带入队时间,排太久(>7 秒)的过期作废——过时的提示比没有提示更误导;队列最多 5 条
-function toast(msg, dur = 2.6) {
-  toastQueue.push([msg, Math.min(dur, 4), performance.now()]);
-  while (toastQueue.length > 5) toastQueue.splice(toastQueue.findIndex((t) => !t[3]), 1);
+// 提示分三档:委托(2)> 一般(1)> 氛围(0)。队列里先播高档的,同档先来先播;
+// 排太久(>7 秒)的过期作废——过时的提示比没有提示更误导;队列最多 5 条,满了先挤掉低档的旧条。
+// 条目:[文字, 时长, 入队时刻(游戏时钟), 插队?, 档位, 标签]
+function pushToast(msg, dur, tier, tag) {
+  toastQueue.push([msg, Math.min(dur, 4), simNow(), false, tier, tag]);
+  while (toastQueue.length > 5) {
+    let k = -1;
+    for (let i = 0; i < toastQueue.length; i++) {
+      if (toastQueue[i][3]) continue;
+      if (k < 0 || toastQueue[i][4] < toastQueue[k][4]) k = i;
+    }
+    toastQueue.splice(k < 0 ? 0 : k, 1);
+  }
+}
+function toast(msg, dur = 2.6) { pushToast(msg, dur, 1, null); }
+// 委托类:进度一推进,同一委托的旧提示就作废(dropQuestToasts)
+function toastQuest(msg, dur = 3.5) { pushToast(msg, dur, 2, 'quest'); }
+// 氛围类(世界的心声、闲笔):有委托在办、或队列已经排着两条以上时,直接不播
+function toastAmbient(msg, dur = 3.5) {
+  if (quest.active || toastQueue.length >= 2 || prologue.on) return;
+  pushToast(msg, dur, 0, 'ambient');
+}
+function dropQuestToasts() {
+  for (let i = toastQueue.length - 1; i >= 0; i--) if (toastQueue[i][5] === 'quest') toastQueue.splice(i, 1);
 }
 // 插队播报:教学这种时效信息不排队,直接顶到最前并催场
 function toastNow(msg, dur = 3) {
-  toastQueue.unshift([msg, Math.min(dur, 4), performance.now(), true]);
+  toastQueue.unshift([msg, Math.min(dur, 4), simNow(), true, 3, null]);
   if (toastTimer > 0.4) toastTimer = 0.4; // 正在播的加速谢幕
 }
 function updateToast(dt) {
@@ -258,8 +278,13 @@ function updateToast(dt) {
   } else if (toastTimer < 0) {
     toastTimer = Math.min(0, toastTimer + dt);
   } else if (toastQueue.length) {
-    while (toastQueue.length > 1 && performance.now() - toastQueue[0][2] > 7000 && !toastQueue[0][3]) toastQueue.shift();
-    const [msg, dur] = toastQueue.shift();
+    const now = simNow();
+    for (let i = toastQueue.length - 1; i >= 0 && toastQueue.length > 1; i--) {
+      if (!toastQueue[i][3] && now - toastQueue[i][2] > 7000) toastQueue.splice(i, 1);
+    }
+    let k = 0; // 档位最高的先播(插队的档位 3)
+    for (let i = 1; i < toastQueue.length; i++) if (toastQueue[i][4] > toastQueue[k][4]) k = i;
+    const [msg, dur] = toastQueue.splice(k, 1)[0];
     toastEl.textContent = msg;
     toastEl.style.opacity = 1;
     toastTimer = dur;
@@ -437,12 +462,8 @@ function growCorpus() {
       `写一条25字以内全新的市井传闻(不要提绿衣游侠),要有画面感。只输出传闻本身。`, null, 8000,
     ).then((t) => { if (t) { push(t.replace(/[「」"']/g, '')); saveGame(); } });
   } else {
-    // 离线:把两条既有传闻剪开重新缝(拼接变异)
-    const a = BANKS.RUMORS[Math.floor(rand() * BANKS.RUMORS.length)];
-    const b = BANKS.RUMORS[Math.floor(rand() * BANKS.RUMORS.length)];
-    const cut = (s) => { const i = s.search(/[,,]/); return i > 0 ? [s.slice(0, i + 1), s.slice(i + 1)] : [s, '']; };
-    const [a1] = cut(a), [, b2] = cut(b);
-    if (b2) push(a1 + b2);
+    // 离线:从写好的传闻里挑一整条流传开(以前把两句剪开重新缝,缝出来的多是病句)
+    push(BANKS.RUMORS[Math.floor(rand() * BANKS.RUMORS.length)]);
   }
 }
 
@@ -532,6 +553,11 @@ initWilderness(scene, colliders, {
   },
 });
 
+// 序章:狼这一口落空、而你刚翻滚过(1 秒内)= 真的用翻滚躲开了
+function noteDodge(w) {
+  if (!prologue.on || !w._prol || prologue.step !== 2) return;
+  if (simNow() - (player.lastRollAt ?? -1e9) < 1000) prologue.flags.rolled = true;
+}
 function updateWolves(dt) {
   // 狼月之夜:入夜后狼群更快更狠
   const wolfBuff = todaySpecial()?.key === 'wolfmoon' && dayPhase() === 'night' ? 1.3 : 1;
@@ -585,7 +611,9 @@ function updateWolves(dt) {
       w.group.position.copy(w.pos);
       if (w.biteT <= 0) {
         w.group.scale.y = 1;
-        if (inFrontArc(w, player.pos, 1.7, 2.2)) damagePlayer(wolfBuff > 1 ? 2 : 1, w);
+        const inArc = inFrontArc(w, player.pos, 1.7, 2.2);
+        if (inArc && !(player.invulnT > 0)) damagePlayer(wolfBuff > 1 ? 2 : 1, w);
+        else noteDodge(w);
       }
       continue;
     }
@@ -604,10 +632,14 @@ function updateWolves(dt) {
         resolveCollisions(w.pos, 0.4, colliders);
         if (!w.lungeHit && Math.hypot(player.pos.x - w.pos.x, player.pos.z - w.pos.z) < 1.2) {
           w.lungeHit = true;
-          damagePlayer(wolfBuff > 1 ? 2 : 1, w);
+          if (player.invulnT > 0 && player.rollT > 0) noteDodge(w); // 翻滚的无敌帧里穿身而过
+          else damagePlayer(wolfBuff > 1 ? 2 : 1, w);
         }
       }
-      if (w.lunging <= 0) w.group.scale.y = 1;
+      if (w.lunging <= 0) {
+        w.group.scale.y = 1;
+        if (!w.lungeHit) noteDodge(w); // 扑空了
+      }
       w.group.position.copy(w.pos);
       continue;
     }
@@ -1456,6 +1488,7 @@ function updateArrows(dt) {
         }
       }
       if (arrowHitEntities(a)) {
+        if (a.mag && prologue.on) prologue.flags.sparkHit = true; // 序章:魔光弹要真打中才算学会
         skillXp(a.mag ? 'destruction' : 'archery', 2);
         if (a.mag) magBurst(a.pos.x, Math.max(0.4, a.pos.y), a.pos.z); // 命中碎光
         if (a.pierce > 0) { a.pierce--; continue; } // 满月箭:穿过去接着飞
@@ -1666,8 +1699,24 @@ function turnToward(cur, want, maxStep) {
   if (d < -Math.PI) d += Math.PI * 2;
   return cur + Math.max(-maxStep, Math.min(maxStep, d));
 }
+let rearWarnT = -1e9;
 function telegraphFlash(e, dur = 0.45, heavy = false, range = heavy ? 2.7 : 2.3, arc = FOE_ARC) {
   sfx.warn();
+  // 第一次见到紫色破盾重击:弹一张教学卡
+  if (heavy && !stats.seenPurple && started && !prologue.on) {
+    stats.seenPurple = true;
+    setTutor('C', '紫色扇形 = 破盾重击:盾挡不住!', '按 C 翻滚躲开,或者在亮区长满前退出扇形');
+    later(4.5, () => { if (!prologue.on) setTutor(null); });
+  }
+  // 身后起手:镜头看不到的方向有人举刀,头顶先喊一声
+  if (e.pos && simNow() - rearWarnT > 1200) {
+    const dx = e.pos.x - player.pos.x, dz = e.pos.z - player.pos.z;
+    const d = Math.hypot(dx, dz) || 1;
+    if (d < range + 1.5 && (dx * -Math.sin(cam.yaw) + dz * -Math.cos(cam.yaw)) / d < -0.25) {
+      rearWarnT = simNow();
+      callout('⚠ 身后!', 'red');
+    }
+  }
   const grp = new THREE.Group();
   const zone = new THREE.Mesh(sectorGeo(arc), pooledMat(dangerMat));
   const fill = new THREE.Mesh(sectorGeo(arc), pooledMat(dangerMat));
@@ -2352,7 +2401,7 @@ function queueDream() {
 function questLogLine() {
   if (quest.idx >= missions.length) return '📜 委托:全部完成——去见领主领赏。';
   const m = missions[quest.idx];
-  if (!quest.active) return `📜 下一单:${m.title}(回喷泉广场找管家埃隆接取)`;
+  if (!quest.active) return `📜 下一单:${m.title}(回${stewardWhere()}找管家埃隆接取)`;
   const prog = m.goal ? `(进度 ${quest.progress}/${m.goal})` : '';
   const tm = quest.timer > 0 && (m.type === 'deliver' || m.type === 'race') ? ` · 剩 ${Math.ceil(quest.timer)} 秒` : '';
   return `📜 进行中:${m.title} —— ${m.desc}${prog}${tm}`;
@@ -4235,6 +4284,8 @@ function renderDialogPage() {
 function openDialog(pages, onDone = null, speaker = null) {
   if (!pages.length) return;
   dialog.open = true;
+  dialog.openX = player.pos.x;
+  dialog.openZ = player.pos.z;
   dialog.pages = pages;
   dialog.idx = 0;
   dialog.onDone = onDone;
@@ -4343,6 +4394,21 @@ async function deepTalk() {
   renderDialogPage();
 }
 
+// 走开了话就不说了:离说话人(或开口处)超过 6 米自动收起;带回调的对话照样结算(委托、赏金不会丢)
+function updateDialogRange() {
+  abEl.style.visibility = dialog.open ? 'hidden' : ''; // 对话框不被操作栏压住
+  if (!dialog.open) return;
+  const ref = dialog.speaker && dialog.speaker.ent && dialog.speaker.ent.pos;
+  const x = ref ? ref.x : dialog.openX, z = ref ? ref.z : dialog.openZ;
+  if (x === undefined || dist2(player.pos.x, player.pos.z, x, z) < 36) return;
+  clearInterval(typeTimer);
+  dialog.typing = false;
+  dialog.open = false;
+  dialogEl.style.display = 'none';
+  const f = dialog.onDone;
+  dialog.onDone = null;
+  if (f) f();
+}
 function advanceDialog() {
   if (dialog.typing) {
     // 第一次按键:直接显示整页
@@ -4793,7 +4859,7 @@ function updateRegion(dt) {
 // ================= 历法:季节与日子 =================
 const SEASONS = ['春', '夏', '秋', '冬'];
 const SEASON_ICON = ['🌸', '☀️', '🍂', '❄️'];
-const SEASON_DAYS = 6; // 一日 240 秒,六日为一季
+const SEASON_DAYS = 6; // 一日约 230 秒(夜里过得快),六日为一季
 const calendar = { day: 1, lastPhase: 'dawn' };
 let dailyEvents = 4; // 每日事件限额:导演事件与街头事件共享,免得此起彼伏乱成一锅粥
 
@@ -4955,8 +5021,15 @@ function remember(text, key = null) {
 }
 // 村民口中的"你的事迹":只挑你亲手做的事(世界自己的念头/旁白不拿来当八卦,
 // 否则会出现"听说你3 头狼正围向他"这种错句)
+// 白名单:只要"你亲手做成的事"——世界自己的念头(ws-)、你倒下(death-)、狼群换代、心愿、
+// 没拦住的劫掠、别人做的事("盗贼们学会了…")一概不进;句子里带"他/它/你"的也不要(套进"听说你…"会病句)
+const NOT_DEED_KEY = /^(ws-|death-|wolfgen-|wish-|warloot-|siege-day)/;
+function chronicleDeeds() {
+  return chronicle.filter((m) => !(m.k && NOT_DEED_KEY.test(m.k)) &&
+    !/[他它你]/.test(m.t) && !/^(盗贼们|黑石|狼群|没能)/.test(m.t));
+}
 function recallLine() {
-  const deeds = chronicle.filter((m) => !(m.k && /^(ws-|death-)/.test(m.k)) && !/[他它]/.test(m.t));
+  const deeds = chronicleDeeds();
   if (!deeds.length) return null;
   return deeds[Math.floor(rand() * deeds.length)].t;
 }
@@ -5155,7 +5228,7 @@ function mindTick() {
     if (Math.abs(err) > 0.55 && MIND.surToastCd <= 0 && started && !dialog.open) {
       MIND.surToastCd = 60;
       cam.shake = Math.max(cam.shake, 0.12); // 惊讶在画面上也颤一下
-      toast('🫧 (这颗心愣了一下——事情没照它预想的走。)', 3);
+      toastAmbient('🫧 (这颗心愣了一下——事情没照它预想的走。)', 3);
     }
   }
   // 2) 注意的强化学习:上次点火之后心境变好了,就在相似情境里更留意那一路
@@ -5237,7 +5310,7 @@ function mindMakeWish() {
   let pick = ws[0][0];
   for (const [w, wt] of ws) { roll -= wt; if (roll <= 0) { pick = w; break; } }
   MIND.wish = { i: pick.i, name: pick.name, hint: pick.hint, count: 0 };
-  if (started) toast(`🫧 这颗心起了个念头:它想亲眼看看「${pick.name}」。(${pick.hint})`, 5);
+  if (started) toastAmbient(`🫧 这颗心起了个念头:它想亲眼看看「${pick.name}」。(${pick.hint})`, 5);
 }
 // 习惯化:同一念头反复点火,越来越难再进意识;新鲜事反而有加成
 function habitFactor(k, t) {
@@ -5524,11 +5597,7 @@ function updateIdle(dt) {
   if (idleT > 48 && idleCd <= 0) {
     idleCd = 150;
     idleT = 0;
-    // 低语是工作空间的出口之一:四成概率说出它此刻的意识内容
-    const cur = workspace.current;
-    toast(cur && rand() < 0.4
-      ? `(它在想:${cur.t}。)`
-      : IDLE_WHISPERS[idleIdx++ % IDLE_WHISPERS.length], 4);
+    toastAmbient(IDLE_WHISPERS[idleIdx++ % IDLE_WHISPERS.length], 4); // 只说写好的低语,不再直播"意识内容"
   }
 }
 
@@ -5640,7 +5709,8 @@ function loadGame() {
       EVO.wolfSpeed = s.evo.wolfSpeed || 0;
       if (s.evo.eventFit && typeof s.evo.eventFit === 'object') EVO.eventFit = s.evo.eventFit;
       if (s.evo.tactics) EVO.tactics = { block: +s.evo.tactics.block || 0, dodge: +s.evo.tactics.dodge || 0 };
-      if (Array.isArray(s.evo.corpus)) EVO.corpus = s.evo.corpus.filter((t) => typeof t === 'string');
+      // 只留写好的传闻:旧档里"剪开重缝"出来的病句一并清掉
+      if (Array.isArray(s.evo.corpus)) EVO.corpus = s.evo.corpus.filter((t) => typeof t === 'string' && BANKS.RUMORS.includes(t));
       for (const w of wolves) if (!w.dead) { // 在世的狼也是这一代的:速度和皮实一起补
         w.speed = 7.2 + EVO.wolfSpeed;
         w.hp = Math.max(w.hp, EVO.wolfGen >= 3 ? 4 : 3);
@@ -5823,11 +5893,19 @@ if (hasSave) {
   document.getElementById('save-info').textContent =
     `💾 检测到存档:委托 ${Math.min(quest.idx + 1, missions.length)}/${missions.length} · ` +
     `${player.coins} 金币 · 纹章 ${crestsFound.length}/${world.crestSpots.length}(按 Delete 键清除存档重新开始)`;
+  // 清档要按两次(3 秒内):手滑一下不该把几个小时的进度抹掉
+  let delArmT = -1e9;
   window.addEventListener('keydown', (e) => {
-    if (e.code === 'Delete' && !started) {
-      localStorage.removeItem(SAVE_KEY);
-      location.reload();
+    if (e.code !== 'Delete' || started) return;
+    const el = document.getElementById('save-info');
+    if (performance.now() - delArmT > 3000) {
+      delArmT = performance.now();
+      el.textContent = '⚠️ 真的要清除存档吗?3 秒内再按一次 Delete 确认(进度无法恢复)';
+      el.style.color = '#ff8a6a';
+      return;
     }
+    localStorage.removeItem(SAVE_KEY);
+    location.reload();
   });
 }
 // 读档后应用升级效果
@@ -6028,12 +6106,12 @@ function updatePrologue(dt) {
   } else if (P.step === 1 && lockFoe) {
     P.step = 2; P.t = 0;
     prologueRelease(0);
-    setTutor('C', '看到它脚下亮起红圈,按 C 翻滚躲开', '红圈越收越小、越来越亮 = 马上要扑过来了');
+    setTutor('C', '它面前铺开红色扇形时,按 C 翻滚躲开', '亮区从脚下往外长,长满的一刻扑过来;翻滚有无敌帧,横着走出扇形也行');
   } else if (P.step === 2 && (F.rolled || P.t > 25)) {
     P.step = 3; P.t = 0;
     F.blocked = false;
-    callout('漂亮的翻滚!', 'gold');
-    setTutor('右键', '按住右键举盾,挡下它的下一次扑咬', '红圈刚亮时举盾 = 完美弹反:它会踉跄,还击伤害 ×2.5');
+    callout(F.rolled ? '漂亮的翻滚!' : '下次早点滚', 'gold');
+    setTutor('右键', '按住右键举盾,挡下它的下一次扑咬', '亮区快长满(出手前一瞬)时才举盾 = 完美弹反:它会踉跄,还击伤害 ×2.5');
   } else if (P.step === 3 && (F.blocked || P.t > 25)) {
     P.step = 4; P.t = 0;
     callout(F.parried ? '完美弹反!' : '挡住了!', 'gold');
@@ -6041,14 +6119,27 @@ function updatePrologue(dt) {
   } else if (P.step === 4 && w0 && w0.dead) {
     P.step = 5; P.t = 0;
     F.sparked = false;
+    F.sparkHit = false;
     const w = prologueRelease(1);
-    if (w) { w._hold = true; w.pos.set(player.pos.x + 12, 0, player.pos.z + 6); } // 远远站着,先学远程
-    setTutor('R', '远处那只:按 R(或鼠标中键)放魔光弹', '魔光弹耗 1 点法力(蓝点),会自动吸附前方的敌人');
-  } else if (P.step === 5 && (F.sparked || (w1 && w1.dead) || P.t > 30)) {
+    if (w) { // 远远站在镜头正前方 7 米(魔光弹自动瞄准够得着),先学远程
+      w._hold = true;
+      const fx = -Math.sin(cam.yaw), fz = -Math.cos(cam.yaw);
+      w.pos.set(player.pos.x + fx * 7, 0, player.pos.z + fz * 7);
+      resolveCollisions(w.pos, 0.4, colliders);
+      w.group.position.copy(w.pos);
+      lockFoe = w; // 镜头直接框住它
+    }
+    setTutor('R', '前面那只:按 R(或鼠标中键)放魔光弹打中它', '魔光弹耗 1 点法力(蓝点),会自动吸附前方的敌人');
+  } else if (P.step === 5 && F.sparked && !F.sparkHit && !F._missHint && P.t > 1.5) {
+    F._missHint = true;
+    callout('没打中——对准它再按 R', 'dim');
+  } else if (P.step === 5 && (F.sparkHit || (w1 && w1.dead) || P.t > 30)) {
     P.step = 6; P.t = 0;
     prologueRelease(1);
-    prologueRelease(2);
     setTutor('自由', '把剩下的狼都解决掉', '体力条(黄)见底就砍不动、跑不动——留一口气翻滚');
+  } else if (P.step === 6 && !F.thirdOut && (P.t > 4 || (w1 && w1.dead))) {
+    F.thirdOut = true; // 第三只错开放出:别让一刀横扫全收
+    prologueRelease(2);
   } else if (P.step === 6 && P.wolves.every((w) => w.dead)) {
     P.step = 7; P.t = 0;
     setTutor(null);
@@ -6059,6 +6150,7 @@ function updatePrologue(dt) {
     P.step = 9;
     endPrologue();
     showTitleCard();
+    toast('欢迎来到艾尔德里亚!去喷泉广场找管家埃隆接取委托吧(按 E 互动,光柱指路)', 5);
   }
 }
 // 玩家的马:序章送一匹;按 B 吹口哨把它唤到身边
@@ -6101,7 +6193,8 @@ titleEl.addEventListener('click', () => {
     toast(`${SEASON_ICON[seasonIdx()]} 今日${sp0.name}:${sp0.desc}`, 5);
   }
   renderer.domElement.requestPointerLock();
-  toast('欢迎来到艾尔德里亚!去喷泉广场找管家埃隆接取委托吧(按 E 互动)', 5);
+  // 序章里不催你去找管家(和"打狼"打架);序章结束再说
+  if (!prologue.on) toast('欢迎来到艾尔德里亚!去喷泉广场找管家埃隆接取委托吧(按 E 互动)', 5);
 });
 
 // ================= 通缉系统 =================
@@ -6170,6 +6263,57 @@ let promptText = '';
 // E 键交互的唯一来源:同一套判定既执行动作,也给出提示文字与目标位置。
 // probe=true 时只"试运行":命中哪条就返回 { text, x, z, h },不改任何状态(computePrompt 用它显示提示)。
 // 以前提示与交互是两份手抄的判定,顺序和条件早已分叉(比如单挑没有提示);现在不可能再对不上。
+// 能骑的坐骑:2.65 米内最近的一匹;任务马(雪影)在场时优先它
+function nearestMountable() {
+  let best = null, bd = 7;
+  for (const h of horses) {
+    const d = dist2(player.pos.x, player.pos.z, h.pos.x, h.pos.z) - (h === questRT.specialHorse ? 3 : 0);
+    if (d < bd) { bd = d; best = h; }
+  }
+  return best;
+}
+// 身边最近一个能说话的人(具名 NPC / 村民 / 趣味 NPC)的距离平方
+function nearestTalkerD2() {
+  let d = Infinity;
+  for (const n of namedNPCs) d = Math.min(d, dist2(player.pos.x, player.pos.z, n.pos.x, n.pos.z));
+  for (const v of villagers) if (!(v.downT > 0) && !v.sleeping) d = Math.min(d, dist2(player.pos.x, player.pos.z, v.pos.x, v.pos.z));
+  for (const f of funnyNPCs) if (f && f.pos) d = Math.min(d, dist2(player.pos.x, player.pos.z, f.pos.x, f.pos.z));
+  return d;
+}
+function mountHorse(h, probe, P) {
+  if (probe) {
+    return P(h.sheep ? '按 E 骑羊(为什么不呢)' : h.playerHorse ? '按 E 骑上你的马'
+      : h.owned && !h.stolen ? '按 E 偷马 (会引来通缉!)' : '按 E 骑马', h.pos.x, h.pos.z, h.sheep ? 1.4 : 2.7);
+  }
+  if (player.carrying) { player.carrying.state = 'idle'; player.carrying = null; }
+  player.mounted = h;
+  player.jumps = 0;
+  if (h.sheep) remember('骑上了一头羊。羊没同意', 'firstsheep');
+  else if (h.chunk) {
+    remember('在无尽荒野驯服了一匹无主的野马', 'wildhorse');
+    if (!h.aiName && !AI_TEXT_OFF) {
+      h.aiName = true;
+      aiLine('给一匹中世纪奇幻世界里刚被驯服的野马起一个两字中文名,只输出名字,不要引号和解释。', null, 6000)
+        .then((t) => {
+          if (t && t.trim().length <= 4) {
+            const nm = t.trim();
+            toast(`🐴 你给它取名「${nm}」。它甩了甩鬃毛,大概是同意了。`, 3.5);
+            remember(`给驯服的野马取名「${nm}」`);
+          }
+        });
+    }
+  } else remember('第一次翻身上马', 'firstride');
+  if (h.sheep) {
+    sfx.baa();
+    toast(rand() < 0.4 ? `🐑 ${COMEDY_LINES[Math.floor(rand() * COMEDY_LINES.length)]}` : '🐑 咩?!(它似乎认命了)', 2.5);
+  } else {
+    sfx.mount();
+  }
+  if (h.owned && !h.stolen) {
+    h.stolen = true;
+    crime(1, '你偷了一匹马!卫兵被惊动了!');
+  }
+}
 function tryInteract(probe = false) {
   if (!started || player.dead) return null;
   const P = (text, x, z, h) => ({ text, x, z, h });
@@ -6185,6 +6329,13 @@ function tryInteract(probe = false) {
       sfx.wanted();
       return;
     }
+  }
+  // 信使送来的委托书:完成一单后 12 秒内按 E 原地接下一单(不计时的委托)
+  if (canAcceptRemotely() && !player.mounted) {
+    if (probe) return P(`按 E 接下一单:${missions[quest.idx].title}(信使送来的委托书)`);
+    quest.offerT = 0;
+    talkQuestGiver(true);
+    return;
   }
   // 钓鱼中:收杆
   if (fishing.active) {
@@ -6214,13 +6365,30 @@ function tryInteract(probe = false) {
     resolveCollisions(player.pos, 0.45, colliders);
     return;
   }
+  // 上马优先:自己的马/任务马在 2.6 米内、而且比身边能说话的人更近——E 就是上马(限时委托中闲聊一律让位)
+  {
+    const mh = nearestMountable();
+    if (mh) {
+      const hd = dist2(player.pos.x, player.pos.z, mh.pos.x, mh.pos.z);
+      const mine = mh.playerHorse || mh === questRT.specialHorse;
+      const timed = quest.active && (quest.timer || 0) > 0;
+      const legal = !(mh.owned && !mh.stolen) && !mh.sheep; // 别因为赶时间顺手偷了马厩的马
+      if ((mine || (timed && legal)) && (timed || hd < nearestTalkerD2())) return mountHorse(mh, probe, P);
+    }
+  }
   // 具名 NPC(委托/商店/领主/故事对话)
   for (const n of namedNPCs) {
     if (dist2(player.pos.x, player.pos.z, n.pos.x, n.pos.z) > 7) continue;
     const NP = (text) => P(text, n.pos.x, n.pos.z, 2.15);
-    // 管家埃隆:委托优先
+    // 管家埃隆:委托优先;没读过的人物章节先讲(讲完接着派委托)
     if (n.key === 'steward' && quest.idx < missions.length) {
       if (probe) return NP(quest.active ? `按 E 与管家埃隆交谈(进行中:${missions[quest.idx].title})` : '按 E 与管家埃隆交谈(接委托)');
+      const d = DIALOGS.steward;
+      const arcIdx = d ? d.arcs.reduce((best, a, i) => (quest.idx >= a.min ? i : best), -1) : -1;
+      if (!quest.active && arcIdx >= 0 && !(n.readArcs && n.readArcs.has(arcIdx))) {
+        npcTalk(n, () => talkQuestGiver());
+        return;
+      }
       talkQuestGiver();
       return;
     }
@@ -6705,9 +6873,10 @@ function tryInteract(probe = false) {
     // 你的事迹在村里口口相传(编年史)
     const deed = recallLine();
     let l2;
-    if (v.dbKey === 'v11' && chronicle.length && rand() < 0.4) {
-      // 抄写员薇拉:你的事迹被写进编年史正文
-      const m = chronicle[Math.floor(rand() * chronicle.length)];
+    const deedsV = v.dbKey === 'v11' ? chronicleDeeds() : [];
+    if (deedsV.length && rand() < 0.4) {
+      // 抄写员薇拉:你的事迹被写进编年史正文(同一套白名单,只录你亲手做的事)
+      const m = deedsV[Math.floor(rand() * deedsV.length)];
       l2 = `(翻开编年史,蘸了蘸墨)「历第 ${m.d} 日,绿衣游侠林恩${m.t}。」——已录入正史,后人会读到的。`;
     } else if (EVO.legends.length && rand() < 0.3) {
       // 传说演化:村民复述最热的那条(复述本身就是传播 → 热度自增,被自然选择留下)
@@ -6757,11 +6926,7 @@ function tryInteract(probe = false) {
     }
   }
   // 上马
-  let best = null, bd = 7;
-  for (const h of horses) {
-    const d = dist2(player.pos.x, player.pos.z, h.pos.x, h.pos.z);
-    if (d < bd) { bd = d; best = h; }
-  }
+  const best = nearestMountable();
   // 墓园漫步:读一块墓志铭(最低优先级,别挡着上马;AI 后台补写新碑文)
   if (!best && dist2(player.pos.x, player.pos.z, -40, -120) < 400) {
     if (probe) return P('按 E 读一块墓志铭');
@@ -6775,41 +6940,7 @@ function tryInteract(probe = false) {
     }
     return;
   }
-  if (best) {
-    if (probe) {
-      return P(best.sheep ? '按 E 骑羊(为什么不呢)' : best.playerHorse ? '按 E 骑上你的马'
-        : best.owned && !best.stolen ? '按 E 偷马 (会引来通缉!)' : '按 E 骑马', best.pos.x, best.pos.z, best.sheep ? 1.4 : 2.7);
-    }
-    if (player.carrying) { player.carrying.state = 'idle'; player.carrying = null; }
-    player.mounted = best;
-    player.jumps = 0;
-    if (best.sheep) remember('骑上了一头羊。羊没同意', 'firstsheep');
-    else if (best.chunk) {
-      remember('在无尽荒野驯服了一匹无主的野马', 'wildhorse');
-      if (!best.aiName && !AI_TEXT_OFF) {
-        best.aiName = true;
-        aiLine('给一匹中世纪奇幻世界里刚被驯服的野马起一个两字中文名,只输出名字,不要引号和解释。', null, 6000)
-          .then((t) => {
-            if (t && t.trim().length <= 4) {
-              const nm = t.trim();
-              toast(`🐴 你给它取名「${nm}」。它甩了甩鬃毛,大概是同意了。`, 3.5);
-              remember(`给驯服的野马取名「${nm}」`);
-            }
-          });
-      }
-    }
-    else remember('第一次翻身上马', 'firstride');
-    if (best.sheep) {
-      sfx.baa();
-      toast(rand() < 0.4 ? `🐑 ${COMEDY_LINES[Math.floor(rand() * COMEDY_LINES.length)]}` : '🐑 咩?!(它似乎认命了)', 2.5);
-    } else {
-      sfx.mount();
-    }
-    if (best.owned && !best.stolen) {
-      best.stolen = true;
-      crime(1, '你偷了一匹马!卫兵被惊动了!');
-    }
-  }
+  if (best) return mountHorse(best, probe, P);
   return null;
 }
 
@@ -6845,7 +6976,14 @@ function failMission(msg) {
   toast(msg, 3.5);
 }
 
-function talkQuestGiver() {
+// 埃隆在哪:白天在喷泉广场,夜里回城堡(和他的作息表一致)
+function stewardWhere() { return dayPhase() === 'night' ? '城堡' : '喷泉广场'; }
+// 信使带来的委托书:不计时的委托办完后可以原地接下一单(计时委托要回城找埃隆,免得一接就超时)
+function canAcceptRemotely() {
+  const nx = missions[quest.idx];
+  return !!nx && !quest.active && !nx.time && quest.offerT > 0;
+}
+function talkQuestGiver(remote = false) {
   if (quest.idx >= missions.length) {
     toast('埃隆:王国感谢你,勇者!去见领主大人吧,他有话对你说。', 3.5);
     return;
@@ -6855,18 +6993,22 @@ function talkQuestGiver() {
     quest.active = true;
     quest.progress = 0;
     quest.timer = m.time || 0;
+    quest.offerT = 0;
     sfx.accept();
-    openDialog([m.brief]);
-    toast(`接受任务【${m.title}】:${m.desc}`, 4.5);
+    openDialog(remote ? ['(王室信使勒住马,递来一封盖着火漆的委托书)', m.brief.replace(/^埃隆:/, '埃隆(信中):')] : [m.brief]);
+    toastQuest(`接受委托【${m.title}】:${m.desc}`, 4.5);
     if (m.type === 'deliver') {
       const parcel = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.35, 0.3), lambert(0xb4813f));
       parcel.position.set(0, 1.0, -0.24);
       player.group.add(parcel);
       player.parcel = parcel;
     } else if (m.type === 'bandits') {
-      addBandit(world.banditCamp.x - 4, world.banditCamp.z + 2);
-      addBandit(world.banditCamp.x + 4, world.banditCamp.z - 2);
-      addBandit(world.banditCamp.x, world.banditCamp.z + 6);
+      for (const [ox, oz] of [[-4, 2], [4, -2], [0, 6]]) addBandit(world.banditCamp.x + ox, world.banditCamp.z + oz).campFoe = true;
+      // 营地头目:会二连击和紫色破盾重击(第一次见紫色会弹教学卡)
+      const cap = addBandit(world.banditCamp.x, world.banditCamp.z - 4, { hp: 5, dmg: 2, speed: 5.6, scale: 1.12 });
+      cap.elite = true;
+      cap.captain = true;
+      cap.campFoe = true;
     } else if (m.type === 'race') {
       if (trialRT.active) endTrial(false); // 接正赛前先收计时赛的环
       questRT.ringIdx = 0;
@@ -6929,9 +7071,13 @@ function completeMission() {
   sfx.fanfare();
   const nx = missions[quest.idx + 1];
   showReward('委 托 完 成', m.title, `🪙 +${m.reward} 金币`,
-    nx ? `下一单:${nx.title} —— ${nx.desc}\n回喷泉广场找管家埃隆接取(光柱指路)` : '全部委托完成!去广场领取力量之星,再去见领主。');
+    !nx ? '全部委托完成!去喷泉广场领取金狮勋章,再去见领主。'
+      : nx.time ? `下一单:${nx.title} —— ${nx.desc}\n限时委托:回${stewardWhere()}找管家埃隆接取(光柱指路)`
+        : `下一单:${nx.title} —— ${nx.desc}\n王室信使已在路上:按 E 原地接下(或回${stewardWhere()}找埃隆)`);
   quest.active = false;
   quest.idx++;
+  quest.offerT = nx && !nx.time ? 12 : 0;
+  dropQuestToasts(); // 上一单的过期提示作废
   if (player.parcel) { player.group.remove(player.parcel); player.parcel = null; }
   clearRaceRings();
   if (questRT.merchant) { scene.remove(questRT.merchant.group); questRT.merchant = null; }
@@ -6939,7 +7085,7 @@ function completeMission() {
   saveGame();
   if (quest.idx >= missions.length) {
     addPickup('star', 0, 13);
-    toast('全部委托完成!去广场领取 ★ 力量之星 ★,再去见领主领赏!', 6);
+    toastQuest('全部委托完成!去喷泉广场领取 ★ 金狮勋章 ★,再去见领主领赏!', 6);
   }
 }
 
@@ -7066,8 +7212,19 @@ function spawnWarband() {
   warband.lootT = 0;
   warband.pKills = 0;
   warband.gKills = 0;
-  const a = rand() * Math.PI * 2;
+  // 只从东、南、北面来:西边隔着河(唯一的木桥在 (-95,-34)),从那边刷出会卡在河岸
+  const a = -Math.PI * 0.75 + rand() * Math.PI * 1.5;
   const sx = Math.cos(a) * 120, sz = Math.sin(a) * 120;
+  // 行军路线:先到离出发点最近的城门,再进城压向广场
+  const gate = world.gates.reduce((g0, g1) =>
+    (Math.hypot(g0.x - sx, g0.z - sz) <= Math.hypot(g1.x - sx, g1.z - sz) ? g0 : g1));
+  const outX = gate.x + Math.sign(gate.x) * 12, outZ = gate.z + Math.sign(gate.z) * 12; // 门外集结点
+  warband.path = [[outX, outZ], [gate.x, gate.z], [0, 10]];
+  warband.wp = 0;
+  warband.ax = sx;
+  warband.az = sz;
+  warband.bestD = Infinity;
+  warband.stallT = 0;
   // 越剿越强:每覆灭一支,下一支多一个喽啰(封顶 8),枭首更硬;每第四波=倾巢攻城
   warband.siege = (warband.wave + 1) % 4 === 0 && warband.wave > 0;
   const grunts = warband.siege ? 9 : Math.min(8, 4 + warband.wave);
@@ -7075,10 +7232,13 @@ function spawnWarband() {
   lead.warlord = true;
   lead.duel = true; // 借精英出招库:紫圈重击+二连击
   lead.warband = true;
+  lead._ox = 0; lead._oz = 0;
   warband.members.push(lead);
   for (let i = 0; i < grunts; i++) {
-    const b = addBandit(sx + (rand() * 8 - 4), sz + (rand() * 8 - 4), { hp: 3 });
+    const ox = rand() * 8 - 4, oz = rand() * 8 - 4;
+    const b = addBandit(sx + ox, sz + oz, { hp: 3 });
     b.warband = true;
+    b._ox = ox; b._oz = oz; // 队形:相对锚点的站位
     warband.members.push(b);
   }
   const compass = Math.abs(sx) > Math.abs(sz) ? (sx > 0 ? '东' : '西') : (sz > 0 ? '南' : '北');
@@ -7163,14 +7323,12 @@ function updateWarband(dt) {
   const alive = warband.members.filter((b) => !b.dead);
   warband.tauntT = (warband.tauntT || 0) - dt;
   const lead0 = alive.find((b) => b.warlord);
+  // 枭首叫骂:头顶冒一句(不进提示队列),30 秒一次
   if (lead0 && warband.tauntT <= 0 &&
       dist2(player.pos.x, player.pos.z, lead0.pos.x, lead0.pos.z) < 625) {
-    warband.tauntT = 9;
+    warband.tauntT = 30;
     const pool = warband.wave > 0 && rand() < 0.6 ? WARLORD_REVENGE : WARLORD_TAUNTS;
-    const base = pool[Math.floor(rand() * pool.length)];
-    const corpus = Array.isArray(EVO.corpus) && EVO.corpus.length && rand() < 0.35
-      ? `(帮众起哄:${EVO.corpus[Math.floor(rand() * EVO.corpus.length)]})` : '';
-    toast(`🗯️ 战团枭首:「${base}」${corpus}`, 3.2);
+    callout(`「${pool[Math.floor(rand() * pool.length)]}」`, 'red', lead0.pos);
   }
   if (!alive.length) { // 全歼:犒赏;残党记仇,下一支更大
     const wasSiege = warband.siege;
@@ -7196,13 +7354,40 @@ function updateWarband(dt) {
     sfx.fanfare();
     return;
   }
-  // 行军:队伍的"锚点"稳步压向广场;贴近玩家的成员自动切普通战斗 AI
-  for (const b of alive) {
-    const dx = -b.home.x, dz = 10 - b.home.z;
+  // 行军:队伍的锚点沿航点(门外集结 → 城门 → 广场)稳步推进,成员按队形跟着锚点;
+  // 贴近玩家的成员自动切普通战斗 AI
+  const path = warband.path || [[0, 10]];
+  const wpT = path[Math.min(warband.wp || 0, path.length - 1)];
+  {
+    const dx = wpT[0] - warband.ax, dz = wpT[1] - warband.az;
     const d = Math.hypot(dx, dz);
-    if (d > 14) {
-      b.home.x += (dx / d) * 4.2 * dt;
-      b.home.z += (dz / d) * 4.2 * dt;
+    const last = (warband.wp || 0) >= path.length - 1;
+    if (d < (last ? 14 : 3) && !last) warband.wp++;
+    else if (d > (last ? 14 : 0.5)) {
+      // 锚点别跑出队伍太远:成员落后(被卡住/在打架)时锚点等人
+      let lag = 0;
+      for (const b of alive) lag = Math.max(lag, Math.hypot(b.pos.x - b.home.x, b.pos.z - b.home.z));
+      const sp = lag > 14 ? 0.6 : 4.2;
+      warband.ax += (dx / d) * sp * dt;
+      warband.az += (dz / d) * sp * dt;
+    }
+  }
+  for (const b of alive) {
+    b.home.x = warband.ax + (b._ox || 0);
+    b.home.z = warband.az + (b._oz || 0);
+  }
+  // 卡住兜底:60 秒没有朝广场推进 5 米以上,战团畏缩撤走(横幅一并清掉)
+  {
+    let sum = 0;
+    for (const b of alive) sum += Math.hypot(b.pos.x, b.pos.z - 10);
+    const avg = sum / alive.length;
+    const engaged = alive.some((b) => dist2(b.pos.x, b.pos.z, player.pos.x, player.pos.z) < 900); // 正和你交手:不算卡住
+    if (avg < warband.bestD - 5 || engaged) { warband.bestD = Math.min(warband.bestD, avg); warband.stallT = 0; }
+    else warband.stallT += dt;
+    if (warband.stallT > 60 && !warband.siege) {
+      disbandWarband(true);
+      toast('🏳️ 盗贼战团迟迟攻不进来,悻悻撤走了。', 4);
+      return;
     }
   }
   // 兵临集市:赖满 20 秒没被赶走=劫掠得手,扬长而去
@@ -7299,10 +7484,12 @@ function slayBandit(b, opts = {}) {
   if (b.boss) dismissMinions();
   if (b.warband) warband[opts.companion ? 'gKills' : 'pKills'] = (warband[opts.companion ? 'gKills' : 'pKills'] || 0) + 1;
   dropCoins(b.pos, b.boss ? 20 : opts.coins ?? 5);
-  if (quest.active && missions[quest.idx].type === 'bandits' && !specialBandit(b) && !b.ambient) {
+  if (quest.active && missions[quest.idx].type === 'bandits' && (b.campFoe || (!specialBandit(b) && !b.ambient))) {
     quest.progress++;
-    toast(`击败盗贼 ${quest.progress}/3${opts.credit ? `(${opts.credit}!)` : ''}`, 2);
-    if (quest.progress >= 3) completeMission();
+    const goal = missions[quest.idx].goal;
+    dropQuestToasts();
+    if (quest.progress < goal) toastQuest(`${b.captain ? '营地头目倒下了!' : '击败盗贼'} ${quest.progress}/${goal}${opts.credit ? `(${opts.credit}!)` : ''}`, 2);
+    if (quest.progress >= goal) completeMission();
   }
 }
 // 剑光拖尾:每次挥砍横扫出一道弧光,0.16 秒燃尽
@@ -7372,7 +7559,7 @@ function updateTrails(dt) {
 // 精英(头目/悬赏/决斗/将领)只吃重击的打断
 function flinch(e, heavy) {
   if (e.dead || e.downT > 0) return;
-  const elite = e.boss || e.bountyHead || e.duel || e.warlord;
+  const elite = e.boss || e.bountyHead || e.duel || e.warlord || e.elite;
   if (!heavy && (elite || (e.armorT || 0) > 0)) return;
   e.hitStunT = heavy ? 0.6 : 0.3;
   e.armorT = heavy ? 0.9 : 1.3;
@@ -7977,10 +8164,10 @@ function damagePlayer(n, attacker = null, pierce = false) {
       if (player.hp <= 0) gameOver();
       return;
     }
-    // 格挡也要花力气:每挡一下 -8 体力,挡空了盾会被砸开
+    // 格挡也要花力气:每挡一下 -14 体力(一直举盾不是万能的),挡空了盾会被砸开
     sfx.clank();
     if (prologue.on) prologue.flags.blocked = true;
-    player.sta = Math.max(0, player.sta - 8);
+    player.sta = Math.max(0, player.sta - 14);
     if (player.sta <= 0) {
       player.blocking = false;
       player.staggerT = 0.9;
@@ -8029,7 +8216,7 @@ function gameOver() {
   player.jailed = wanted > 0;
   // 按死因给标题:被抓、葬身狼口、倒在匪刃下、霜龙之怒……
   const cause = wanted > 0 ? ['通缉终结', '你被王国卫兵抓住了!关进地牢,罚没一半金币。']
-    : player.lastHitBy === 'wolf' ? ['葬身狼口', '狼群把你拖倒了……醒来时已在城里。']
+    : player.lastHitBy === 'wolf' ? ['葬身狼口', '狼群把你拖倒了……']
     : player.lastHitBy === 'dragon' ? ['霜龙之怒', '冰息吞没了你……幸存者把你抬回了王都。']
     : player.lastHitBy === 'bandit' ? ['倒在匪刃下', '盗贼搜走了你一半的金币。']
     : ['你倒下了', '眼前一黑……'];
@@ -8053,11 +8240,15 @@ function gameOver() {
     player.dead = false;
     gameoverEl.style.display = 'none';
     if (player.jailed && player.loot > 0) { player.loot = 0; } // 赃物人赃并获,全数充公
+    const lostHow = player.lastHitBy === 'bandit' ? '盗贼搜走了你一半的金币'
+      : player.lastHitBy === 'wolf' ? '赶狼的牧人把你背了回来,一半金币算作谢礼'
+        : player.lastHitBy === 'dragon' ? '幸存者把你抬回了王都,一半金币付了药钱'
+          : '一半金币不知丢在了哪里';
     toast(player.jailed
       ? '⛓️ 你在王都地牢蹲了一夜,罚没一半金币后被踢了出来。' + (player.loot === 0 ? '(兜里的赃物也被搜走了)' : '')
       : stats.deaths >= 3
-        ? `你第 ${stats.deaths} 次在喷泉旁醒来。水声轻得……像是有谁悄悄调小了。`
-        : '你在喷泉旁醒来,一半金币被没收充公…', 4);
+        ? `你第 ${stats.deaths} 次在喷泉旁醒来(${lostHow})。水声轻得……像是有谁悄悄调小了。`
+        : `你在喷泉旁醒来——${lostHow}。`, 4);
   }, 2600);
 }
 
@@ -8415,7 +8606,7 @@ function updateBandits(dt) {
           moving = true;
         } else {
           // 出招选择:精英(头目/悬赏/决斗)会二连击和破盾重击,杂兵偶尔连击
-          const elite = b.boss || b.bountyHead || b.duel;
+          const elite = b.boss || b.bountyHead || b.duel || b.elite;
           const r = rand();
           // 起手 ≥0.6 秒(看得清、来得及反应),紫圈重击 1 秒
           if (elite && r < 0.3) { b.heavyAtk = true; b.windupT = 1.0; telegraphFlash(b, 1.0, true); }
@@ -8959,11 +9150,7 @@ function doRoll() {
   if (!started || player.dead || player.mounted || player.carrying ||
       player.rollCd > 0 || player.rollT > 0 || !player.onGround || player.staggerT > 0) return;
   if (!spendSta(15)) return;
-  // 序章:狼在起手(蹲伏/龇牙)时翻滚 = 学会了躲
-  if (prologue.on && prologue.step === 2) {
-    const w = prologue.wolves[0];
-    if (w && !w.dead && (w.lunging > 0 || w.biteT > 0)) prologue.flags.rolled = true;
-  }
+  player.lastRollAt = simNow(); // 序章"真的躲开了"的判定要用
   const fx = -Math.sin(cam.yaw), fz = -Math.cos(cam.yaw);
   const rx = -fz, rz = fx;
   let ix = 0, iz = 0;
@@ -9079,7 +9266,7 @@ function updatePickups(dt) {
         }
         saveGame();
       } else {
-        stats.starTaken = true; // 力量之星只领一次,记进档
+        stats.starTaken = true; // 金狮勋章只领一次,记进档
         sfx.fanfare();
         toast('★ 恭喜通关!你成了王国传奇——世界仍然开放,继续撒欢吧!★', 8);
       }
@@ -9093,16 +9280,61 @@ function updatePickups(dt) {
 // 城墙寻路:人在城里、目标在城外(或反之)时,光柱与小地图箭头先指向顺路的城门,
 // 免得新手顶着城墙原地打转(城墙矩形 x:-70..70, z:-55..55;城门见 world.gates)
 function insideTown(x, z) { return Math.abs(x) < 70 && Math.abs(z) < 55; }
+// 线段是否穿过城墙矩形(四周放宽 m 米);Liang–Barsky 裁剪
+function segHitsTown(x0, z0, x1, z1, m = 1) {
+  let t0 = 0, t1 = 1;
+  const dx = x1 - x0, dz = z1 - z0;
+  const P = [-dx, dx, -dz, dz], Q = [x0 + 70 + m, 70 + m - x0, z0 + 55 + m, 55 + m - z0];
+  for (let i = 0; i < 4; i++) {
+    if (P[i] === 0) { if (Q[i] < 0) return false; continue; }
+    const r = Q[i] / P[i];
+    if (P[i] < 0) { if (r > t1) return false; if (r > t0) t0 = r; } else { if (r < t0) return false; if (r < t1) t1 = r; }
+  }
+  return t0 < t1;
+}
+const TOWN_CORNERS = [{ x: -79, z: -64 }, { x: 79, z: -64 }, { x: 79, z: 64 }, { x: -79, z: 64 }];
+// 城外从 (px,pz) 走到 (gx,gz):直线穿墙就先去最顺路的墙角(返回墙角);不穿墙返回 null
+function cornerToward(px, pz, gx, gz) {
+  if (!segHitsTown(px, pz, gx, gz)) return null;
+  let best = null, bd = Infinity;
+  for (const c of TOWN_CORNERS) {
+    if (segHitsTown(px, pz, c.x, c.z)) continue;
+    const d = Math.hypot(c.x - px, c.z - pz) + Math.hypot(gx - c.x, gz - c.z);
+    if (d < bd) { bd = d; best = c; }
+  }
+  return best;
+}
+// 城外两点间的步行距离(要绕墙就按绕墙角算)
+function outsideDist(px, pz, gx, gz) {
+  const c = cornerToward(px, pz, gx, gz);
+  return c ? Math.hypot(c.x - px, c.z - pz) + Math.hypot(gx - c.x, gz - c.z) : Math.hypot(gx - px, gz - pz);
+}
+// 城墙寻路:返回这一段该先去的航点(城门或墙角),直接能走到目标时返回 null
 function routeVia(tx, tz) {
   if (inDungeon()) return null;
-  if (insideTown(player.pos.x, player.pos.z) === insideTown(tx, tz)) return null;
-  let best = null, bd = Infinity;
-  for (const g of world.gates) {
-    const d = Math.hypot(g.x - player.pos.x, g.z - player.pos.z) + Math.hypot(tx - g.x, tz - g.z);
-    if (d < bd) { bd = d; best = g; }
+  const px = player.pos.x, pz = player.pos.z;
+  const pin = insideTown(px, pz), tin = insideTown(tx, tz);
+  if (pin && tin) return null;
+  if (pin) { // 城里 → 城外:走最顺路的城门
+    let best = null, bd = Infinity;
+    for (const g of world.gates) {
+      const d = Math.hypot(g.x - px, g.z - pz) + outsideDist(g.x, g.z, tx, tz);
+      if (d < bd) { bd = d; best = g; }
+    }
+    if (best && Math.hypot(best.x - px, best.z - pz) < 7) return null; // 已到门洞
+    return best;
   }
-  if (best && Math.hypot(best.x - player.pos.x, best.z - player.pos.z) < 7) return null; // 已到门洞
-  return best;
+  let goal = null;
+  if (tin) { // 城外 → 城里:先到最顺路的城门(绕墙的路程算进去)
+    let bd = Infinity;
+    for (const g of world.gates) {
+      const d = outsideDist(px, pz, g.x, g.z) + Math.hypot(tx - g.x, tz - g.z);
+      if (d < bd) { bd = d; goal = g; }
+    }
+    if (goal && Math.hypot(goal.x - px, goal.z - pz) < 7) return null;
+  }
+  const gx = goal ? goal.x : tx, gz = goal ? goal.z : tz;
+  return cornerToward(px, pz, gx, gz) || goal; // 城外 → 城外穿城:绕墙角
 }
 let beaconRouted = null; // 被改道到城门时记下真目标,下一帧先还原再让任务逻辑更新
 function updateQuest(dt) {
@@ -9134,6 +9366,13 @@ function updateQuestTarget(dt) {
     beacon.position.x = bountyRT.target.pos.x;
     beacon.position.z = bountyRT.target.pos.z;
   }
+  // 没有进行中的委托:光柱立在埃隆身上(他白天在广场、夜里回城堡)
+  if (!quest.active && !beacon.visible && quest.idx < missions.length && !prologue.on && !player.dead) {
+    beacon.visible = true;
+    beacon.position.x = steward.pos.x;
+    beacon.position.z = steward.pos.z;
+  }
+  if (quest.offerT > 0) quest.offerT -= dt;
   if (!quest.active || player.dead) return;
   const m = missions[quest.idx];
   const setBeacon = (x, z) => { beacon.visible = true; beacon.position.x = x; beacon.position.z = z; };
@@ -9141,9 +9380,31 @@ function updateQuestTarget(dt) {
   if (m.type === 'deliver') {
     quest.timer -= dt;
     setBeacon(world.windmillPos.x, world.windmillPos.z);
+    // 半路截道:出了东门、离磨坊还远时,两个黑石喽啰从路边窜出来抢包裹(甩开或砍翻都行)
+    if (!questRT.deliverAmbush && player.pos.x > 84 &&
+        dist2(player.pos.x, player.pos.z, world.windmillPos.x, world.windmillPos.z) > 30 * 30) {
+      questRT.deliverAmbush = true;
+      const dx = world.windmillPos.x - player.pos.x, dz = world.windmillPos.z - player.pos.z;
+      const dd = Math.hypot(dx, dz) || 1;
+      const ax = player.pos.x + (dx / dd) * 13, az = player.pos.z + (dz / dd) * 13;
+      for (const side of [-1, 1]) {
+        const b = addBandit(ax - (dz / dd) * 5 * side, az + (dx / dd) * 5 * side, { hp: 2, speed: 6.2, escort: true });
+        b.yaw = Math.atan2(-dx, -dz);
+      }
+      toastQuest('⚠️ 路边窜出两个黑石喽啰:「把包裹留下!」(甩开他们,或者砍翻)', 3.5);
+      sfx.wanted();
+    }
     if (dist2(player.pos.x, player.pos.z, world.windmillPos.x, world.windmillPos.z) < 49) {
+      const ambushed = questRT.deliverAmbush;
+      questRT.deliverAmbush = false;
       completeMission();
+      openDialog([
+        '磨坊主老汉斯:(接过包裹,掂了掂)总算到了!这是今年的麦价文书——落到黑石那帮人手里,他们能把全城的面包价抬上天。',
+        ambushed ? '老汉斯:路上碰到拦路的了?……嗯,他们最近盯磨坊盯得紧。替我谢谢埃隆,也谢谢你。'
+          : '老汉斯:一路太平?那是你跑得快。最近黑石的人常在东路上晃悠,往后走这条路多留个心眼。',
+      ]);
     } else if (quest.timer <= 0) {
+      questRT.deliverAmbush = false;
       failMission('投递超时!回去找埃隆重新接取…');
     }
   } else if (m.type === 'coins') {
@@ -9262,8 +9523,13 @@ function updateHUD() {
   const hearts = '❤️'.repeat(full) + (half ? '💔' : '') + '🖤'.repeat(Math.max(0, heartsMax - full - half));
   const stars = wanted > 0 ? '⭐'.repeat(wanted) + '✩'.repeat(5 - wanted) : '';
   let missionText;
-  if (quest.idx >= missions.length) missionText = '🏆 全部委托完成 — 去谒见领主,王国是你的了!';
-  else if (!quest.active) missionText = `📜 委托 ${quest.idx + 1}/${missions.length}:去喷泉广场找管家埃隆(按 E)`;
+  if (prologue.on) missionText = '⚔️ 序章:击退冲进村子的狼群';
+  else if (quest.idx >= missions.length) missionText = '🏆 全部委托完成 — 去谒见领主,王国是你的了!';
+  else if (!quest.active) {
+    missionText = canAcceptRemotely()
+      ? `📜 委托 ${quest.idx + 1}/${missions.length}:${missions[quest.idx].title} —— 按 E 原地接下(信使送来的委托书)`
+      : `📜 委托 ${quest.idx + 1}/${missions.length}:去${stewardWhere()}找管家埃隆(按 E,光柱指路)`;
+  }
   else {
     const m = missions[quest.idx];
     let prog = '';
@@ -9321,7 +9587,7 @@ function updateHUD() {
 function computePrompt() {
   promptText = '';
   promptTargetPos = null;
-  if (!started || player.dead) return;
+  if (!started || player.dead || dialog.open) return; // 对话/手账开着时 E 是翻页,不显示交互提示
   if (armRT.active) { // 掰手腕:状态条而不是交互
     const filled = Math.round(Math.max(0, Math.min(1, armRT.meter)) * 10);
     promptText = `💪 ${'█'.repeat(filled)}${'░'.repeat(10 - filled)} 狂按 E!!`;
@@ -9979,6 +10245,7 @@ function tick(dt, now) {
   }
 
   updateToast(dt);
+  updateDialogRange();
   updateHintFade(dt);
   updateFlashes(dt);
   updateTimers(dt);
