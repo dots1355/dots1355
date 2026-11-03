@@ -16,6 +16,9 @@ import { staticBatch } from './batch.js';
 import { later, updateTimers, pendingTimers } from './core/timers.js';
 import { rand, seed as seedRng } from './core/rng.js';
 import { initAmbient, updateAmbient } from './ambient.js';
+import { cam, updateCamera } from './systems/camera.js';
+import { weather, setWeather, updateWeather, updateRain, spawnDust, updateDust } from './systems/weather.js';
+import { ctx } from './core/ctx.js';
 import { LIGHT_POOL, lightPool, initLightPool, addLightSource, removeLightSource, updateLightPool, pooledMat, releaseMat } from './gfx/pools.js';
 import { mergeGeometries } from '../lib/jsm/utils/BufferGeometryUtils.js';
 import { renderer, scene, camera, LOWFX, composer, gtao, bloom, gradePass, STYLE_PRESETS, stylePass, smaa, styleKey, styleExp, styleBloomMul, applyStyle, cycleStyle } from './gfx/core.js';
@@ -864,7 +867,7 @@ function cycleSpell() {
 // src:'player'(默认,火球/火油罐)或环境伤害(如 'dragon'):环境伤害不进连杀、不算卫兵罪行
 function explodeAt(x, z, dmg = 3, radius = 3.4, src = 'player') {
   const env = src !== 'player';
-  camShake = Math.max(camShake, 0.35);
+  cam.shake = Math.max(cam.shake, 0.35);
   sfx.stomp();
   spawnDust(x, 0.5, z, 16, radius * 0.5, 2.2);
   // 卫兵不受龙息之类的环境爆炸牵连,也不会因此通缉你
@@ -941,7 +944,7 @@ function castBigFire() {
   skillXp('destruction', 3);
   sfx.arrow();
   sfx.stomp();
-  camShake = Math.max(camShake, 0.2);
+  cam.shake = Math.max(cam.shake, 0.2);
   const fx = Math.sin(player.yaw), fz = Math.cos(player.yaw);
   const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.4, 10, 8),
     new THREE.MeshBasicMaterial({ color: 0xffa040 }));
@@ -1025,7 +1028,7 @@ function castSpell() {
     toast('✨ 暖流漫过伤口。(回复 ❤×2)', 2);
   } else if (key === 'frost') {
     sfx.clear();
-    camShake = Math.max(camShake, 0.25);
+    cam.shake = Math.max(cam.shake, 0.25);
     spawnDust(player.pos.x, 0.4, player.pos.z, 22, 3.2, 1.6);
     // 冰霜留痕:6 秒冰面(雨天水汽足,冻得住 9 秒),踩上减速一半
     addFrostPatch(player.pos.x, player.pos.z, 5.5,
@@ -1079,7 +1082,7 @@ function updateMagic(dt) {
   // 体力(骑砍规则):格挡/疾跑/出手/喘气中不回,其余时刻 16/s 回满
   if (player.gaspT > 0) player.gaspT -= dt;
   if (player.staggerT > 0) player.staggerT -= dt;
-  const busy = player.blocking || player.attackT > 0 || player.gaspT > 0 || moveState >= 2;
+  const busy = player.blocking || player.attackT > 0 || player.gaspT > 0 || cam.moveState >= 2;
   if (!busy) player.sta = Math.min(player.maxSta, player.sta + 16 * dt);
   updateSneakXp(dt);
 }
@@ -1171,7 +1174,7 @@ function learnShout() {
   }
   shout.learned = true;
   sfx.fanfare();
-  camShake = 0.5;
+  cam.shake = 0.5;
   unlockAch('dovah');
   remember('把手放上龙骨之地的龙颅,学会了先古的战吼', 'shout');
   openDialog([
@@ -1187,7 +1190,7 @@ function doShout() {
   shout.cd = stats.dragonSlain ? 22.5 : 45; // 屠龙者:龙魂减半冷却
   sfx.stomp();
   sfx.clear();
-  camShake = 0.6;
+  cam.shake = 0.6;
   hitStopT = Math.max(hitStopT, 0.08);
   spawnDust(player.pos.x, 0.4, player.pos.z, 26, 4, 2.6);
   for (const list of [bandits, wolves, guards]) {
@@ -1786,7 +1789,7 @@ function awakenDragon() {
   dragonRT.landAt = [22, 14, 7];
   d.group.position.set(DRAGON_SKULL.x, 0.5, DRAGON_SKULL.z);
   scene.add(d.group);
-  camShake = 0.6;
+  cam.shake = 0.6;
   sfx.wanted();
   sfx.stomp();
   toast('🐉 大地震颤——霜龙的残魂闻声而起,骨翼重聚血肉!!(飞行时用弓和法术,等它落地喘息再上刀)', 6);
@@ -1802,7 +1805,7 @@ function damageDragon(nDmg, from) {
     dragonRT.t = 2.2;
     hitStopT = Math.max(hitStopT, 0.25);
     slowMoT = 0.8;
-    camShake = 0.8;
+    cam.shake = 0.8;
     return;
   }
   if (dragonRT.landAt.length && dragonRT.hp <= dragonRT.landAt[0]) {
@@ -1812,7 +1815,7 @@ function damageDragon(nDmg, from) {
     dragonRT.sweepT = 1.4;
     toast('🐉 霜龙坠地喘息——就是现在,上刀!!', 3);
     sfx.stomp();
-    camShake = Math.max(camShake, 0.4);
+    cam.shake = Math.max(cam.shake, 0.4);
   }
 }
 // 地面范围预警:一圈不收缩的红环(龙尾横扫等大范围招式)
@@ -1878,7 +1881,7 @@ function updateDragon(dt) {
     if (dd < 2.8 && !dragonRT._sw) {
       dragonRT._sw = true;
       damagePlayer(2, null);
-      camShake = Math.max(camShake, 0.4);
+      cam.shake = Math.max(cam.shake, 0.4);
     }
     if (dragonRT.t <= 0 || dd < 1) { dragonRT.phase = 'circle'; dragonRT.t = 5 + rand() * 3; }
   } else if (dragonRT.phase === 'breath') {
@@ -1914,7 +1917,7 @@ function updateDragon(dt) {
       if (dragonRT.sweepWind <= 0) {
         g.rotation.z = 0;
         dragonRT.sweepT = 2.4;
-        camShake = Math.max(camShake, 0.35);
+        cam.shake = Math.max(cam.shake, 0.35);
         sfx.stomp();
         spawnDust(g.position.x, 0.3, g.position.z, 18, 5, 2);
         if (Math.hypot(player.pos.x - g.position.x, player.pos.z - g.position.z) < 5.4 && !(player.rollT > 0)) {
@@ -3500,7 +3503,7 @@ const DIRECTOR_EVENTS = [
               landed = true;
               scene.remove(ball);
               weatherAudio.thunder();
-              camShake = Math.max(camShake, 0.5);
+              cam.shake = Math.max(cam.shake, 0.5);
               spawnDust(p.x, 0.3, p.z, 20, 4, 2.5);
               const crater = new THREE.Mesh(new THREE.CircleGeometry(3.2, 12),
                 lambert(0x4a4038, { roughness: 1 }));
@@ -5149,7 +5152,7 @@ function mindTick() {
     workspace.mood.a = Math.min(1, workspace.mood.a + MIND.surprise * 0.08);
     if (Math.abs(err) > 0.55 && MIND.surToastCd <= 0 && started && !dialog.open) {
       MIND.surToastCd = 60;
-      camShake = Math.max(camShake, 0.12); // 惊讶在画面上也颤一下
+      cam.shake = Math.max(cam.shake, 0.12); // 惊讶在画面上也颤一下
       toast('🫧 (这颗心愣了一下——事情没照它预想的走。)', 3);
     }
   }
@@ -5855,7 +5858,7 @@ function drainInput() {
   }
 }
 const keys = {};
-let camYaw = 0, camPitch = 0.35, locked = false;
+let locked = false;
 window.addEventListener('keydown', (e) => {
   if (e.code === 'Space' || e.code === 'Tab') e.preventDefault(); // Tab 别把焦点切走
   idleT = 0; // 有输入,世界收回它的注视
@@ -5933,8 +5936,8 @@ document.addEventListener('pointerlockchange', () => {
 });
 document.addEventListener('mousemove', (e) => {
   if (!locked) return;
-  camYaw -= e.movementX * 0.0028;
-  camPitch = Math.max(-0.1, Math.min(1.15, camPitch + e.movementY * 0.0028));
+  cam.yaw -= e.movementX * 0.0028;
+  cam.pitch = Math.max(-0.1, Math.min(1.15, cam.pitch + e.movementY * 0.0028));
 });
 
 // ================= 序章(天际式开场):狼袭教学 → 队长赏识 → 标题卡揭幕 =================
@@ -6074,7 +6077,7 @@ function whistleHorse() {
   sfx.whoosh(1.4);
   const d = Math.hypot(h.pos.x - player.pos.x, h.pos.z - player.pos.z);
   if (d > 6) {
-    const a = camYaw + Math.PI; // 从镜头背后跑进画面
+    const a = cam.yaw + Math.PI; // 从镜头背后跑进画面
     h.pos.set(player.pos.x + Math.sin(a) * 5 + Math.cos(a) * 2, 0, player.pos.z + Math.cos(a) * 5 - Math.sin(a) * 2);
     resolveCollisions(h.pos, 0.6, colliders);
     h.home.copy(h.pos);
@@ -6101,162 +6104,6 @@ titleEl.addEventListener('click', () => {
   renderer.domElement.requestPointerLock();
   toast('欢迎来到艾尔德里亚!去喷泉广场找管家埃隆接取委托吧(按 E 互动)', 5);
 });
-
-// ================= 天气系统 =================
-const WEATHER_DEF = {
-  clear:  { rain: 0,   cover: 0.05, dur: [55, 110], next: { cloudy: 1 } },
-  cloudy: { rain: 0,   cover: 0.55, dur: [30, 60],  next: { rain: 0.55, clear: 0.45 } },
-  rain:   { rain: 0.7, cover: 0.85, dur: [30, 60],  next: { storm: 0.35, cloudy: 0.65 } },
-  storm:  { rain: 1,   cover: 1,    dur: [22, 45],  next: { rain: 1 } },
-};
-const weather = { state: 'clear', timer: 60, rain: 0, targetRain: 0, cover: 0.05, targetCover: 0.05, boltT: 4 };
-
-function setWeather(s) {
-  const def = WEATHER_DEF[s];
-  weather.state = s;
-  weather.targetRain = def.rain;
-  weather.targetCover = def.cover;
-  weather.timer = def.dur[0] + rand() * (def.dur[1] - def.dur[0]);
-  if (started && (s === 'rain' || s === 'storm')) {
-    if (isWinter()) toast(s === 'storm' ? '🌨️ 暴风雪来了!' : '🌨️ 下雪了……', 2.5);
-    else toast(s === 'storm' ? '⛈️ 雷暴来袭!' : '🌧️ 下雨了…', 2.5);
-  }
-}
-
-function lightning() {
-  const el = document.getElementById('lightning');
-  el.style.transition = 'none';
-  el.style.opacity = 0.75;
-  requestAnimationFrame(() => {
-    el.style.transition = 'opacity 0.35s';
-    el.style.opacity = 0;
-  });
-  camShake = Math.max(camShake, 0.3);
-  setTimeout(() => weatherAudio.thunder(), 400 + rand() * 1200);
-}
-
-function updateWeather(dt) {
-  weather.timer -= dt;
-  if (weather.timer <= 0) {
-    const nx = WEATHER_DEF[weather.state].next;
-    let r = rand(), pick = 'clear';
-    for (const [k, p] of Object.entries(nx)) { r -= p; if (r <= 0) { pick = k; break; } }
-    // 世界的心境轻推天色:郁结的心多云,舒畅的心放晴(轻,不越历法与季节)
-    const v = workspace.mood.v;
-    if (v < -0.3 && pick === 'clear' && rand() < 0.4) pick = 'cloudy';
-    if (v > 0.3 && pick === 'rain' && rand() < 0.35) pick = 'cloudy';
-    setWeather(pick);
-  }
-  const step = (cur, tgt, rate) => cur + Math.max(-rate * dt, Math.min(rate * dt, tgt - cur));
-  weather.rain = step(weather.rain, weather.targetRain, 0.12);
-  weather.cover = step(weather.cover, weather.targetCover, 0.1);
-  weatherAudio.setRain(started && !isWinter() ? weather.rain : 0); // 雪落无声
-  if (weather.state === 'storm' && weather.rain > 0.7 && !isWinter()) {
-    weather.boltT -= dt;
-    if (weather.boltT <= 0) {
-      weather.boltT = 3 + rand() * 8;
-      lightning();
-    }
-  }
-}
-
-// ---- 雨(线段粒子,环绕玩家的体积内循环)----
-const RAIN_N = 1100;
-const rainGeo = new THREE.BufferGeometry();
-const rainPos = new Float32Array(RAIN_N * 6);
-rainGeo.setAttribute('position', new THREE.BufferAttribute(rainPos, 3));
-const rainMat = new THREE.LineBasicMaterial({ color: 0x9fb8d0, transparent: true, opacity: 0 });
-const rainLines = new THREE.LineSegments(rainGeo, rainMat);
-rainLines.frustumCulled = false;
-rainLines.visible = false;
-rainLines.userData.noSnap = true; // 雨幕自己按玩家脚下高度对齐
-scene.add(rainLines);
-const drops = new Float32Array(RAIN_N * 3);
-for (let i = 0; i < RAIN_N; i++) {
-  drops[i * 3] = (rand() - 0.5) * 56;
-  drops[i * 3 + 1] = rand() * 24;
-  drops[i * 3 + 2] = (rand() - 0.5) * 56;
-}
-
-function updateRain(dt) {
-  const snow = isWinter(); // 冬季降水变成雪:白色、慢落、随风打旋
-  rainMat.color.setHex(snow ? 0xf0f5ff : 0x9fb8d0);
-  rainMat.opacity = weather.rain * (snow ? 0.6 : 0.38);
-  rainLines.visible = weather.rain > 0.03;
-  if (!rainLines.visible) return;
-  const cx = player.pos.x, cz = player.pos.z;
-  rainLines.position.y = groundH(cx, cz);
-  const wind = snow ? 1.4 : 4.5;
-  const fall = snow ? 6.5 : 30;
-  const t = performance.now() * 0.001;
-  for (let i = 0; i < RAIN_N; i++) {
-    let x = drops[i * 3], y = drops[i * 3 + 1], z = drops[i * 3 + 2];
-    y -= fall * dt;
-    x += wind * dt;
-    if (snow) { x += Math.sin(t * 1.7 + i) * 0.8 * dt; z += Math.cos(t * 1.3 + i * 0.7) * 0.8 * dt; }
-    if (y < 0) {
-      y = 20 + rand() * 6;
-      x = cx + (rand() - 0.5) * 56;
-      z = cz + (rand() - 0.5) * 56;
-    }
-    if (x < cx - 28) x += 56; else if (x > cx + 28) x -= 56;
-    if (z < cz - 28) z += 56; else if (z > cz + 28) z -= 56;
-    drops[i * 3] = x; drops[i * 3 + 1] = y; drops[i * 3 + 2] = z;
-    rainPos[i * 6] = x; rainPos[i * 6 + 1] = y; rainPos[i * 6 + 2] = z;
-    rainPos[i * 6 + 3] = x + (snow ? 0.1 : 0.08); rainPos[i * 6 + 4] = y + (snow ? 0.12 : 0.55); rainPos[i * 6 + 5] = z;
-  }
-  rainGeo.attributes.position.needsUpdate = true;
-}
-
-// ---- 尘土粒子(马蹄扬尘/疾跑/落地)----
-const DUST_MAX = 400;
-const dustGeo = new THREE.BufferGeometry();
-const dustPos = new Float32Array(DUST_MAX * 3).fill(-9999);
-dustGeo.setAttribute('position', new THREE.BufferAttribute(dustPos, 3));
-const dustMat = new THREE.PointsMaterial({
-  color: 0xc9b08a, size: 0.38, transparent: true, opacity: 0.5, depthWrite: false });
-const dustPts = new THREE.Points(dustGeo, dustMat);
-dustPts.frustumCulled = false;
-dustPts.userData.noSnap = true; // 粒子缓冲里已是绝对坐标
-scene.add(dustPts);
-const dust = [];
-const dustFree = [...Array(DUST_MAX).keys()];
-
-function spawnDust(x, y, z, n = 3, spread = 0.5, up = 1.4) {
-  if (weather.rain > 0.5) return; // 雨天地面湿润无尘
-  for (let k = 0; k < n; k++) {
-    const i = dustFree.pop();
-    if (i === undefined) return;
-    const gy = groundH(x, z);
-    dustPos[i * 3] = x + (rand() - 0.5) * spread;
-    dustPos[i * 3 + 1] = gy + y + rand() * 0.2;
-    dustPos[i * 3 + 2] = z + (rand() - 0.5) * spread;
-    dust.push({
-      i, floor: gy + 0.04,
-      vx: (rand() - 0.5) * 1.3, vy: up * (0.5 + rand() * 0.7), vz: (rand() - 0.5) * 1.3,
-      life: 0, max: 0.45 + rand() * 0.4,
-    });
-  }
-}
-
-function updateDust(dt) {
-  if (!dust.length) return;
-  for (let k = dust.length - 1; k >= 0; k--) {
-    const p = dust[k];
-    p.life += dt;
-    if (p.life > p.max) {
-      dustPos[p.i * 3 + 1] = -9999;
-      dustFree.push(p.i);
-      dust.splice(k, 1);
-      continue;
-    }
-    p.vy -= 2.0 * dt;
-    dustPos[p.i * 3] += p.vx * dt;
-    dustPos[p.i * 3 + 1] = Math.max(p.floor, dustPos[p.i * 3 + 1] + p.vy * dt);
-    dustPos[p.i * 3 + 2] += p.vz * dt;
-  }
-  dustGeo.attributes.position.needsUpdate = true;
-}
 
 // ================= 通缉系统 =================
 let wanted = 0, evadeT = 0;
@@ -7600,8 +7447,8 @@ function meleeSweep(dmg, range, arcDot, knock, opts = {}) {
   });
   if (executed) { // 处决演出:时停 + 震屏 + 镜头急推;目击者胆寒;按武器各有终结技
     hitStopT = Math.max(hitStopT, 0.22);
-    camShake = Math.max(camShake, 0.45);
-    fovKick = 0.4;
+    cam.shake = Math.max(cam.shake, 0.45);
+    cam.fovKick = 0.4;
     slowMoT = 0.55;
     if (execTarget) {
       if (player.weapon === 'dagger') {
@@ -7616,7 +7463,7 @@ function meleeSweep(dmg, range, arcDot, knock, opts = {}) {
         magBurst(player.pos.x, 1.0, player.pos.z);
       } else if (player.weapon === 'greatsword') {
         // 断头台:巨剑砸出冲击环,大地都跟着响
-        camShake = Math.max(camShake, 0.65);
+        cam.shake = Math.max(cam.shake, 0.65);
         spawnDust(execTarget.pos.x, 0.2, execTarget.pos.z, 14, 2.2, 2.2);
         swingTrail(3.2, Math.PI * 2);
         sfx.stomp();
@@ -7767,7 +7614,7 @@ function tryAttack() {
     player.attackT = 0.7;
     player.attackDur = 0.7;
     sfx.clank();
-    camShake = Math.max(camShake, 0.2);
+    cam.shake = Math.max(cam.shake, 0.2);
     // 先定踉跄再撞飞——击退会把人推出判定圈
     for (const list of [bandits, guards, wolves]) {
       for (const e of list) {
@@ -7795,7 +7642,7 @@ function tryAttack() {
     sfx.sword();
     // 冲量伤害(骑砍之魂):马速借给刀锋——疾驰一刀 +2,小跑 +1,原地无加成
     const mom = (player._rideSpeed || 0) >= 15 ? 1 : 0; // 疾驰 +1(冲一趟不再随手清场)
-    if (mom >= 2) { sfx.whoosh(0.7); camShake = Math.max(camShake, 0.18); }
+    if (mom >= 2) { sfx.whoosh(0.7); cam.shake = Math.max(cam.shake, 0.18); }
     swingTrail(defM.range + 1.0, 2.3);
     meleeSweep(meleeBonus(defM.dmg + (player.swordLv >= 2 ? 1 : 0) + (player.relic ? 1 : 0) + mom),
       defM.range + 1.0, 0.1, defM.knock * (1.4 + mom * 0.5), { maxHits: 2 });
@@ -7880,7 +7727,7 @@ function tryAttack() {
       callout('还击 ×2.5', 'gold');
     }
     if (sneaking) callout(`偷袭 ×${sneakMul}`, 'gold');
-    if (third) { sfx.combo(3); camShake = Math.max(camShake, 0.22); }
+    if (third) { sfx.combo(3); cam.shake = Math.max(cam.shake, 0.22); }
     sfx.whoosh(stance === 'overhead' ? 0.72 : stance === 'thrust' ? 1.3 : third ? 0.82 : dir === 1 ? 1 : 1.14);
     swingTrail(reach, whirl ? Math.PI * 2 : stance === 'thrust' ? 0.55 :
       stance === 'overhead' ? 1.0 : third ? 2.6 : 2.1, dir);
@@ -7891,8 +7738,8 @@ function tryAttack() {
       def.knock * (third ? 1.8 : 1) * (sprinting ? 1.3 : 1) *
         (stance === 'overhead' ? 1.5 : stance === 'thrust' ? 0.6 : 1),
       { maxHits: whirl ? 4 : stance === 'thrust' ? 1 : stance === 'overhead' ? 2 : 3, heavy: stance === 'overhead' });
-    if (stance === 'overhead') camShake = Math.max(camShake, 0.14); // 下劈坠着劲
-    if (whirl) { camShake = Math.max(camShake, 0.2); spawnDust(player.pos.x, 0.5, player.pos.z, 10, 2, 1.6); }
+    if (stance === 'overhead') cam.shake = Math.max(cam.shake, 0.14); // 下劈坠着劲
+    if (whirl) { cam.shake = Math.max(cam.shake, 0.2); spawnDust(player.pos.x, 0.5, player.pos.z, 10, 2, 1.6); }
   });
   skillXp('onehand', 1);
   if (player.sneaking) skillXp('sneak', 2);
@@ -7922,7 +7769,7 @@ function heavyAttack(k = 1) {
   scheduleStrike(player.attackT * 0.4, () => {
     sfx.clank();
     sfx.whoosh(0.7); // 重击破空声最沉
-    camShake = Math.max(camShake, full ? 0.38 : 0.26);
+    cam.shake = Math.max(cam.shake, full ? 0.38 : 0.26);
     hitStopT = Math.max(hitStopT, full ? 0.1 : 0.06);
     swingTrail(def.range + 0.7, wide ? Math.PI * 1.7 : Math.PI, 0);
     if (full) spawnDust(player.pos.x + Math.sin(player.yaw) * 1.6, 0.2, player.pos.z + Math.cos(player.yaw) * 1.6, 12, 1.4, 1.8);
@@ -7956,7 +7803,7 @@ function chargedShot() {
   player.attackT = WEAPONS.bow.cd * 1.4;
   player.attackDur = WEAPONS.bow.cd * 1.4;
   sfx.arrow();
-  camShake = Math.max(camShake, 0.12);
+  cam.shake = Math.max(cam.shake, 0.12);
   const jit = wetSpread(0.5); // 满月拉满弓,受雨影响减半
   const dir = new THREE.Vector3(Math.sin(player.yaw + jit), 0.03, Math.cos(player.yaw + jit)).normalize();
   const mesh = new THREE.Mesh(arrowGeo, arrowMat);
@@ -7997,7 +7844,7 @@ function damagePlayer(n, attacker = null, pierce = false) {
         performance.now() - (player.blockStart || 0) < 250) {
       attacker.stunT = Math.max(attacker.stunT || 0, 2.2); attacker.stunSrc = 'parry';
       hitStopT = Math.max(hitStopT, 0.14);
-      camShake = Math.max(camShake, 0.25);
+      cam.shake = Math.max(cam.shake, 0.25);
       sfx.clank();
       sfx.clear();
       callout('完美弹反!快还击', 'gold');
@@ -8012,7 +7859,7 @@ function damagePlayer(n, attacker = null, pierce = false) {
     if (pierce) { // 紫圈重击:格挡被砸碎,硬吃一记减伤——早该翻滚的
       sfx.clank();
       sfx.hurt();
-      camShake = Math.max(camShake, 0.4);
+      cam.shake = Math.max(cam.shake, 0.4);
       callout('格挡被砸碎!紫圈要翻滚', 'red');
       player.hp -= 1;
       player.invulnT = 0.7;
@@ -8029,19 +7876,19 @@ function damagePlayer(n, attacker = null, pierce = false) {
       player.blocking = false;
       player.staggerT = 0.9;
       player.gaspT = 1.2;
-      camShake = Math.max(camShake, 0.35);
+      cam.shake = Math.max(cam.shake, 0.35);
       callout('力竭!盾被砸开', 'red');
       sfx.hiccup();
       player.invulnT = 0.5;
       return;
     }
-    camShake = Math.max(camShake, 0.15);
+    cam.shake = Math.max(cam.shake, 0.15);
     player.invulnT = 0.35;
     return;
   }
   player.hp -= n;
   player.invulnT = 0.7;
-  camShake = 0.45;
+  cam.shake = 0.45;
   fishing.active = false;
   sfx.hurt();
   flashEl.style.opacity = 0.45;
@@ -8430,7 +8277,7 @@ function updateBandits(dt) {
           if (inR) damagePlayer(b.heavyAtk ? b.dmg + 1 : b.dmg, b, b.heavyAtk);
           if (b.heavyAtk) { // 重击落地:震屏收尾,恢复期更长
             b.heavyAtk = false;
-            camShake = Math.max(camShake, 0.25);
+            cam.shake = Math.max(cam.shake, 0.25);
             b.attackCd = 1.7;
           } else if (b.comboN > 0) { // 二连击:紧接一记快斩
             b.comboN--;
@@ -8661,7 +8508,7 @@ function updatePlayer(dt) {
     if (player.hiccupT <= 0) {
       player.hiccupT = 3 + rand() * 3;
       sfx.hiccup();
-      camShake = Math.max(camShake, 0.12);
+      cam.shake = Math.max(cam.shake, 0.12);
     }
     if (player.drunkT <= 0) toast('你清醒过来了……头好痛。', 2.5);
   }
@@ -8679,7 +8526,7 @@ function updatePlayer(dt) {
     }
   }
 
-  const f = _moveFwd.set(-Math.sin(camYaw), -Math.cos(camYaw));
+  const f = _moveFwd.set(-Math.sin(cam.yaw), -Math.cos(cam.yaw));
   const r = _moveRight.set(-f.y, f.x);
   let ix = 0, iz = 0;
   if (keys['KeyW'] || keys['ArrowUp']) iz += 1;
@@ -8713,7 +8560,7 @@ function updatePlayer(dt) {
           if (e.stunT !== undefined) { e.stunT = Math.max(e.stunT || 0, 0.9); e.stunSrc = 'bash'; } // 撞翻≠处决窗口
           applyDamage(e, 1, { knock: 2.6, crit: true }); // 践踏致死同样走完整结算(任务/军旗/村务不漏)
           sfx.hoof();
-          camShake = Math.max(camShake, 0.25);
+          cam.shake = Math.max(cam.shake, 0.25);
           skillXp('riding', 2);
         }
       }
@@ -8761,7 +8608,7 @@ function updatePlayer(dt) {
     h.group.rotation.y = h.yaw;
     const galloping = moving && (keys['ShiftLeft'] || keys['ShiftRight']);
     animHorseLegs(h, moving ? (galloping ? 1.6 : 1.0) : 0);
-    moveState = moving ? (galloping ? 3 : 2) : 0;
+    cam.moveState = moving ? (galloping ? 3 : 2) : 0;
     player.pos.x = h.pos.x;
     player.pos.z = h.pos.z;
     player.yaw = h.yaw;
@@ -8787,7 +8634,7 @@ function updatePlayer(dt) {
     player.group.rotation.y = player.yaw;
     player.group.rotation.x = -(1 - Math.max(0, player.rollT) / 0.38) * Math.PI * 2;
     if (player.rollT <= 0) player.group.rotation.x = 0;
-    moveState = 2;
+    cam.moveState = 2;
     return;
   }
   // 疾跑吃体力:跑干了就只能小步喘(骑砍的腿)
@@ -8810,7 +8657,7 @@ function updatePlayer(dt) {
     player.yaw = angleLerp(player.yaw,
       Math.atan2(lockFoe.pos.x - player.pos.x, lockFoe.pos.z - player.pos.z), dt * 14);
   }
-  moveState = moving ? (speed > 5 ? 2 : 1) : 0;
+  cam.moveState = moving ? (speed > 5 ? 2 : 1) : 0;
   if (fishing.active && moving) {
     fishing.active = false;
     toast('收竿了。', 1.5);
@@ -8855,7 +8702,7 @@ function updatePlayer(dt) {
       player.plunging = false;
       const def = WEAPONS[player.weapon];
       sfx.stomp();
-      camShake = Math.max(camShake, 0.4);
+      cam.shake = Math.max(cam.shake, 0.4);
       hitStopT = Math.max(hitStopT, 0.05);
       spawnDust(player.pos.x, 0.1, player.pos.z, 14, 2.4, 2);
       swingTrail(3.4, Math.PI * 2);
@@ -8864,7 +8711,7 @@ function updatePlayer(dt) {
     }
     if (wasAirborne && fallSpeed < -3) checkStomp();
     if (wasAirborne && fallSpeed < -4) player.squashT = 0.16; // 落地挤压
-    if (wasAirborne && fallSpeed < -10) camShake = 0.22;
+    if (wasAirborne && fallSpeed < -10) cam.shake = 0.22;
     if (wasAirborne && fallSpeed < -6) spawnDust(player.pos.x, 0.06, player.pos.z, 6, 0.9, 1.5);
   }
 
@@ -8966,7 +8813,7 @@ function doRoll() {
     const w = prologue.wolves[0];
     if (w && !w.dead && (w.lunging > 0 || w.biteT > 0)) prologue.flags.rolled = true;
   }
-  const fx = -Math.sin(camYaw), fz = -Math.cos(camYaw);
+  const fx = -Math.sin(cam.yaw), fz = -Math.cos(cam.yaw);
   const rx = -fz, rz = fx;
   let ix = 0, iz = 0;
   if (keys['KeyW'] || keys['ArrowUp']) iz += 1;
@@ -9411,112 +9258,7 @@ function updateEnvIntensity() {
 }
 
 // ================= 相机 =================
-let moveState = 0; // 0 静止 1 走 2 跑 3 疾驰
-let camShake = 0;
-let fovKick = 0; // 处决瞬间镜头急推
 let slowMoT = 0; // 处决慢镜头(时停之后的余韵)
-const _camOff = new THREE.Vector3();
-const _camTarget = new THREE.Vector3();
-const _camDesired = new THREE.Vector3();
-const _camRay = new THREE.Raycaster();
-const _camDir = new THREE.Vector3();
-let camSnapNext = false;
-// 大碰撞圆(r≥1.4:岩石地标/塔基)按 32m 格索引,碰撞圆数量变化时重建
-const camRockGrid = new Map();
-let camRockLen = -1;
-function rebuildCamRocks() {
-  camRockGrid.clear();
-  for (const c of colliders.circles) {
-    if (c.r < 1.4) continue;
-    const k = `${Math.floor(c.x / 32)},${Math.floor(c.z / 32)}`;
-    if (!camRockGrid.has(k)) camRockGrid.set(k, []);
-    camRockGrid.get(k).push(c);
-  }
-  camRockLen = colliders.circles.length;
-}
-function pullCameraFromRocks(target) {
-  if (camRockLen !== colliders.circles.length) rebuildCamRocks();
-  const cx = camera.position.x, cz = camera.position.z;
-  const dx = cx - target.x, dz = cz - target.z;
-  const len = Math.hypot(dx, dz);
-  if (len < 0.5) return;
-  // 沿视线从人物往相机走,遇到第一块岩石就停在它外面
-  for (let i = 1; i <= 6; i++) {
-    const t = i / 6;
-    const px = target.x + dx * t, pz = target.z + dz * t;
-    const cell = camRockGrid.get(`${Math.floor(px / 32)},${Math.floor(pz / 32)}`);
-    if (!cell) continue;
-    for (const c of cell) {
-      const rr = c.r * 1.35 + 0.4; // 岩石的轮廓比碰撞圆更大:相机要离得更远才不钻进去
-      if ((px - c.x) * (px - c.x) + (pz - c.z) * (pz - c.z) < rr * rr) {
-        const k = Math.max(0.18, (i - 1) / 6);
-        camera.position.x = target.x + dx * k;
-        camera.position.z = target.z + dz * k;
-        camera.position.y = Math.max(camera.position.y, target.y + 0.4);
-        return;
-      }
-    }
-  }
-}
-function updateCamera(dt) {
-  const dist = player.mounted ? (player.mounted.sheep ? 6 : 9) : 6.2;
-  const ty = player.pos.y + groundH(player.pos.x, player.pos.z) +
-    (player.mounted ? (player.mounted.sheep ? 1.7 : 2.6) : 1.7);
-  // 醉酒:地平线跟着晃
-  if (player.drunkT > 0) {
-    camera.up.set(Math.sin(performance.now() * 0.0011) * 0.16, 1, 0).normalize();
-  } else {
-    camera.up.set(0, 1, 0);
-  }
-  // 锁定中:越肩取景——镜头偏到主角右后方约 26°,敌人的起手动作和脚下红圈不再被主角身体挡住
-  if (lockFoe) {
-    camYaw = angleLerp(camYaw,
-      Math.atan2(player.pos.x - lockFoe.pos.x, player.pos.z - lockFoe.pos.z) + 0.45, Math.min(1, dt * 4));
-    camPitch += (0.42 - camPitch) * Math.min(1, dt * 2.5);
-  }
-  _camOff.set(
-    Math.sin(camYaw) * Math.cos(camPitch),
-    Math.sin(camPitch),
-    Math.cos(camYaw) * Math.cos(camPitch),
-  ).multiplyScalar(dist);
-  const target = _camTarget.set(player.pos.x, ty, player.pos.z);
-  if (lockFoe) { // 视点偏向敌我中间
-    target.x += (lockFoe.pos.x - player.pos.x) * 0.22;
-    target.z += (lockFoe.pos.z - player.pos.z) * 0.22;
-  }
-  const desired = _camDesired.copy(target).add(_camOff);
-  desired.y = Math.max(groundH(desired.x, desired.z) + 0.6, desired.y); // 镜头不钻进山坡
-  camera.position.lerp(desired, camSnapNext ? 1 : 1 - Math.pow(0.0001, dt)); // 传送后一帧到位
-  camSnapNext = false;
-  // 相机防穿岩:大块地标(台地/玄武柱/露头/冰岩/断塔)没有遮挡网格,按碰撞圆把相机拉到岩石外侧
-  pullCameraFromRocks(target);
-  // 相机防穿墙:从视点向相机打射线,撞到墙体/建筑就把相机拉近
-  _camDir.copy(camera.position).sub(target);
-  const camLen = _camDir.length();
-  if (camLen > 0.5) {
-    _camDir.divideScalar(camLen);
-    _camRay.set(target, _camDir);
-    _camRay.far = camLen;
-    const hits = _camRay.intersectObjects(world.occluders, false);
-    if (hits.length) {
-      camera.position.copy(target).addScaledVector(_camDir, Math.max(1.1, hits[0].distance * 0.88));
-    }
-  }
-  // 受击/落地震屏
-  if (camShake > 0) {
-    camShake = Math.max(0, camShake - dt);
-    camera.position.x += (rand() - 0.5) * camShake * 0.5;
-    camera.position.y += (rand() - 0.5) * camShake * 0.35;
-  }
-  camera.lookAt(target);
-  // 疾跑/疾驰时动态拉伸视野(速度感);处决瞬间反向急推(贴近感)
-  if (fovKick > 0) fovKick -= dt;
-  const fovTarget = 62 + [0, 0, 3.5, 9][moveState] - (fovKick > 0 ? 9 : 0);
-  if (Math.abs(camera.fov - fovTarget) > 0.05) {
-    camera.fov += (fovTarget - camera.fov) * Math.min(1, dt * (fovKick > 0 ? 14 : 5));
-    camera.updateProjectionMatrix();
-  }
-}
 
 // ================= HUD =================
 let hudCache = '';
@@ -10271,7 +10013,7 @@ function updateVendetta() {
     t.minion = true;
   }
   sfx.wanted();
-  camShake = 0.4;
+  cam.shake = 0.4;
   telegraphFlash(boss);
   toast('🗡️ 「南门的账,现在算。」——黑石副手·独眼刻刀维克,从道旁的阴影里走了出来!', 6);
 }
@@ -10305,7 +10047,7 @@ DIRECTOR_EVENTS.push({
     spawnWave(4, 74);
     sfx.wanted();
     sfx.stomp();
-    camShake = 0.4;
+    cam.shake = 0.4;
     toast('🥁 战鼓!!黑石兄弟会大举攻打南门——守住!!', 5);
     remember('黑石兄弟会攻打南门那天,你在城墙下', 'siege-day');
     let wave2 = false;
@@ -10391,8 +10133,8 @@ window.__gtm = {
   toggleLock, getLock: () => lockFoe, getLockMark: () => lockMark.visible,
   getFov: () => camera.fov,
   renderer, scene, camera, // 诊断用:渲染统计/取景
-  snapCamera: () => { camSnapNext = true; },
-  setCamView: (yaw, pitch = 0.35) => { camYaw = yaw; camPitch = pitch; camSnapNext = true; },
+  snapCamera: () => { cam.snapNext = true; },
+  setCamView: (yaw, pitch = 0.35) => { cam.yaw = yaw; cam.pitch = pitch; cam.snapNext = true; },
   // 固定步长推进模拟(不渲染):测试用,比等真实帧快得多也稳定得多
   step: (n = 1, dt = 1 / 60) => {
     unsnapScene();
@@ -10407,7 +10149,7 @@ window.__gtm = {
   getCombatMusic: () => combatCalmT > 0, foeName, registerKill, whiteHot,
   WARLORD_TAUNTS, getBanners: () => stats.banners || 0, toastQueue,
   dragonRT, awakenDragon, damageDragon, keys,
-  getMoveState: () => moveState, saveNow: saveGame,
+  getMoveState: () => cam.moveState, saveNow: saveGame,
   SKILL_DEFS, skillXp, toggleSneak, sneakFactor, shout, learnShout, doShout,
   mercs, hireMerc, payMercs, DRAGON_SKULL,
   vendetta, vendettaLetter, vendettaRead, updateVendetta, getLoot: () => player.loot || 0,
@@ -10759,6 +10501,15 @@ function tick(dt, now) {
   if (frameNo++ % 2 === 0) drawMinimap(); // 小地图 30Hz 足够
   gradePass.uniforms.uTime.value = now * 0.00025; // 胶片颗粒的抖动时钟
 }
+// ---- 共享上下文:拆出去的系统模块(相机等)从这里拿活对象 ----
+ctx.player = player;
+ctx.world = world;
+ctx.colliders = colliders;
+ctx.getLockFoe = () => lockFoe;
+ctx.isWinter = isWinter;
+ctx.started = () => started;
+ctx.toast = toast;
+ctx.mood = () => workspace.mood.v;
 // ---- 点光入池:场景里现有的火把/篝火/地窖烛台点光全部改为登记,由点光池代为发光 ----
 {
   scene.updateMatrixWorld(true);
