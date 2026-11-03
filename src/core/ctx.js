@@ -10,4 +10,5 @@ export const ctx = {
   started: () => false,
   toast: () => {},
   mood: () => 0,
+  inDungeon: () => false,
 };
