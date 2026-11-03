@@ -264,19 +264,22 @@ export function makeTextures() {
     return [base, base * 0.97, base * 0.9, mortar ? 0.1 : 0.5 + grain * 0.5];
   }, 2.4);
 
-  // 屋瓦:横向叠瓦
+  // 屋瓦:错缝叠瓦(中性灰,颜色交给材质:陶红/青石板/木瓦各户不同)
   T.roof = texPair(256, 1, (u, v) => {
     const rowN = 8;
     const row = Math.floor(v * rowN);
-    const off = (row % 2) * 0.25;
-    const tu = ((u * 8 + off) % 1);
+    const off = (row % 2) * 0.5;
+    const cu = u * 6 + off;
+    const tu = cu % 1;
     const tv = (v * rowN) % 1;
     const curve = Math.sin(tu * Math.PI) * 0.5 + 0.5;
-    const lip = tv > 0.82 ? 0.35 : 1;
+    const lip = tv > 0.88 ? 0.74 : tv > 0.7 ? mix(1, 0.84, (tv - 0.7) / 0.18) : 1; // 上一排瓦压下来的阴影(柔)
+    const gap = Math.min(tu, 1 - tu) < 0.022 ? 0.88 : 1;          // 瓦缝(浅)
     const grain = n3((u + row * 0.31) * 30, v * 30, 2);
-    const tone = n1(Math.floor(u * 8 + off) * 1.3, row * 1.1, 1);
-    const r = (150 + tone * 46 + grain * 20 - 10) * lip * mix(0.82, 1, curve);
-    return [r, r * 0.42, r * 0.3, curve * lip];
+    const tone = n1(Math.floor(cu) * 1.3 + row * 0.7, row * 1.1, 1);  // 每片瓦深浅不一
+    const wear = n2(u * 6, v * 6, 2);                                  // 大片风化斑
+    const r = (128 + tone * 84 + grain * 26 - 13 - Math.max(0, wear - 0.5) * 80) * lip * gap * mix(0.88, 1, curve);
+    return [r * 1.02, r, r * 0.95, curve * lip * gap];
   }, 2.2);
 
   // 灰泥墙面
@@ -288,36 +291,70 @@ export function makeTextures() {
   }, 0.9);
 
   // 木纹
-  T.wood = texPair(256, 1, (u, v) => {
-    const ring = Math.sin((u * 3 + n1(u * 4, v * 2, 3) * 1.6) * Math.PI * 7) * 0.5 + 0.5;
-    const g = n2(u * 12, v * 60, 3);
-    const r = mix(96, 138, ring) + g * 18 - 9;
-    return [r, r * 0.68, r * 0.46, ring * 0.6 + g * 0.4];
-  }, 1.4);
+  T.wood = texPair(256, 1, (u, v) => { // 顺纹长条纹理 + 淡淡的年轮弧线(不再是斑马纹)
+    const streak = n2(u * 22, v * 2.2, 3);
+    const ring = Math.sin((u * 2 + n1(u * 3, v * 1.5, 3) * 2.2) * Math.PI * 9) * 0.5 + 0.5;
+    const fine = n3(u * 90, v * 6, 2);
+    const r = 104 + streak * 26 + ring * 9 + fine * 10 - 18;
+    return [r, r * 0.74, r * 0.54, streak * 0.5 + fine * 0.3 + ring * 0.2];
+  }, 1.1);
 
-  // 鹅卵石街道:抖动网格 + 圆润高度场
-  const cobbleHash = (x, y) => n3(x * 0.937 + 11.3, y * 0.883 + 7.7, 1);
+  // 木板墙/门板/百叶:一张 5 块横板,板缝深、每块深浅不一,顺纹细丝 + 偶见木节
+  T.planks = texPair(256, 1, (u, v) => {
+    const rows = 5;
+    const fy = v * rows, row = Math.floor(fy), tv = fy - row;
+    const tone = n1(row * 3.7, row * 1.3 + 4, 1);
+    const streak = n2(u * 18 + row * 3.1, tv * 1.4 + row * 7, 3);
+    const fine = n3(u * 70, (v + row * 0.13) * 9, 2);
+    const knot = Math.max(0, 1 - Math.hypot((u * 3 + row * 0.37) % 1 - 0.5, (tv - 0.5) * 1.8) * 9) * (tone > 0.55 ? 1 : 0);
+    const gap = tv < 0.06 ? 0.42 : tv < 0.1 ? 0.78 : 1;
+    const r = (100 + tone * 34 + streak * 24 + fine * 10 - 20 - knot * 40) * gap;
+    return [r, r * 0.76, r * 0.56, (0.5 + streak * 0.3 + fine * 0.2) * (gap < 1 ? 0.2 : 1) - knot * 0.2];
+  }, 1.6);
+
+  // 鹅卵石街道:错缝成排的不规则石块。加权 Voronoi 的 F2-F1 给出弯曲的深石缝,
+  // 石面按到缝的距离拱起(边缘 AO),每块石头冷暖、深浅各异,缝里是黑土和一点苔
+  // 一张贴图 15×18 块(3.2m 一张 → 石块约 21×18cm),行行错缝,严格无缝平铺
+  const cobbleHash = (x, y) => {
+    let h = (Math.imul(x | 0, 0x27d4eb2d) ^ Math.imul(y | 0, 0x165667b1)) >>> 0;
+    h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d) >>> 0;
+    return ((h ^ (h >>> 13)) >>> 0) / 4294967296;
+  };
   T.cobble = texPair(512, 1, (u, v) => {
-    const N = 9;
-    let best = 9, tone = 0.5;
+    const NX = 15, NY = 18;
+    const fy = v * NY, row = Math.floor(fy);
+    let f1 = 9, f2 = 9, id = 0;
     for (let dy = -1; dy <= 1; dy++) {
+      const ry = row + dy;
+      const wy = ((ry % NY) + NY) % NY;
+      const fx = u * NX - (wy % 2) * 0.5; // 隔行错半块
+      const col = Math.floor(fx);
       for (let dx = -1; dx <= 1; dx++) {
-        const cx = Math.floor(u * N) + dx, cy = Math.floor(v * N) + dy;
-        const wx = ((cx % N) + N) % N, wy = ((cy % N) + N) % N; // 无缝平铺
-        const jx = cobbleHash(wx, wy) - 0.5, jy = cobbleHash(wy + 31, wx + 17) - 0.5;
-        const px = (cx + 0.5 + jx * 0.7) / N, py = (cy + 0.5 + jy * 0.7) / N;
-        const d = Math.hypot((u - px) * N, (v - py) * N);
-        if (d < best) { best = d; tone = cobbleHash(wx + 53, wy + 91); }
+        const cx = col + dx;
+        const wx = ((cx % NX) + NX) % NX;
+        const px = cx + 0.5 + (cobbleHash(wx, wy) - 0.5) * 0.5;
+        const py = ry + 0.5 + (cobbleHash(wy + 31, wx + 17) - 0.5) * 0.36;
+        const w = 0.82 + 0.36 * cobbleHash(wx + 7, wy + 3); // 大小不一 → 石缝弯曲、石块不规则
+        const d = Math.hypot((fx - px) * 0.92, (fy - py) * 1.08) * w;
+        if (d < f1) { f2 = f1; f1 = d; id = wy * NX + wx; } else if (d < f2) f2 = d;
       }
     }
-    const stone = Math.max(0, Math.min(1, (0.52 - best) / 0.14));
-    const grain = n2(u * 50, v * 50, 3);
-    let base = mix(128, 168, tone) + grain * 26 - 13;
-    base = mix(88 + grain * 14, base, stone);   // 石缝暗色
-    const warm = 0.5 + tone * 0.5;
-    const h = Math.max(0, 1 - best * 1.7) * stone;
-    return [base * (0.94 + warm * 0.1), base * 0.95, base * (0.99 - warm * 0.08), h * 0.85 + grain * 0.15];
-  }, 2.0);
+    const edge = f2 - f1;                                     // 到石缝的距离(0 = 缝心)
+    const stone = Math.max(0, Math.min(1, (edge - 0.022) / 0.07));
+    const dome = Math.sqrt(Math.max(0, Math.min(1, edge / 0.42))); // 圆拱石面
+    const ao = 0.66 + 0.34 * Math.max(0, Math.min(1, edge / 0.3));
+    const grain = n2(u * 60, v * 60, 3);
+    const t1 = cobbleHash(id, 5), t2 = cobbleHash(id, 77);
+    let r = 84 + t1 * 30 + grain * 16 - 8 + dome * 10, g = r * 0.98, b = r * 0.94;
+    if (t2 > 0.62) { r += 8; g += 2; b -= 8; }             // 暖褐石
+    else if (t2 < 0.28) { r -= 6; g -= 1; b += 6; }        // 冷青石
+    r *= ao; g *= ao; b *= ao;
+    const moss = n1(u * 9, v * 9, 2);
+    const gr = 62 + grain * 12, gg = 60 + grain * 12 + moss * 7, gb = 50 + grain * 8; // 缝里黑土 + 苔
+    r = mix(gr, r, stone); g = mix(gg, g, stone); b = mix(gb, b, stone);
+    const h = stone * (0.3 + 0.7 * dome) + grain * 0.06;
+    return [r, g, b, h];
+  }, 2.6);
 
   // 水面波纹法线(供动画偏移)
   T.waterNormal = texPair(256, 4, (u, v) => {

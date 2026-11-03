@@ -107,6 +107,29 @@ function buildGeometries() {
       }
     }
   });
+  // ---- 作物(农田/菜园,见 buildCropMesh):麦丛 / 卷心菜 / 葱韭 ----
+  GEO.wheat = makeGeo((api) => { // 麦:细直茎 + 顶端麦穗(穗不随实例色,保持金黄)
+    for (let i = 0; i < 7; i++) {
+      const a = (i / 7) * Math.PI * 2 + r() * 0.5, h = 0.78 + r() * 0.22;
+      blade(api, a, h, 0.035, 0.12 + r() * 0.1, 2, 0.55, 0.95, 0.03);
+      const ox = Math.cos(a) * (0.03 + 0.17 * h * 0.5), oz = Math.sin(a) * (0.03 + 0.17 * h * 0.5);
+      const y0 = h * 0.86, y1 = h * 1.08, w2 = 0.026;
+      const b = api.v(ox - w2, y0, oz, 0, 1, 0, 0.82, 0.66, 0.34, 0.9, 0);
+      const c = api.v(ox + w2, y0, oz, 0, 1, 0, 0.82, 0.66, 0.34, 0.9, 0);
+      const d = api.v(ox, y1, oz + 0.004, 0, 1, 0, 0.92, 0.78, 0.44, 1, 0);
+      api.tri(b, c, d);
+      const e = api.v(ox, y0, oz - w2, 0, 1, 0, 0.8, 0.64, 0.32, 0.9, 0);
+      const f = api.v(ox, y0, oz + w2, 0, 1, 0, 0.8, 0.64, 0.32, 0.9, 0);
+      api.tri(e, f, d);
+    }
+  });
+  GEO.cabbage = makeGeo((api) => { // 卷心菜:一圈外翻宽叶 + 中心叶球
+    for (let i = 0; i < 7; i++) blade(api, (i / 7) * Math.PI * 2 + r() * 0.3, 0.26 + r() * 0.06, 0.26, 1.35, 2, 0.55, 1.0, 0.05);
+    for (let i = 0; i < 4; i++) blade(api, (i / 4) * Math.PI * 2 + 0.4, 0.2, 0.2, 0.55, 2, 0.75, 1.1, 0.0);
+  });
+  GEO.greens = makeGeo((api) => { // 葱韭:一把直立细叶
+    for (let i = 0; i < 6; i++) blade(api, (i / 6) * Math.PI * 2 + r() * 0.6, 0.32 + r() * 0.14, 0.045, 0.18, 2, 0.5, 1.0, 0.02);
+  });
   GEO.pebble = (() => { // 碎石:压扁的二十面体,带一点不规则
     const ico = new THREE.IcosahedronGeometry(0.22, 0);
     const pos = ico.attributes.position;
@@ -160,10 +183,11 @@ const uniforms = {
   uTime: { value: 0 }, uWind: { value: 1 }, uCenter: { value: new THREE.Vector2() },
   uRadius: { value: 64 }, uSeason: { value: new THREE.Color(1, 1, 1) }, uFrost: { value: 0 },
 };
-function makeMaterial() {
+function makeMaterial(u = uniforms) {
   const m = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
+  m.userData.vegUniforms = u;
   m.onBeforeCompile = (sh) => {
-    Object.assign(sh.uniforms, uniforms);
+    Object.assign(sh.uniforms, m.userData.vegUniforms);
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', `#include <common>
         attribute float aH;
@@ -346,4 +370,34 @@ export function updateVegetation(dt, px, pz, windK = 1) {
   if (cellCache.size > keep.size * 2 + 64) {
     for (const k of cellCache.keys()) if (!keep.has(k)) cellCache.delete(k);
   }
+}
+
+// ---------------- 作物:农田/菜园的静态实例化(一块地一次绘制,风摆与草同一套着色器,不随距离渐隐) ----------------
+let cropMat = null;
+const CROP_COL = { wheat: [0.11, 0.14, 0.52, 0.3, 0.42], cabbage: [0.27, 0.33, 0.32, 0.36, 0.48], greens: [0.22, 0.28, 0.42, 0.3, 0.42] };
+// rows: [{ x, z, yaw, s }],坐标为世界 XZ(高度由贴地统一处理:农田/菜园都在平整区)
+export function buildCropMesh(kind, list, cx = 0, cz = 0) {
+  if (!GEO.wheat) buildGeometries();
+  if (!cropMat) cropMat = makeMaterial({ ...uniforms, uRadius: { value: 1e6 } });
+  const im = new THREE.InstancedMesh(GEO[kind] || GEO.greens, cropMat, Math.max(1, list.length));
+  const rng = rngOf(list.length * 7919 + Math.round(cx * 13 + cz * 7));
+  const [h0, h1, sat, l0, l1] = CROP_COL[kind] || CROP_COL.greens;
+  for (let i = 0; i < list.length; i++) {
+    const p = list[i];
+    _e.set((rng() - 0.5) * 0.12, p.yaw ?? rng() * Math.PI * 2, (rng() - 0.5) * 0.12);
+    _q.setFromEuler(_e);
+    const sc = p.s ?? 0.85 + rng() * 0.3;
+    _s.set(sc, sc * (0.85 + rng() * 0.3), sc);
+    _p.set(p.x - cx, 0, p.z - cz);
+    _m4.compose(_p, _q, _s);
+    im.setMatrixAt(i, _m4);
+    _col.setHSL(h0 + (h1 - h0) * rng(), sat, l0 + (l1 - l0) * rng());
+    im.setColorAt(i, _col);
+  }
+  im.count = list.length;
+  im.position.set(cx, 0, cz);
+  im.castShadow = false;
+  im.receiveShadow = true;
+  im.computeBoundingSphere();
+  return im;
 }

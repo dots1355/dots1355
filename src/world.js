@@ -4,6 +4,9 @@ import { rand } from './core/rng.js';
 import { buildTree, buildPine, buildDeadTree, buildCactus, buildRock, buildBush, getBuildingModel } from './flora.js';
 import { lambert } from './entities.js';
 import { makeTextures } from './textures.js';
+import { worldTint } from './gfx/surface.js';
+import { buildCropMesh } from './vegetation.js';
+import { mergeGeometries } from '../lib/jsm/utils/BufferGeometryUtils.js';
 
 export function buildWorld(scene) {
   const colliders = { circles: [], boxes: [] };
@@ -18,7 +21,7 @@ export function buildWorld(scene) {
   const occluders = []; // 相机防穿墙用的大型遮挡体
 
   const TX = makeTextures();
-  // 带独立 repeat 的 PBR 贴图材质
+  // 带独立 repeat 的 PBR 贴图材质;世界坐标低频调色打破平铺重复(见 worldTint)
   function texMat(pair, rx, ry, extra = {}) {
     const map = pair.map.clone();
     map.needsUpdate = true;
@@ -29,13 +32,14 @@ export function buildWorld(scene) {
     const m = new THREE.MeshStandardMaterial({ map, normalMap, roughness: 0.9, metalness: 0.02, ...extra });
     m.userData.wettable = true;           // 下雨时变湿润反光
     m.userData.baseRough = m.roughness;
+    m.onBeforeCompile = worldTint;
     return m;
   }
   const woodMat = texMat(TX.wood, 1, 1, { roughness: 0.85 });
   const plasterMat = texMat(TX.plaster, 2, 1, { roughness: 0.95 });
   const roofMats = [0xa33b2c, 0x8a5a33, 0x7d3b2d, 0x9c4a3b].map((c) =>
     texMat(TX.roof, 3, 1.6, { color: c, roughness: 0.85 }));
-  const dirtFieldMat = texMat(TX.dirt, 3, 2);
+  const dirtFieldMat = texMat(TX.dirt, 3, 2, { color: 0x9a8268 }); // 翻过的深色耕土
 
   const feat = (type, x, z, w, h, rot = 0) => features.push({ type, x, z, w, h, rot });
   const circle = (x, z, r) => colliders.circles.push({ x, z, r });
@@ -89,7 +93,7 @@ export function buildWorld(scene) {
     const horizontal = Math.abs(dx) > Math.abs(dz);
     const m = new THREE.Mesh(
       new THREE.BoxGeometry(horizontal ? len : 1.8, 5.5, horizontal ? 1.8 : len),
-      texMat(TX.stone, len / 9, 1));
+      texMat(TX.stone, len / 4.4, 5.5 / 4.4, { color: 0xd8d2c8 }));
     m.position.set((x1 + x2) / 2, 2.75, (z1 + z2) / 2);
     m.castShadow = m.receiveShadow = true;
     scene.add(m);
@@ -132,9 +136,15 @@ export function buildWorld(scene) {
   wallRun(70, 4.5, 70, 55);              // 东(南段)
 
   const towerMat = texMat(TX.stone, 4, 2, { roughness: 0.92 });
+  const towerMats = new Map(); // 按塔的周长/高度配平铺:石块大小与城墙一致(约 4.4m 一张贴图)
+  const towerMatFor = (r, h) => {
+    const key = `${r}|${h}`;
+    if (!towerMats.has(key)) towerMats.set(key, texMat(TX.stone, Math.round((Math.PI * 2 * r * 1.1) / 4.4), h / 4.4, { color: 0xd8d2c8, roughness: 0.92 }));
+    return towerMats.get(key);
+  };
   function tower(x, z, r = 4, h = 9) {
     // 天际式平顶石塔:底部收分 + 出挑护墙 + 垛口环(尖顶是法国人的,诺德不用)
-    const t = new THREE.Mesh(new THREE.CylinderGeometry(r, r * 1.22, h, 12), towerMat);
+    const t = new THREE.Mesh(new THREE.CylinderGeometry(r, r * 1.22, h, 12), towerMatFor(r, h));
     t.position.set(x, h / 2, z);
     t.castShadow = true;
     scene.add(t);
@@ -164,10 +174,25 @@ export function buildWorld(scene) {
   const keepTpl = getBuildingModel('keep');
   let keep;
   if (keepTpl) {
-    keep = keepTpl.clone();
+    // 按材质拆件 + 平面投影 UV:主体大块砌石、石带/扶壁盖石深一号,箭孔与门洞是暗色内衬
+    const KEEP_MATS = {
+      stone: texMat(TX.stone, 1 / 4.4, 1 / 4.4, { color: 0xd8d2c8, roughness: 0.95 }),
+      dstone: texMat(TX.stone, 1 / 3.2, 1 / 3.2, { color: 0xaca69c, roughness: 0.95 }),
+      slit: new THREE.MeshStandardMaterial({ color: 0x0c0c0e, roughness: 1 }),
+      iron: lambert(0x4a4a52, { roughness: 0.45, metalness: 0.75 }),
+      roof: texMat(TX.roof, 1 / 2, 1 / 2, { color: 0x5c6470, roughness: 0.8 }),
+      wood: woodMat,
+    };
+    keep = new THREE.Group();
+    for (const p of prepParts(keepTpl.getObjectByName('Keep') || keepTpl)) {
+      const m = new THREE.Mesh(p.geo, KEEP_MATS[p.slot] || KEEP_MATS.stone);
+      m.castShadow = m.receiveShadow = true;
+      keep.add(m);
+      if (p.big) occluders.push(m);
+    }
     keep.position.set(0, 0, -40);
     scene.add(keep);
-    keep.traverse((o) => { if (o.isMesh) occluders.push(o); });
+    box(0, -32.3, 7.2, 1.5); // 前凸门楼
   } else {
     keep = new THREE.Mesh(new THREE.BoxGeometry(22, 13, 14), texMat(TX.stone, 2.6, 2.4));
     keep.position.set(0, 6.5, -40);
@@ -178,10 +203,11 @@ export function buildWorld(scene) {
   box(0, -40, 22, 14);
   feat('keep', 0, -40, 22, 14);
   for (const [tx, tz] of [[-11, -33], [11, -33], [-11, -47], [11, -47]]) tower(tx, tz, 3, 16);
-  // 大门
-  const door = new THREE.Mesh(new THREE.BoxGeometry(4, 6, 0.5), woodMat);
-  door.position.set(0, 3, -32.8);
-  scene.add(door);
+  if (!keepTpl) { // 大门(模板自带门楼与铁闸)
+    const door = new THREE.Mesh(new THREE.BoxGeometry(4, 6, 0.5), woodMat);
+    door.position.set(0, 3, -32.8);
+    scene.add(door);
+  }
   // 旗帜
   for (const s of [-1, 1]) {
     const banner = new THREE.Mesh(
@@ -222,31 +248,51 @@ export function buildWorld(scene) {
   feat('plaza', 0, 5, 7, 7);
 
   // ---- 民居 ----
+  // Blender 三种户型(HouseA 平房 / HouseB 两层外挑街屋 / HouseC 前廊长屋):按材质分件、按面重算法线
+  // (平直着色),再按面朝向做平面投影 UV——贴图按真实米数平铺,不随部件拉伸。材质全城共享:
+  // 静态合批后一个 64m 格里一种材质只画一次。屋顶(陶红/青石板/木瓦/苔灰)与墙灰按户随机。
+  const windowMat = new THREE.MeshStandardMaterial({ color: 0x2b2924, emissive: 0xffb050, emissiveIntensity: 0, roughness: 0.22, metalness: 0.1 });
+  torches.push({ light: null, flame: { material: windowMat }, base: 0, window: true }); // 全城窗户一起入夜点亮
+  const tileMat = (pair, metres, extra) => texMat(pair, 1 / metres, 1 / metres, extra);
+  const HOUSE_MATS = {
+    plaster: [0xf2e9d6, 0xe6d6b4, 0xd8d3ca].map((c) => tileMat(TX.plaster, 2.4, { color: c, roughness: 0.95 })),
+    wood: tileMat(TX.wood, 1.3, { color: 0x6a5242, roughness: 0.88 }),
+    plank: tileMat(TX.planks, 1.2, { color: 0xc8a888, roughness: 0.9 }),
+    stone: tileMat(TX.stone, 2.2, { color: 0xcfc9bf, roughness: 0.95 }),
+    door: tileMat(TX.planks, 1.0, { color: 0x9a7656, roughness: 0.85 }),
+    roof: [0xa4563e, 0x626a74, 0x84634a, 0x7c7462].map((c) => tileMat(TX.roof, 2.0, { color: c, roughness: 0.8 })),
+    glass: windowMat,
+  };
+  const houseTpls = prepHouseTemplates(getBuildingModel('house'));
+  const propRng = (() => { let s = 0x5eed1234; return () => { s = (s * 16807) % 2147483647; return (s - 1) / 2147483646; }; })();
   let houseIdx = 0;
-  function house(x, z, rotDeg = 0, w = 6, d = 5, h = 3.2) {
+  function house(x, z, rotDeg = 0, w = 6, d = 5, h = 3.2, kind = null, props = true) {
     const rot = (rotDeg * Math.PI) / 180;
-    // Blender 诺德木架屋模板:按户型缩放克隆(石基/梁架/叠瓦/烟囱一应俱全)
-    const tpl = getBuildingModel('house');
-    if (tpl) {
+    if (houseTpls) {
+      const hh = (Math.imul((Math.round(x * 7.31) * 73856093) ^ (Math.round(z * 13.7) * 19349663), 2654435761) >>> 0);
+      const k = kind || ['HouseA', 'HouseB', 'HouseC'][hh % 3];
+      const tpl = houseTpls[k] || houseTpls.HouseA;
+      const roofM = HOUSE_MATS.roof[(hh >>> 4) % 4];
+      const wallM = HOUSE_MATS.plaster[(hh >>> 9) % 3];
       const g = new THREE.Group();
-      const hs = tpl.clone();
+      const hs = new THREE.Group();
       hs.scale.set(w / 6, h / 3.2, d / 5);
-      g.add(hs);
-      hs.traverse((o) => { if (o.isMesh) occluders.push(o); });
-      // 夜里发暖光的窗(沿用火光注册表)
-      for (const sx of [-1, 1]) {
-        const win = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.7, 0.06),
-          new THREE.MeshStandardMaterial({ color: 0x3a2d1a, emissive: 0xffb84d, emissiveIntensity: 0 }));
-        win.position.set(sx * 1.9 * (w / 6), 2.05 * (h / 3.2), d / 2 + 0.04);
-        g.add(win);
-        torches.push({ light: null, flame: win, base: 0, window: true });
+      for (const p of tpl) {
+        const mat = p.slot === 'roof' ? roofM : p.slot === 'plaster' ? wallM : HOUSE_MATS[p.slot] || HOUSE_MATS.wood;
+        const m = new THREE.Mesh(p.geo, mat);
+        m.castShadow = m.receiveShadow = true;
+        hs.add(m);
+        if (p.big) occluders.push(m); // 相机防穿墙只看墙体与屋顶
       }
+      g.add(hs);
       g.position.set(x, 0, z);
       g.rotation.y = rot;
       scene.add(g);
       const swap = rotDeg % 180 !== 0;
       box(x, z, (swap ? d : w) + 0.4, (swap ? w : d) + 0.4);
       feat('house', x, z, swap ? d : w, swap ? w : d);
+      if (props) doorProps(x, z, rot, w, d, hh);
+      houseIdx++;
       return g;
     }
     const g = new THREE.Group();
@@ -288,13 +334,70 @@ export function buildWorld(scene) {
     feat('house', x, z, swap ? d : w, swap ? w : d);
     return g;
   }
+  // 门口道具:木桶/板条箱/长凳/柴垛/洗衣盆,按户随机,只放在正面两角(不挡门)
+  const BENCH_GEO = (() => {
+    const parts = [new THREE.BoxGeometry(1.5, 0.08, 0.38).translate(0, 0.46, 0)];
+    for (const s of [-1, 1]) parts.push(new THREE.BoxGeometry(0.08, 0.44, 0.32).translate(s * 0.6, 0.22, 0));
+    return mergeGeometries(parts.map((g) => g.toNonIndexed()));
+  })();
+  const LOGS_GEO = (() => {
+    const parts = [];
+    for (let row = 0; row < 3; row++) {
+      for (let k = 0; k < 4 - row; k++) {
+        parts.push(new THREE.CylinderGeometry(0.11, 0.11, 0.62, 7).rotateZ(Math.PI / 2)
+          .translate(0, 0.11 + row * 0.19, (k - (3 - row) / 2) * 0.23).toNonIndexed());
+      }
+    }
+    return mergeGeometries(parts);
+  })();
+  const TUB_GEO = new THREE.CylinderGeometry(0.42, 0.36, 0.38, 12).translate(0, 0.19, 0);
+  const propWood = tileMat(TX.planks, 0.9, { color: 0xb09070, roughness: 0.9 });
+  function doorProps(x, z, rot, w, d, hh) {
+    const c = Math.cos(rot), s = Math.sin(rot);
+    const at = (lx, lz) => [x + lx * c + lz * s, z - lx * s + lz * c];
+    const place = (kind, lx, lz) => {
+      const [px, pz] = at(lx, lz);
+      const yaw = rot + (propRng() - 0.5) * 0.5;
+      if (kind === 'barrel') {
+        const btpl = getBuildingModel('barrel');
+        const b = btpl ? btpl.clone() : new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.36, 1, 10).translate(0, 0.5, 0), propWood);
+        b.position.set(px, 0, pz);
+        b.rotation.y = yaw;
+        scene.add(b);
+        circle(px, pz, 0.45);
+      } else if (kind === 'crates') {
+        for (let i = 0; i < 2; i++) {
+          const sz = i ? 0.62 : 0.85;
+          const m = new THREE.Mesh(new THREE.BoxGeometry(sz, sz, sz), propWood);
+          m.position.set(px + (i ? 0.1 : 0), sz / 2 + (i ? 0.85 : 0), pz);
+          m.rotation.y = yaw + i * 0.4;
+          m.castShadow = true;
+          scene.add(m);
+        }
+        circle(px, pz, 0.6);
+      } else if (kind === 'bench' || kind === 'logs' || kind === 'tub') {
+        const m = new THREE.Mesh(kind === 'bench' ? BENCH_GEO : kind === 'logs' ? LOGS_GEO : TUB_GEO, kind === 'logs' ? HOUSE_MATS.plank : propWood);
+        m.position.set(px, 0, pz);
+        m.rotation.y = kind === 'bench' ? rot : yaw;
+        m.castShadow = true;
+        scene.add(m);
+        circle(px, pz, kind === 'bench' ? 0.55 : 0.5);
+      }
+    };
+    const L = ['barrel', 'crates', 'logs', null][hh % 4];
+    const R = ['bench', 'tub', 'barrel', null, 'logs'][(hh >>> 2) % 5];
+    const ex = w / 2 - 0.62, ez = d / 2 + 0.72;
+    if (L) place(L, -ex, ez);
+    if (R && R !== L) place(R, ex, ez);
+  }
+  // 户型:广场一圈是两层街屋,外围平房与长屋穿插
   const housePlan = [
-    [-25, 25, 0], [-36, 6, 90], [-25, -15, 0], [-42, -32, 0],
-    [25, 25, 0], [36, 8, 90], [28, -12, 0], [44, -30, 0],
-    [-15, 40, 0], [18, 40, 0], [-52, 30, 90], [52, 35, 0],
-    [-52, -10, 90], [20, -30, 0], [-30, 42, 0], [45, 20, 90],
+    [-25, 25, 0, 'HouseB'], [-36, 6, 90, 'HouseA'], [-25, -15, 0, 'HouseB'], [-42, -32, 0, 'HouseC'],
+    [25, 25, 0, 'HouseB'], [36, 8, 90, 'HouseB'], [28, -12, 0, 'HouseA'], [44, -30, 0, 'HouseC'],
+    [-15, 40, 0, 'HouseA'], [18, 40, 0, 'HouseC'], [-52, 30, 90, 'HouseC'], [52, 35, 0, 'HouseA'],
+    [-52, -10, 90, 'HouseA'], [20, -30, 0, 'HouseB'], [-30, 42, 0, 'HouseB'], [45, 20, 90, 'HouseA'],
   ];
-  for (const [x, z, r] of housePlan) house(x, z, r);
+  for (const [x, z, r, k] of housePlan) house(x, z, r, 6, 5, 3.2, k);
 
   // ---- 集市摊位 ----
   function stall(x, z, canopyColor) {
@@ -471,24 +574,34 @@ export function buildWorld(scene) {
   rowboat(-96.5, 86, 0.5);
   rowboat(-100, 106.2, 2.6);
 
-  // ---- 农田 ----
-  function field(x, z, w, d) {
+  // ---- 农田 ----(作物成行实例化:麦/卷心菜/葱韭,一块地一次绘制,随风轻摆)
+  const cropRng = (() => { let s2 = 0x1c0ffee; return () => { s2 = (s2 * 16807) % 2147483647; return (s2 - 1) / 2147483646; }; })();
+  function cropRows(x, z, w, d, kind, rot = 0) {
+    const gap = kind === 'wheat' ? 0.4 : kind === 'cabbage' ? 0.62 : 0.36;
+    const rowGap = kind === 'wheat' ? 0.78 : 0.95;
+    const c = Math.cos(rot), sn = Math.sin(rot);
+    const list = [];
+    for (let rz = -d / 2 + 0.55; rz <= d / 2 - 0.45; rz += rowGap) {
+      for (let rx = -w / 2 + 0.45; rx <= w / 2 - 0.45; rx += gap) {
+        if (cropRng() < 0.04) continue; // 缺苗
+        const lx = rx + (cropRng() - 0.5) * gap * 0.5, lz = rz + (cropRng() - 0.5) * 0.16;
+        list.push({ x: x + lx * c + lz * sn, z: z - lx * sn + lz * c });
+      }
+    }
+    return buildCropMesh(kind, list, x, z);
+  }
+  function field(x, z, w, d, kind = 'wheat') {
     const f = new THREE.Mesh(new THREE.PlaneGeometry(w, d), dirtFieldMat);
     f.rotation.x = -Math.PI / 2;
     f.position.set(x, 0.045, z); // 高于道路平面,避免 z-fighting
     f.receiveShadow = true;
     scene.add(f);
-    const rows = Math.floor(d / 2);
-    for (let i = 0; i < rows; i++) {
-      const r = new THREE.Mesh(new THREE.BoxGeometry(w - 1, 0.25, 0.5), lambert(0x7ba03f));
-      r.position.set(x, 0.15, z - d / 2 + 1 + i * 2);
-      scene.add(r);
-    }
+    scene.add(cropRows(x, z, w, d, kind));
     feat('field', x, z, w, d);
   }
-  field(24, 88, 24, 14);
-  field(-18, 92, 20, 12);
-  field(52, 96, 18, 10);
+  field(24, 88, 24, 14, 'wheat');
+  field(-18, 92, 20, 12, 'cabbage');
+  field(52, 96, 18, 10, 'wheat');
 
   // ---- 风车磨坊(投递任务目标)----
   const windmillPos = new THREE.Vector3(140, 0, 20);
@@ -731,6 +844,76 @@ export function buildWorld(scene) {
   }
   cart(18, 16, 40); cart(56, 5, 100); cart(24, 82, -30);
 
+  // ---- 城内:补几户人家、门前踩出的土路、屋侧菜园(墙内不再是一片空草地) ----
+  house(-57, -43, 0, 6, 5, 3.2, 'HouseC');
+  house(58, -43, 0, 6, 5, 3.2, 'HouseA');
+  house(-60, 45, 90, 6, 5, 3.2, 'HouseA');
+  house(36, 49.2, 180, 6, 5, 3.2, 'HouseB');
+  // 土路:沿中线分段的条带,两侧边缘用噪声抖出不规则的踩踏边;UV 顺着路走,材质全城共享(可合批)
+  const laneMat = texMat(TX.dirt, 1, 1, { color: 0xa69c8e, roughness: 0.95 });
+  function lane(x1, z1, x2, z2, w = 2.0) {
+    const dx = x2 - x1, dz = z2 - z1;
+    const len = Math.hypot(dx, dz);
+    const ux = dx / len, uz = dz / len, nx = -uz, nz = ux;
+    const n = Math.max(2, Math.ceil(len / 0.9));
+    const P = [], U = [], I = [];
+    const wob = (t, side) => 0.22 * Math.sin(t * 1.7 + side * 2.1 + x1) + 0.14 * Math.sin(t * 4.3 + side * 5.7 + z1);
+    for (let i = 0; i <= n; i++) {
+      const t = (i / n) * len;
+      const cx = x1 + ux * t, cz = z1 + uz * t;
+      for (const side of [-1, 1]) {
+        const hw = w / 2 + wob(t, side) * (i === 0 || i === n ? 0.3 : 1);
+        P.push(cx + nx * hw * side, 0, cz + nz * hw * side);
+        U.push((hw * side) / 4, t / 9);
+      }
+      if (i) { const a = (i - 1) * 2; I.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(U, 2));
+    g.setIndex(I);
+    g.computeVertexNormals();
+    if (g.attributes.normal.getY(0) < 0) { // 绕序朝下就翻过来
+      for (let k = 0; k < I.length; k += 3) { const tmp = I[k + 1]; I[k + 1] = I[k + 2]; I[k + 2] = tmp; }
+      g.setIndex(I);
+      g.computeVertexNormals();
+    }
+    const m = new THREE.Mesh(g, laneMat);
+    m.position.y = 0.017; // 压在石板路(0.02)之下:交汇处由石板盖住
+    m.receiveShadow = true;
+    scene.add(m);
+    feat('road', (x1 + x2) / 2, (z1 + z2) / 2, w, len, Math.atan2(dx, dz));
+  }
+  for (const [x1, z1, x2, z2] of [
+    [-25.5, 28.4, -2, 28.4], [2, 28.4, 25.5, 28.4],            // 广场南两户的门前路
+    [-31, 45.2, -2, 45.2], [-15, 42.6, -15, 45.2],               // 南城西巷
+    [2, 45.2, 52.5, 45.2], [18, 42.6, 18, 45.2], [52, 37.5, 52, 45.2],
+    [-48, -10.8, -48, 30.8], [-49.3, 30, -48, 30], [-49.3, -10, -48, -10],
+    [-32, 2, -32, 7.2], [-25, -12.4, -25, -2], [-42, -29.4, -42, -2], [-57, -40.4, -57, -2],
+    [28, -9.4, 28, -2], [44, -27.4, 44, -2], [20, -27.4, 20, -2], [58, -40.4, 58, -2], [40, 2, 40, 8.8],
+  ]) lane(x1, z1, x2, z2);
+  // 菜园:翻土 + 成行的卷心菜/葱韭 + 一圈矮篱笆(朝路留个口)
+  function garden(cx, cz, w, d) {
+    const soil = new THREE.Mesh(new THREE.PlaneGeometry(w, d), dirtFieldMat);
+    soil.rotation.x = -Math.PI / 2;
+    soil.position.set(cx, 0.03, cz);
+    soil.receiveShadow = true;
+    scene.add(soil);
+    const half = Math.floor(d / 2);
+    scene.add(cropRows(cx, cz - d / 4, w - 0.4, half, 'cabbage'));
+    scene.add(cropRows(cx, cz + d / 4, w - 0.4, d - half, 'greens'));
+    const x0 = cx - w / 2 - 0.3, x1 = cx + w / 2 + 0.3, z0 = cz - d / 2 - 0.3, z1 = cz + d / 2 + 0.3;
+    fence(x0, z0, x1, z0); fence(x0, z0, x0, z1); fence(x1, z0, x1, z1);
+    fence(x0, z1, cx - 0.7, z1); fence(cx + 0.7, z1, x1, z1);
+    feat('field', cx, cz, w, d);
+  }
+  garden(-34, 23.5, 5, 6);
+  garden(34, 23.5, 5, 6);
+  garden(-25, -21.5, 6, 4);
+  garden(35.5, -12, 4.5, 5);
+  garden(44.5, 34, 4.5, 5);
+  garden(-7.5, 38.5, 4, 5);
+
   // ================= 王国扩张区 =================
 
   // ---- 银月河(自湖泊向北)与木桥 ----
@@ -769,8 +952,8 @@ export function buildWorld(scene) {
   const rockMat = lambert(0x6e6a72, { roughness: 0.98, flatShading: true }); // 立石/方尖碑共用
 
   // ---- 苇岸渔村 ----
-  house(-110, 58, 90, 5, 4, 2.6);
-  house(-88, 54, 0, 5, 4, 2.6);
+  house(-110, 58, 90, 5, 4, 2.6, 'HouseC');
+  house(-88, 54, 0, 5, 4, 2.6, 'HouseC');
   {
     // 栈桥伸入湖中
     const pier = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.15, 15), woodMat);
@@ -802,7 +985,7 @@ export function buildWorld(scene) {
   }
 
   // ---- 十字路旅店 ----
-  house(12, 72, 0, 8, 6, 3.6);
+  house(12, 72, 0, 8, 6, 3.6, 'HouseB', false); // 旅店门口已有招牌与长凳
   {
     const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.1, 3.2, 6), woodMat);
     pole.position.set(17, 1.6, 75.5);
@@ -988,9 +1171,9 @@ export function buildWorld(scene) {
   };
 
   // ---- 三石村(南境小村) ----
-  house(4, 294, 0, 5, 4, 2.8);
-  house(16, 294, 0, 5, 4, 2.8);
-  house(-3, 294, 90, 5, 4, 2.8);
+  house(4, 294, 0, 5, 4, 2.8, 'HouseA');
+  house(16, 294, 0, 5, 4, 2.8, 'HouseC');
+  house(-3, 294, 90, 5, 4, 2.8, 'HouseA');
   {
     // 村中三块立石与水井
     for (const [sx, sz] of [[8, 302], [12, 303], [10, 306]]) {
@@ -1005,8 +1188,8 @@ export function buildWorld(scene) {
     scene.add(well);
     circle(4, 304, 1.2);
   }
-  field(24, 306, 18, 10);
-  field(-14, 308, 14, 10);
+  field(24, 306, 18, 10, 'wheat');
+  field(-14, 308, 14, 10, 'greens');
   road(0, 78, 8, 292, 3.4);
   coinLine(2, 110, 9, 288, 9);
   chest(20, 300, -90);
@@ -1063,7 +1246,7 @@ export function buildWorld(scene) {
     feat('tree', dx, dz, 1, 1);
   }
   // 女巫小屋
-  house(-296, 232, 45, 5, 4, 2.6);
+  house(-296, 232, 45, 5, 4, 2.6, 'HouseC');
   torch(-293, 236);
   road(-118, 128, -280, 228, 3);
   coinLine(-130, 140, -275, 225, 10);
@@ -1290,6 +1473,60 @@ export function buildWorld(scene) {
     lostHorsePos: new THREE.Vector3(-150, 0, 8),
     escortRoute: [[10, 1], [40, 0], [66, 0], [74, 2], [100, 9], [134, 17]],
   };
+}
+
+// 平面投影 UV(单位:米):按面法线取水平切向 + 沿坡/竖直方向——墙面横平竖直,屋面顺坡;
+// rotate=true 时 u/v 互换(横板木墙的木纹顺着板走)
+function planarUV(g, rotate = false) {
+  const p = g.attributes.position, n = g.attributes.normal;
+  const uv = new Float32Array(p.count * 2);
+  for (let i = 0; i < p.count; i++) {
+    const nx = n.getX(i), ny = n.getY(i), nz = n.getZ(i);
+    const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
+    let u, v;
+    const l = Math.hypot(nx, nz);
+    if (l < 0.2) { u = x; v = z; } else {
+      const tx = nz / l, tz = -nx / l;
+      u = x * tx + z * tz;
+      v = x * (ny * tz) + y * (nz * tx - nx * tz) + z * (-ny * tx);
+    }
+    uv[i * 2] = rotate ? v : u;
+    uv[i * 2 + 1] = rotate ? u : v;
+  }
+  g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+}
+
+// Blender 建筑模板 → 按材质分件 [{ geo, slot, big }]:按面重算法线(平直着色)+ 平面投影 UV;几何全城共享
+function prepParts(node) {
+  node.updateMatrixWorld(true);
+  const inv = new THREE.Matrix4().copy(node.matrixWorld).invert();
+  const parts = [];
+  node.traverse((o) => {
+    if (!o.isMesh) return;
+    const rel = new THREE.Matrix4().multiplyMatrices(inv, o.matrixWorld);
+    const g = o.geometry.index ? o.geometry.toNonIndexed() : o.geometry.clone();
+    for (const k of Object.keys(g.attributes)) if (k !== 'position') g.deleteAttribute(k);
+    g.applyMatrix4(rel);
+    g.computeVertexNormals(); // 非索引几何:每个三角形用自己的面法线 → 平直着色
+    const slot = (o.material && o.material.name) || 'wood';
+    planarUV(g, slot === 'door'); // 门板竖排,其余横排
+    g.computeBoundingSphere();
+    g.userData.shared = true;
+    parts.push({ geo: g, slot, big: ['plaster', 'roof', 'stone', 'plank', 'dstone'].includes(slot) });
+  });
+  return parts;
+}
+// house.glb 的三种户型 → { HouseA: parts, ... }
+function prepHouseTemplates(root) {
+  if (!root) return null;
+  const out = {};
+  for (const name of ['HouseA', 'HouseB', 'HouseC']) {
+    const node = root.getObjectByName(name);
+    if (!node) continue;
+    const parts = prepParts(node);
+    if (parts.length) out[name] = parts;
+  }
+  return Object.keys(out).length ? out : null;
 }
 
 function makeRuneTextures() {

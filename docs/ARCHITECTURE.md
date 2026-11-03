@@ -7,6 +7,7 @@
 | 模块 | 职责 |
 | --- | --- |
 | `src/gfx/core.js` | 渲染器、场景、相机;后处理链(Render → GTAO → Bloom → Output → 调色 → 画风 → SMAA);8 种画风预设 `applyStyle/cycleStyle` |
+| `src/gfx/surface.js` | 表面着色补丁(onBeforeCompile 注入,共享同一程序):世界坐标低频调色破平铺重复;雨天湿润(反照率压暗、粗糙度降低),由 `surfaceUniforms` 驱动 |
 | `src/gfx/pools.js` | 固定数量的**点光池**(光源只登记,按远近"附身")与**特效材质池**——两者都为了不在游戏中途重编译着色器 |
 | `src/core/ctx.js` | 共享上下文:main.js 启动时登记玩家/世界/碰撞体与少量回调,拆出的系统模块经它访问(带安全缺省值) |
 | `src/systems/camera.js` | 相机:跟随、锁定越肩、防穿墙/穿岩、震屏与速度感视野;共享镜头状态 `cam` |
@@ -16,10 +17,10 @@
 | `src/core/timers.js` | 游戏时钟定时器 `later(sec, fn)`:按游戏 dt 结算,暂停即冻结 |
 | `src/core/rng.js` | 可设种子的 `rand()`;玩法与世界生成的随机都走它,测试可复现 |
 | `src/terrain.js` | 群系权重、地形高度 `terrainH`、压平蒙版、`groundH`(与网格三角化逐三角一致)、地表网格与材质、地图配色 |
-| `src/world.js` | 王国手工布局(城墙、建筑、道路、兴趣点、碰撞体、小地图要素) |
+| `src/world.js` | 王国手工布局(城墙、建筑、道路、兴趣点、碰撞体、小地图要素);Blender 建筑模板按材质拆件 + 平面投影 UV(`prepParts`),三种民居户型、门口道具、巷道与菜园 |
 | `src/batch.js` | 静态合批:世界里不会动的网格按"材质签名 × 64m 格"合并,剩余静态物冻结矩阵 |
 | `src/flora.js` | 树/岩石/地标模板与实例化(`buildNatureInstances`:160m 格分块,可整块剔除) |
-| `src/vegetation.js` | 围绕玩家流式散布的草/花/蕨/芦苇/碎石(实例化 + 风摆 + 远处渐隐) |
+| `src/vegetation.js` | 围绕玩家流式散布的草/花/蕨/芦苇/碎石(实例化 + 风摆 + 远处渐隐);农田/菜园作物的静态实例化 `buildCropMesh`(麦/卷心菜/葱韭) |
 | `src/ambient.js` | 群系环境粒子(雪/沙/余烬/落叶/萤火/花粉),运动全在着色器 |
 | `src/wilderness.js` | 王国之外的无尽荒野:按坐标哈希确定性生成区块 |
 | `src/entities.js` | 人形/马/狼/龙等模型构建,碰撞网格 `resolveCollisions`,实体资源回收 `disposeEntityGroup` |
