@@ -1,7 +1,7 @@
 // 《侠盗猎马人:中世纪王国》主逻辑
 import * as THREE from 'three';
 import { buildWorld } from './world.js';
-import { makeHumanoid, makeHorse, makeWolf, makeChicken, makeSheep, makeDragon, resolveCollisions, angleLerp, dist2, lambert, setHumanModel, setFaunaModel, setWeaponModels, getWeaponModel } from './entities.js';
+import { makeHumanoid, makeHorse, makeWolf, makeChicken, makeSheep, makeDragon, resolveCollisions, angleLerp, dist2, lambert, setHumanModel, setFaunaModel, setWeaponModels, getWeaponModel, disposeEntityGroup } from './entities.js';
 import { INTRO, REGIONS, GUARD_LINES, NPCS, MISSIONS, VILLAGERS, DIALOGS, TIME_GREETINGS, LORE } from './story.js';
 import { initAudio, sfx, startMusic, toggleMusic, weatherAudio, setAmbience, setCombatMusic } from './audio.js';
 import { preloadAIAssets, generateRemoteAITextures } from './textures.js';
@@ -14,6 +14,8 @@ import { MODELS_B64 } from './models-data.js';
 import { buildMasks, buildCoreGround, getGroundMaterial, groundH, maskAt, vegAllowed, dominantBiome, biomeWeights } from './terrain.js';
 import { initVegetation, updateVegetation, setVegetationSeason, setVegetationDensity } from './vegetation.js';
 import { EffectComposer } from '../lib/jsm/postprocessing/EffectComposer.js';
+import { staticBatch } from './batch.js';
+import { mergeGeometries } from '../lib/jsm/utils/BufferGeometryUtils.js';
 import { RenderPass } from '../lib/jsm/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from '../lib/jsm/postprocessing/UnrealBloomPass.js';
 import { SMAAPass } from '../lib/jsm/postprocessing/SMAAPass.js';
@@ -41,6 +43,8 @@ renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5)); // 1.5 上限:SMAA 在,肉眼无差,填充率省一半
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+// 阴影图每帧只画一次:GTAO 等后续 pass 会再调 render,自动更新会让阴影整场景重画第二遍
+renderer.shadowMap.autoUpdate = false;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.05;
 container.appendChild(renderer.domElement);
@@ -287,9 +291,10 @@ const hemi = new THREE.HemisphereLight(0xb4c4d4, 0x5e6355, 0.7); // 冷天光,�
 scene.add(hemi);
 const sun = new THREE.DirectionalLight(0xfff3d6, 2.6);
 sun.castShadow = true;
-sun.shadow.mapSize.set(LOWFX ? 1024 : 2048, LOWFX ? 1024 : 2048); // 2048 在此画风下与 4096 无肉眼差,阴影渲染省 4 倍
-sun.shadow.camera.left = -130; sun.shadow.camera.right = 130;
-sun.shadow.camera.top = 130; sun.shadow.camera.bottom = -130;
+sun.shadow.mapSize.set(2048, 2048); // 画质档位会按需改成 1024(setQuality)
+// 阴影范围 ±70m:镜头距人物 6m,更远的影子本就被雾和透视压成几个像素;范围收窄后纹素密度还翻倍
+sun.shadow.camera.left = -70; sun.shadow.camera.right = 70;
+sun.shadow.camera.top = 70; sun.shadow.camera.bottom = -70;
 sun.shadow.camera.far = 600;
 sun.shadow.bias = -0.0004;
 sun.shadow.normalBias = 0.02;
@@ -300,6 +305,65 @@ scene.add(moon);
 // 随身提灯:夜里跟着玩家的一团暖光(强度在 updateDayNight 里按夜色调)
 const lantern = new THREE.PointLight(0xffd9a0, 0, 17, 1.6);
 scene.add(lantern);
+// 点光池:场景里永远只有 LIGHT_POOL 盏点光(外加提灯)。火把、篝火、地窖烛台、陨石等光源
+// 只登记不入场,每隔几帧挑离玩家最近的几处"附身"上去。灯的数量恒定 → 开灯/进地窖/天黑
+// 都不会触发全场着色器重编译;白天光源全灭时片元着色器也只多算这几盏。
+const LIGHT_POOL = 4;
+const lightPool = [];
+for (let i = 0; i < LIGHT_POOL; i++) {
+  const pl = new THREE.PointLight(0xff9944, 0, 20, 2);
+  pl.userData.noSnap = true; // 位置按光源的绝对高度直接给
+  scene.add(pl);
+  lightPool.push(pl);
+}
+const lightSources = new Set();
+function addLightSource(pl) {
+  if (pl.parent) pl.parent.remove(pl);
+  lightSources.add(pl);
+}
+function removeLightSource(pl) { lightSources.delete(pl); }
+let lightPoolScan = 0;
+const _lpList = [];
+function updateLightPool() {
+  if (lightPoolScan-- > 0) return;
+  lightPoolScan = 3;
+  _lpList.length = 0;
+  for (const src of lightSources) {
+    if (!src.visible || src.intensity <= 0.01) continue;
+    const d = Math.hypot(src.position.x - player.pos.x, src.position.z - player.pos.z);
+    if (d > 110) continue;
+    _lpList.push({ src, d });
+  }
+  _lpList.sort((a, b) => a.d - b.d);
+  for (let i = 0; i < LIGHT_POOL; i++) {
+    const pl = lightPool[i], it = _lpList[i];
+    if (!it) { pl.intensity = 0; continue; }
+    const s2 = it.src;
+    pl.color.copy(s2.color);
+    pl.intensity = s2.intensity;
+    pl.distance = s2.distance;
+    pl.decay = s2.decay;
+    // 登记的光源坐标是"离地高度"(不入场就不会被贴地),这里补上地面
+    pl.position.set(s2.position.x, s2.position.y + (s2.userData.absY ? 0 : groundH(s2.position.x, s2.position.z)), s2.position.z);
+  }
+}
+// 特效材质池:剑光/碎光/预警圈用完不销毁而是回收。销毁会连带删掉着色器程序,
+// 下一次出刀又要重编译(卡一下),回收则永远命中缓存
+const matPools = new Map();
+function pooledMat(base) {
+  let pool = matPools.get(base);
+  if (!pool) { pool = []; matPools.set(base, pool); }
+  const m = pool.pop() || base.clone();
+  m.userData.poolBase = base;
+  return m;
+}
+function releaseMat(m) {
+  const base = m.userData && m.userData.poolBase;
+  if (!base) { m.dispose(); return; }
+  m.copy(base);
+  m.userData.poolBase = base;
+  matPools.get(base).push(m);
+}
 
 // 大气天空穹顶(程序化渐变 + 太阳光晕)
 const skyUniforms = {
@@ -459,7 +523,9 @@ function vistaRing(R, H, phase, hex) {
 const vistaFar = vistaRing(360, 74, 1.7, 0x76858f);  // 远脊:几乎溶进雾里
 const vistaNear = vistaRing(300, 52, 4.9, 0x67757f); // 近脊:略深一层,错峰出剪影
 
+const preWorldTops = new Set(scene.children);
 const world = buildWorld(scene);
+const worldTops = scene.children.filter((o) => !preWorldTops.has(o)); // buildWorld 新建的顶层对象(静态合批候选)
 const { colliders } = world;
 
 // ---- 地形:平整蒙版 → 核心王国起伏地表(替换旧的无限平面)----
@@ -863,12 +929,16 @@ initWilderness(scene, colliders, {
     for (let i = wolves.length - 1; i >= 0; i--) {
       if (wolves[i].chunk === chunkKey) {
         scene.remove(wolves[i].group);
+        disposeEntityGroup(wolves[i].group);
+        flashing.delete(wolves[i]);
         wolves.splice(i, 1);
       }
     }
     for (let i = bandits.length - 1; i >= 0; i--) {
       if (bandits[i].chunk === chunkKey) {
         scene.remove(bandits[i].group);
+        disposeEntityGroup(bandits[i].group);
+        flashing.delete(bandits[i]);
         bandits.splice(i, 1);
       }
     }
@@ -877,6 +947,7 @@ initWilderness(scene, colliders, {
       if (h.chunk !== chunkKey) continue;
       if (h === player.mounted) { h.chunk = null; continue; } // 骑走的坐骑归玩家
       scene.remove(h.group);
+      disposeEntityGroup(h.group);
       horses.splice(i, 1);
     }
   },
@@ -1930,7 +2001,7 @@ const dangerMat = new THREE.MeshBasicMaterial({ color: 0xff3220, transparent: tr
   side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending });
 function telegraphFlash(e, dur = 0.45, heavy = false) {
   sfx.warn();
-  const ring = new THREE.Mesh(new THREE.RingGeometry(0.55, 0.8, 1, 24), dangerMat.clone());
+  const ring = new THREE.Mesh(new THREE.RingGeometry(0.55, 0.8, 32, 1), pooledMat(dangerMat)); // 32 段的圆环(旧参数画成了三角)
   if (heavy) ring.material.color.setHex(0xb040ff); // 紫圈=破盾重击:别格挡,滚!
   ring.rotation.x = -Math.PI / 2;
   ring.position.set(e.pos.x, 0.12, e.pos.z);
@@ -1946,7 +2017,7 @@ function updateDanger(dt) {
     if (k >= 1 || f.e.dead || f.e.downT > 0 || (f.e.stunT || 0) > 0) {
       scene.remove(f.ring);
       f.ring.geometry.dispose();
-      f.ring.material.dispose();
+      releaseMat(f.ring.material);
       dangerFX.splice(i, 1);
       continue;
     }
@@ -3638,7 +3709,8 @@ const DIRECTOR_EVENTS = [
       const glow = new THREE.PointLight(0xffaa44, 30, 60, 2);
       ball.position.set(p.x + 40, 90, p.z - 30);
       glow.position.copy(ball.position);
-      scene.add(ball, glow);
+      scene.add(ball);
+      addLightSource(glow); // 走点光池:不往场景里加新灯(加灯=全场着色器重编译)
       toast('☄️ 夜空中有什么东西坠落了!', 3);
       let landed = false;
       return {
@@ -3672,7 +3744,7 @@ const DIRECTOR_EVENTS = [
             glow.intensity = Math.max(0, glow.intensity - dt2 * 15);
           }
         },
-        end() { scene.remove(ball); scene.remove(glow); },
+        end() { scene.remove(ball); removeLightSource(glow); },
       };
     },
   },
@@ -4675,20 +4747,73 @@ function setPaused(p) {
   paused = p;
   pauseEl.style.display = p ? 'flex' : 'none';
 }
-function setQuality(high) {
-  fxHigh = high;
-  setVegetationDensity(high ? 1 : 0.5); // 流畅档:草木减半、半径收窄
-  gtao.enabled = bloom.enabled = smaa.enabled = gradePass.enabled = high;
-  if (STYLE_PRESETS[styleKey].mode === 4) smaa.enabled = false; // 像素风不要抗锯齿糊掉方块
-  document.getElementById('btn-quality').textContent = `画质:${high ? '精致' : '流畅'}`;
-  try { localStorage.setItem('gth-fx', high ? 'hi' : 'lo'); } catch { /* 忽略 */ }
+// 画质三档:流畅(集显/老机器)、均衡(默认)、精致(独显:环境光遮蔽 + 高分辨率)
+// 开局后按实测帧时自动降档(每档至少观察 8 秒),玩家手动选过就不再自动改
+const QUALITY = [
+  { key: 'lo', name: '流畅', gtao: false, bloom: false, smaa: false, pr: 0.8, veg: 0.5, shadow: 1024 },
+  { key: 'mid', name: '均衡', gtao: false, bloom: true, smaa: true, pr: 1, veg: 0.65, shadow: 2048 },
+  { key: 'hi', name: '精致', gtao: true, bloom: true, smaa: true, pr: 1.5, veg: 1, shadow: 2048 },
+];
+let qualityIdx = LOWFX ? 0 : 1;
+let qualityManual = false;
+function setQuality(idx, manual = false) {
+  qualityIdx = Math.max(0, Math.min(QUALITY.length - 1, idx));
+  if (manual) qualityManual = true;
+  const q = QUALITY[qualityIdx];
+  fxHigh = q.smaa;
+  setVegetationDensity(q.veg);
+  gtao.enabled = q.gtao;
+  bloom.enabled = q.bloom;
+  smaa.enabled = q.smaa && STYLE_PRESETS[styleKey].mode !== 4; // 像素风不要抗锯齿糊掉方块
+  gradePass.enabled = true; // 调色很便宜,三档都保留画风
+  const pr = Math.min(window.devicePixelRatio || 1, q.pr) * dynRes;
+  if (Math.abs(renderer.getPixelRatio() - pr) > 0.01) {
+    renderer.setPixelRatio(pr);
+    composer.setPixelRatio(pr);
+    stylePass.uniforms.uRes.value.set(window.innerWidth * pr, window.innerHeight * pr);
+  }
+  if (sun.shadow.mapSize.x !== q.shadow) {
+    sun.shadow.mapSize.set(q.shadow, q.shadow);
+    if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; }
+  }
+  document.getElementById('btn-quality').textContent = `画质:${q.name}`;
+  try { localStorage.setItem('gth-fx', q.key + (qualityManual ? '!' : '')); } catch { /* 忽略 */ }
 }
-try { if (localStorage.getItem('gth-fx') === 'lo') setQuality(false); else setQuality(fxHigh); } catch { /* 忽略 */ }
+let dynRes = 1; // 最低档仍然卡时的动态分辨率(0.6~1)
+try {
+  const sv = localStorage.getItem('gth-fx') || '';
+  const k = QUALITY.findIndex((q) => sv.startsWith(q.key));
+  if (sv === 'hi' && !sv.endsWith('!')) setQuality(1); // 旧版默认"精致"的存档设置回落到均衡,由自动档决定
+  else if (k >= 0) { qualityManual = sv.endsWith('!'); setQuality(k); }
+  else setQuality(qualityIdx);
+} catch { setQuality(qualityIdx); }
+// 自动降档:游戏进行中每 8 秒看一次平均帧时;连续偏慢就降一档,最低档再慢就降渲染分辨率
+const perfWin = { t: 0, n: 0, sum: 0, cool: 6 };
+function autoQuality(frameDt) {
+  if (qualityManual || !started || paused || document.hidden) return;
+  if (frameDt > 0.25) return; // 切后台/加载卡顿的长帧不计
+  perfWin.cool -= frameDt;
+  if (perfWin.cool > 0) return;
+  perfWin.t += frameDt; perfWin.n++; perfWin.sum += frameDt;
+  if (perfWin.t < 8) return;
+  const avg = perfWin.sum / perfWin.n;
+  perfWin.t = perfWin.n = perfWin.sum = 0;
+  if (avg > 1 / 26) {
+    if (qualityIdx > 0) {
+      setQuality(qualityIdx - 1);
+      toast(`⚙️ 画质已自动调为「${QUALITY[qualityIdx].name}」(暂停菜单可手动改)`, 3);
+    } else if (dynRes > 0.6) {
+      dynRes = Math.max(0.6, dynRes - 0.15);
+      setQuality(0);
+    }
+    perfWin.cool = 4;
+  }
+}
 document.getElementById('btn-resume').onclick = () => {
   setPaused(false);
   renderer.domElement.requestPointerLock();
 };
-document.getElementById('btn-quality').onclick = () => setQuality(!fxHigh);
+document.getElementById('btn-quality').onclick = () => setQuality((qualityIdx + 1) % QUALITY.length, true);
 document.getElementById('btn-style').textContent = `画风:${STYLE_PRESETS[styleKey].name}`;
 document.getElementById('btn-style').onclick = () => {
   document.getElementById('btn-style').textContent = `画风:${cycleStyle()}`;
@@ -4782,6 +4907,37 @@ function hitFX(e, push = 0.55) {
   e.pos.z += (dz / d) * push;
   resolveCollisions(e.pos, 0.4, colliders);
   flashEntity(e);
+}
+
+// ================= 实体远近分级(LOD) =================
+// 40m 外:收起眼珠/腰带等细件、关掉投影(阴影 pass 少画几百次);每 12 帧扫一遍,级别变了才改
+const LOD_NEAR = 40;
+let lodScan = 0;
+const _lodSeen = new Set();
+function applyEntityLOD(e, lv) {
+  e._lod = lv;
+  e.group.traverse((o) => {
+    if (!o.isMesh) return;
+    if (o.userData.cast0 === undefined) o.userData.cast0 = o.castShadow;
+    o.castShadow = lv === 0 && o.userData.cast0;
+    if (o.userData.lodDetail) o.visible = lv === 0;
+  });
+}
+function updateEntityLOD() {
+  if (lodScan-- > 0) return;
+  lodScan = 12;
+  const cx = camera.position.x, cz = camera.position.z;
+  _lodSeen.clear();
+  const lists = [villagers, guards, bandits, wolves, horses, namedNPCs, chickens, deers, funnyNPCs, mercs];
+  for (const list of lists) {
+    for (const e of list) {
+      if (!e || !e.group || _lodSeen.has(e)) continue;
+      _lodSeen.add(e);
+      const d = Math.hypot(e.group.position.x - cx, e.group.position.z - cz);
+      const lv = d < LOD_NEAR ? 0 : d < LOD_NEAR + 6 && e._lod === 0 ? 0 : 1; // 6m 回差,免得边界上来回切
+      if (e._lod !== lv) applyEntityLOD(e, lv);
+    }
+  }
 }
 
 // ================= 人群软碰撞(不再穿过 NPC) =================
@@ -5711,8 +5867,6 @@ scene.add(beacon);
 
 // ================= 拾取物 =================
 const pickups = [];
-const coinGeo = new THREE.CylinderGeometry(0.32, 0.32, 0.07, 12);
-coinGeo.rotateX(Math.PI / 2);
 const coinMat = new THREE.MeshStandardMaterial({
   color: 0xffd83d, emissive: 0x8a5c00, emissiveIntensity: 0.55, metalness: 0.9, roughness: 0.22 });
 const heartMat = new THREE.MeshStandardMaterial({
@@ -5754,16 +5908,87 @@ const crestG = crestGeo();
 const crestMat = new THREE.MeshStandardMaterial({
   color: 0x3f6fd0, emissive: 0x1a3a88, emissiveIntensity: 0.7, metalness: 0.8, roughness: 0.25 });
 
+// ---- 金币:落在地上的一小摞(实例化:全图几百枚金币只占一次绘制) + 一层闪光点 ----
+// 逻辑上每枚金币仍是一个 Object3D 代理(进场景、可 scene.remove),渲染时汇总进 InstancedMesh
+const COIN_MAX = 1024;
+const coinStackGeo = (() => {
+  const parts = [];
+  for (const [x, y, z, rx, rz] of [[0, 0.018, 0, 0, 0], [0.05, 0.053, 0.03, 0.05, -0.04], [-0.02, 0.088, -0.01, -0.03, 0.06], [0.2, 0.1, -0.05, 1.2, 0.3]]) {
+    const c = new THREE.CylinderGeometry(0.15, 0.15, 0.035, 14);
+    c.rotateX(rx); c.rotateZ(rz);
+    c.translate(x, y, z);
+    parts.push(c);
+  }
+  return mergeGeometries(parts, false);
+})();
+const coinIM = new THREE.InstancedMesh(coinStackGeo, coinMat, COIN_MAX);
+coinIM.count = 0;
+coinIM.frustumCulled = false;
+coinIM.receiveShadow = true;
+coinIM.userData.noSnap = true;
+scene.add(coinIM);
+const glintTex = (() => { // 四芒星闪光
+  const c = document.createElement('canvas');
+  c.width = c.height = 64;
+  const g = c.getContext('2d');
+  const grd = g.createRadialGradient(32, 32, 0, 32, 32, 30);
+  grd.addColorStop(0, 'rgba(255,255,240,1)');
+  grd.addColorStop(0.25, 'rgba(255,230,150,0.55)');
+  grd.addColorStop(1, 'rgba(255,200,80,0)');
+  g.fillStyle = grd;
+  g.fillRect(0, 0, 64, 64);
+  g.fillStyle = 'rgba(255,255,230,0.9)';
+  g.fillRect(31, 4, 2, 56);
+  g.fillRect(4, 31, 56, 2);
+  return new THREE.CanvasTexture(c);
+})();
+const coinGlintPos = new Float32Array(COIN_MAX * 3);
+const coinGlintGeo = new THREE.BufferGeometry();
+coinGlintGeo.setAttribute('position', new THREE.BufferAttribute(coinGlintPos, 3));
+const coinGlint = new THREE.Points(coinGlintGeo, new THREE.PointsMaterial({ size: 0.55, map: glintTex, color: 0xffe7a0,
+  transparent: true, opacity: 0.8, depthWrite: false, blending: THREE.AdditiveBlending }));
+coinGlint.frustumCulled = false;
+coinGlint.userData.noSnap = true;
+scene.add(coinGlint);
+const coinProxies = new Set();
+const _cM = new THREE.Matrix4(), _cQ = new THREE.Quaternion(), _cV = new THREE.Vector3(), _cS = new THREE.Vector3(1, 1, 1);
+const _cUp = new THREE.Vector3(0, 1, 0);
+function updateCoinInstances(now) {
+  let i = 0;
+  for (const p of coinProxies) {
+    if (!p.parent) { coinProxies.delete(p); continue; }
+    if (!p.visible || i >= COIN_MAX) continue;
+    const u = p.userData;
+    if (u.cx !== p.position.x || u.cz !== p.position.z) { u.cx = p.position.x; u.cz = p.position.z; u.cy = groundH(u.cx, u.cz); }
+    _cQ.setFromAxisAngle(_cUp, u.yaw);
+    _cM.compose(_cV.set(u.cx, u.cy + 0.01, u.cz), _cQ, _cS);
+    coinIM.setMatrixAt(i, _cM);
+    // 闪光点:各自错开相位地一闪一闪(高度随相位轻轻起伏)
+    const ph = Math.sin(now * 0.004 + u.yaw * 7);
+    coinGlintPos[i * 3] = u.cx;
+    coinGlintPos[i * 3 + 1] = u.cy + 0.32 + ph * 0.06;
+    coinGlintPos[i * 3 + 2] = u.cz;
+    i++;
+  }
+  coinIM.count = i;
+  coinIM.instanceMatrix.needsUpdate = true;
+  coinGlintGeo.setDrawRange(0, i);
+  coinGlintGeo.attributes.position.needsUpdate = true;
+  coinGlint.material.size = 0.45 + 0.15 * Math.sin(now * 0.006);
+}
 function addPickup(type, x, z, ttl = Infinity, id = -1, chunk = null) {
   let mesh;
-  if (type === 'coin') mesh = new THREE.Mesh(coinGeo, coinMat);
-  else if (type === 'heart') mesh = new THREE.Mesh(heartG, heartMat);
+  if (type === 'coin') {
+    mesh = new THREE.Object3D(); // 代理:真正的绘制交给 coinIM
+    mesh.userData.yaw = Math.random() * Math.PI * 2;
+    coinProxies.add(mesh);
+  } else if (type === 'heart') mesh = new THREE.Mesh(heartG, heartMat);
   else if (type === 'crest') mesh = new THREE.Mesh(crestG, crestMat);
   else mesh = new THREE.Mesh(starGeoBig(), new THREE.MeshStandardMaterial({
     color: 0xffd83d, emissive: 0xaa7700, emissiveIntensity: 0.9, metalness: 0.7, roughness: 0.25 }));
-  mesh.position.set(x, type === 'star' ? 1.4 : type === 'crest' ? 1.0 : 0.65, z);
+  mesh.position.set(x, type === 'coin' ? 0 : type === 'star' ? 1.4 : type === 'crest' ? 1.0 : 0.65, z);
   if (type === 'star') mesh.scale.setScalar(1.4);
-  mesh.castShadow = true;
+  mesh.castShadow = type !== 'coin';
   scene.add(mesh);
   pickups.push({ mesh, type, x, z, ttl, id, chunk, t: Math.random() * 6 });
 }
@@ -7015,6 +7240,8 @@ function disbandWarband(escaped) {
     const gone = b;
     later(4, () => { // 尸体躺一会儿再收,别当场蒸发
       scene.remove(gone.group);
+      disposeEntityGroup(gone.group);
+      flashing.delete(gone);
       const i = bandits.indexOf(gone);
       if (i >= 0) bandits.splice(i, 1);
     });
@@ -7195,9 +7422,9 @@ const trailMat = new THREE.MeshBasicMaterial({ color: 0xdfe9f5, transparent: tru
   side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending });
 function swingTrail(range, arc = 2.1, dir = 1) {
   const g = new THREE.Group();
-  const ring = new THREE.Mesh(
-    new THREE.RingGeometry(Math.max(0.5, range * 0.45), range, 1, 10, Math.PI / 2 - arc / 2, arc),
-    trailMat.clone());
+  const ring = new THREE.Mesh( // 弧向 18 段、径向 1 段:一道弯月形的刀光(旧参数反了,画成一片三角)
+    new THREE.RingGeometry(Math.max(0.5, range * 0.45), range, 18, 1, Math.PI / 2 - arc / 2, arc),
+    pooledMat(trailMat));
   if (whiteHot()) ring.material.color.setHex(0xffd75e); // 白热连杀:剑光化金
   ring.rotation.x = Math.PI / 2;
   g.add(ring);
@@ -7210,10 +7437,12 @@ function swingTrail(range, arc = 2.1, dir = 1) {
   trailFX.push({ g, ring, t: 0, mx: g.scale.x });
 }
 // 魔法命中碎光:一团加色蓝光炸开(复用拖尾的生灭管线)
+const magBurstGeo = new THREE.SphereGeometry(0.2, 8, 6);
+magBurstGeo.userData.shared = true;
+const magBurstMat = new THREE.MeshBasicMaterial({ color: 0x9fd4ff, transparent: true, opacity: 0.8,
+  blending: THREE.AdditiveBlending, depthWrite: false });
 function magBurst(x, y, z) {
-  const m = new THREE.Mesh(new THREE.SphereGeometry(0.2, 8, 6),
-    new THREE.MeshBasicMaterial({ color: 0x9fd4ff, transparent: true, opacity: 0.8,
-      blending: THREE.AdditiveBlending, depthWrite: false }));
+  const m = new THREE.Mesh(magBurstGeo, pooledMat(magBurstMat));
   m.position.set(x, y, z);
   scene.add(m);
   trailFX.push({ g: m, ring: m, t: -0.08, mx: 1 }); // 负起点=多亮一拍
@@ -7225,12 +7454,12 @@ function updateTrails(dt) {
     const k = f.t / 0.16;
     if (k >= 1) {
       scene.remove(f.g);
-      f.ring.geometry.dispose();
-      f.ring.material.dispose();
+      if (!f.ring.geometry.userData.shared) f.ring.geometry.dispose();
+      releaseMat(f.ring.material);
       trailFX.splice(i, 1);
       continue;
     }
-    f.ring.material.opacity = 0.5 * (1 - k);
+    f.ring.material.opacity = (f.ring.material.userData.poolBase === magBurstMat ? 0.8 : 0.5) * (1 - k);
     f.g.scale.setScalar(1 + k * 0.5);
     f.g.scale.x *= f.mx || 1; // 保住镜像方向
   }
@@ -8611,7 +8840,7 @@ function updatePickups(dt) {
         p.mesh.position.z = p.z;
       }
     }
-    p.mesh.position.y = (p.type === 'star' ? 1.4 : p.type === 'crest' ? 1.0 : 0.65) + Math.sin(p.t * 3) * 0.12;
+    if (p.type !== 'coin') p.mesh.position.y = (p.type === 'star' ? 1.4 : p.type === 'crest' ? 1.0 : 0.65) + Math.sin(p.t * 3) * 0.12;
     if (!player.dead && dist2(player.pos.x, player.pos.z, p.x, p.z) < radius * radius &&
         player.pos.y < 1.5) {
       if (p.type === 'coin') {
@@ -10044,6 +10273,7 @@ window.__gtm = {
   getFov: () => camera.fov,
   renderer, scene, camera, // 诊断用:渲染统计/取景
   snapCamera: () => { camSnapNext = true; },
+  setCamView: (yaw, pitch = 0.35) => { camYaw = yaw; camPitch = pitch; camSnapNext = true; },
   // 固定步长推进模拟(不渲染):测试用,比等真实帧快得多也稳定得多
   step: (n = 1, dt = 1 / 60) => {
     unsnapScene();
@@ -10082,9 +10312,12 @@ window.__gtm = {
   slayBandit, killWolf, stats, recomputeMaxHp, getSaveBlocked: () => saveBlocked, loadGame,
   getTimers: () => timers.length, flashing,
   getBeacon: () => ({ x: beacon.position.x, z: beacon.position.z, v: beacon.visible }),
+  worldTops: () => worldTops,
+  groundH,
 };
 
 let last = performance.now();
+let lastFrameNow = last;
 let frameNo = 0;
 // ================= 贴地:逻辑里的 y 都是离地高度,渲染前统一加上地面高度 =================
 // 顶层物体在"更新前取消、渲染前加上"地面偏移;位置没动就复用上次的高度,几乎零开销。
@@ -10117,8 +10350,35 @@ function loop(now) {
     unsnapScene();
     tick(dt, now);
   }
+  autoQuality((now - lastFrameNow) / 1000);
+  lastFrameNow = now;
   snapScene();
+  fitViewDistance();
+  renderer.shadowMap.needsUpdate = true;
   composer.render();
+}
+// 视距跟着雾走:雾外的东西看不见却照样要画,远眺时那是九成的绘制量。
+// 天穹/星空/远山环/月亮都缩进视距内(天穹着色只看方向,缩放不影响观感)
+let viewFar = 0;
+function fitViewDistance() {
+  const far = Math.max(90, Math.min(1600, scene.fog.far + 30));
+  if (Math.abs(far - viewFar) > 4) {
+    viewFar = far;
+    camera.far = far;
+    camera.updateProjectionMatrix();
+  }
+  sky.scale.setScalar((far * 0.9) / 1200);
+  stars.scale.setScalar((far * 0.85) / 420);
+  const vk = Math.min(1, (far - 25) / 366);
+  vistaFar.scale.set(vk, 1, vk);
+  vistaNear.scale.set(vk, 1, vk);
+  // 月亮:方向不变,距离收进视距
+  const mx = moonBall.position.x - camera.position.x, my = moonBall.position.y - camera.position.y, mz = moonBall.position.z - camera.position.z;
+  const md = Math.hypot(mx, my, mz);
+  if (md > far * 0.8) {
+    const k = (far * 0.8) / md;
+    moonBall.position.set(camera.position.x + mx * k, camera.position.y + my * k, camera.position.z + mz * k);
+  }
 }
 // 一帧的全部模拟(不含渲染):主循环与测试步进(__gtm.step)共用
 function tick(dt, now) {
@@ -10326,6 +10586,7 @@ function tick(dt, now) {
   updateRain(dt);
   updateDust(dt);
   updateDayNight(dt);
+  updateLightPool();
   updateCalendar();
   updateWorkspace(dt);
   updateIdle(dt);
@@ -10367,10 +10628,50 @@ function tick(dt, now) {
   } else if (lowhpEl.style.opacity !== '0') {
     lowhpEl.style.opacity = 0;
   }
+  updateCoinInstances(now);
+  updateEntityLOD();
   if (frameNo % 3 === 0 || fishing.active || player.carrying || player.mounted) computePrompt();
   updateHUD();
   updateActionBar();
   if (frameNo++ % 2 === 0) drawMinimap(); // 小地图 30Hz 足够
   gradePass.uniforms.uTime.value = now * 0.00025; // 胶片颗粒的抖动时钟
+}
+// ---- 点光入池:场景里现有的火把/篝火/地窖烛台点光全部改为登记,由点光池代为发光 ----
+{
+  scene.updateMatrixWorld(true);
+  const found = [];
+  scene.traverse((o) => { if (o.isPointLight && o !== lantern && !lightPool.includes(o)) found.push(o); });
+  const wp = new THREE.Vector3();
+  for (const pl of found) {
+    pl.getWorldPosition(wp);
+    addLightSource(pl);
+    pl.position.copy(wp); // 摘下来后用世界坐标(仍是离地高度)
+  }
+  console.info('点光入池', found.length, '盏 →', LIGHT_POOL, '盏常驻');
+}
+// ---- 静态合批:所有引用都建立完了,把世界里不会再动的网格按材质×格合并 ----
+{
+  const protect = [], protectMats = new Set();
+  const scan = (v, depth) => { // world 返回值里引用到的对象/材质都是"活的",原样保留
+    if (!v || depth > 4) return;
+    if (v.isObject3D) { protect.push(v); return; }
+    if (v.isMaterial) { protectMats.add(v); return; }
+    if (Array.isArray(v)) { for (const x of v) scan(x, depth + 1); return; }
+    if (typeof v === 'object' && !(v instanceof THREE.Vector3) && v.constructor === Object) {
+      for (const k of Object.keys(v)) if (k !== 'colliders' && k !== 'features' && k !== 'occluders') scan(v[k], depth + 1);
+    }
+  };
+  scan(world, 0);
+  for (const m of world.waterMats || []) protectMats.add(m);
+  const t0 = performance.now();
+  const st = staticBatch(scene, worldTops, { groundH, protect, protectMats, raycastKeep: new Set(world.occluders) });
+  console.info('静态合批', st, `${(performance.now() - t0).toFixed(0)}ms`);
+}
+// ---- 着色器预热:场景材质 + 特效材质一次编译好,首次出刀/施法/起手预警不再卡顿 ----
+{
+  const tmp = [trailMat, magBurstMat, dangerMat].map((m) => new THREE.Mesh(magBurstGeo, m));
+  for (const t of tmp) { t.position.set(0, -60, 0); t.userData.noSnap = true; scene.add(t); }
+  try { renderer.compile(scene, camera); } catch (e) { console.warn('预热失败', e); }
+  for (const t of tmp) scene.remove(t);
 }
 requestAnimationFrame(loop);

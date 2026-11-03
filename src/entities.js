@@ -1,5 +1,6 @@
 // 角色与马匹的低多边形卡通模型构建器 + 通用碰撞/数学工具
 import * as THREE from 'three';
+import { mergeGeometries } from '../lib/jsm/utils/BufferGeometryUtils.js';
 
 // 名字沿用 lambert,实际已升级为 PBR 标准材质
 // 北境写实调:所有过手的颜色饱和度砍半、整体沉一分——把糖果色世界拉回大地色系
@@ -17,12 +18,37 @@ export function lambert(c, opts = {}) {
 // ---- 人形角色(面朝 +Z)----
 // ---- Blender 写实人体模板(GLB 解析后注入;无模板时回退积木人)----
 let HUMAN_TPL = null;
+// 同材质的小部件合成一个网格(头+鼻+耳都是皮肤、两只眼同一材质):每个人少 4 次绘制
+function mergeTplParts(list, name) {
+  const geos = [];
+  let mat = null;
+  for (const o of list) {
+    if (!o || !o.isMesh) continue;
+    o.updateMatrix();
+    const g = o.geometry.clone();
+    g.applyMatrix4(o.matrix);
+    for (const k of Object.keys(g.attributes)) if (k !== 'position' && k !== 'normal') g.deleteAttribute(k);
+    if (!g.index) g.setIndex([...Array(g.attributes.position.count).keys()]);
+    geos.push(g);
+    mat = mat || o.material;
+  }
+  if (!geos.length) return null;
+  const merged = geos.length > 1 ? mergeGeometries(geos, false) : geos[0];
+  if (!merged) return list[0] || null;
+  const m = new THREE.Mesh(merged, mat);
+  m.name = name;
+  return m;
+}
 export function setHumanModel(scene) {
   const f = (n) => scene.getObjectByName(n);
   const t = { torso: f('Torso'), belt: f('Belt'), head: f('Head'), nose: f('Nose'),
     eyeL: f('EyeL'), eyeR: f('EyeR'), earL: f('EarL'), earR: f('EarR'),
     leg: f('Leg'), arm: f('Arm') };
-  if (t.torso && t.head && t.leg && t.arm) HUMAN_TPL = t;
+  if (!(t.torso && t.head && t.leg && t.arm)) return;
+  const head = mergeTplParts([t.head, t.nose, t.earL, t.earR], 'Head');
+  const eyes = mergeTplParts([t.eyeL, t.eyeR], 'Eyes');
+  HUMAN_TPL = { torso: t.torso, belt: t.belt, leg: t.leg, arm: t.arm, head: head || t.head, eyes };
+  for (const k of Object.keys(HUMAN_TPL)) if (HUMAN_TPL[k]) markShared(HUMAN_TPL[k]);
 }
 // 染色材质缓存:同色同件全场共享,几十个 NPC 只产出一小撮材质
 const humMats = new Map();
@@ -31,9 +57,27 @@ function humMat(slot, hex) {
   let m = humMats.get(key);
   if (!m) {
     m = lambert(hex, { roughness: slot === 'skin' ? 0.62 : slot === 'boots' ? 0.55 : 0.9 });
+    m.userData.shared = true; // 全场共享:实体卸载时不销毁
     humMats.set(key, m);
   }
   return m;
+}
+// 模板资源打上共享标记:实体卸载时只回收它自己独有的几何体/材质
+function markShared(root) {
+  root.traverse((o) => {
+    if (!o.isMesh) return;
+    o.geometry.userData.shared = true;
+    for (const m of Array.isArray(o.material) ? o.material : [o.material]) if (m) m.userData.shared = true;
+  });
+}
+// 实体从场景摘除时调用:兜帽/头盔/受击时克隆的私有材质等一并释放,防显存缓慢泄漏
+export function disposeEntityGroup(g) {
+  if (!g) return;
+  g.traverse((o) => {
+    if (!o.isMesh) return;
+    if (o.geometry && !o.geometry.userData.shared) o.geometry.dispose();
+    for (const m of Array.isArray(o.material) ? o.material : [o.material]) if (m && !m.userData.shared) m.dispose();
+  });
 }
 function humClone(tpl, colors) {
   const c = tpl.clone();
@@ -118,8 +162,9 @@ export function makeHumanoid(opts = {}) {
     body.position.y = 0.78;
     g.add(body);
     parts.body = body;
-    const belt = humClone(HUMAN_TPL.belt || HUMAN_TPL.torso, colors);
     if (HUMAN_TPL.belt) {
+      const belt = humClone(HUMAN_TPL.belt, colors);
+      belt.traverse((o) => { o.castShadow = false; o.userData.lodDetail = true; });
       belt.position.y = 0.78;
       g.add(belt);
     }
@@ -131,8 +176,11 @@ export function makeHumanoid(opts = {}) {
       parts[side === -1 ? 'armL' : 'armR'] = pivot;
     }
     const headG = new THREE.Group();
-    for (const k of ['head', 'nose', 'eyeL', 'eyeR', 'earL', 'earR']) {
-      if (HUMAN_TPL[k]) headG.add(humClone(HUMAN_TPL[k], colors));
+    for (const k of ['head', 'eyes']) {
+      if (!HUMAN_TPL[k]) continue;
+      const part = humClone(HUMAN_TPL[k], colors);
+      if (k === 'eyes') part.traverse((o) => { o.castShadow = false; o.userData.lodDetail = true; }); // 眼珠:远了就收起
+      headG.add(part);
     }
     headG.position.y = 1.32;
     g.add(headG);
@@ -222,6 +270,7 @@ export function makeHumanoid(opts = {}) {
 let HORSE_TPL = null, WOLF_TPL = null, DRAGON_TPL = null;
 export function setFaunaModel(kind, scene) {
   scene.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+  markShared(scene);
   if (kind === 'horse') HORSE_TPL = scene;
   else if (kind === 'wolf') WOLF_TPL = scene;
   else if (kind === 'dragon') DRAGON_TPL = scene;
@@ -284,6 +333,7 @@ function humMatPublic(slot, hex) { return humMat(slot, hex); }
 let WEAPONS_TPL = null;
 export function setWeaponModels(scene) {
   scene.traverse((o) => { if (o.isMesh) o.castShadow = true; });
+  markShared(scene);
   WEAPONS_TPL = scene;
 }
 export function getWeaponModel(name) {

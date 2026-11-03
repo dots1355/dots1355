@@ -31,7 +31,7 @@ def mat(name, color, roughness=0.85):
     return m
 
 
-def loft(name, rings, mats, mat_of_ring, subdiv=2, close_top=True, close_bottom=True):
+def loft(name, rings, mats, mat_of_ring, subdiv=1, close_top=True, close_bottom=True):  # 细分 1 级:游戏镜头下与 2 级无差,三角形省 3/4
     """rings: [(z, rx, ry, dy)];放样成管,细分取滑,按环归属分材质"""
     bm = bmesh.new()
     loops = []

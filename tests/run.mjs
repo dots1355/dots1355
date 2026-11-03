@@ -62,12 +62,18 @@ const TESTS = {
     await boot(page);
     const r = await page.evaluate(() => {
       const g = window.__gtm;
-      g.player.pos.set(400, 0, 40);
+      let best = null; // 在丘陵群系里找一处明显高起的地面
+      for (let x = 300; x <= 460; x += 8) for (let z = -20; z <= 140; z += 8) {
+        const h = g.groundH(x, z);
+        if (!best || h > best.h) best = { x, z, h };
+      }
+      g.player.pos.set(best.x, 0, best.z);
       g.step(20);
-      return { rel: g.player.pos.y, abs: g.player.group.position.y };
+      return { rel: g.player.pos.y, abs: g.player.group.position.y, h: g.groundH(g.player.pos.x, g.player.pos.z), peak: best.h };
     });
+    if (r.peak < 1.5) throw new Error(`丘陵区找不到起伏(最高 ${r.peak.toFixed(2)}m)`);
     if (Math.abs(r.rel) > 0.05) throw new Error(`逻辑高度应≈0,实际 ${r.rel}`);
-    if (Math.abs(r.abs) < 0.3) throw new Error(`丘陵上的人物渲染高度应明显高于 0,实际 ${r.abs}`);
+    if (Math.abs(r.abs - r.h) > 0.05) throw new Error(`人物渲染高度 ${r.abs.toFixed(2)} 与地面 ${r.h.toFixed(2)} 不符`);
   },
   // 受击闪白只作用于被打的那一个(材质私有化),到时自动还原
   async flash(page) {
