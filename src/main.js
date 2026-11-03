@@ -869,29 +869,11 @@ function explodeAt(x, z, dmg = 3, radius = 3.4, src = 'player') {
   camShake = Math.max(camShake, 0.35);
   sfx.stomp();
   spawnDust(x, 0.5, z, 16, radius * 0.5, 2.2);
-  const boom = (list, onDead) => {
+  // 卫兵不受龙息之类的环境爆炸牵连,也不会因此通缉你
+  for (const list of env ? [bandits, wolves] : [bandits, wolves, guards]) {
     for (const e of list) {
-      if (e.dead || e.downT > 0) continue;
-      if (dist2(x, z, e.pos.x, e.pos.z) > radius * radius) continue;
-      e.hp -= dmg;
-      hitFX(e, 1.2);
-      showDamage(e.pos, dmg, true);
-      if (e.hp <= 0) onDead(e);
-    }
-  };
-  if (env) {
-    boom(bandits, (b) => slayBandit(b, { companion: true, coins: 2 }));
-    boom(wolves, (w) => killWolf(w, { env: true }));
-    return; // 卫兵不受龙息之类的环境爆炸牵连,也不会因此通缉你
-  }
-  boom(bandits, (b) => slayBandit(b));
-  boom(wolves, (w) => killWolf(w));
-  boom(guards, (g) => downGuard(g));
-  for (const g of guards) {
-    if (!g.dead && g.downT <= 0 && dist2(x, z, g.pos.x, g.pos.z) < radius * radius && !g.wantedHit) {
-      g.wantedHit = true;
-      crime(2, '你的火球炸到了卫兵!');
-      break;
+      if (e.dead || e.downT > 0 || dist2(x, z, e.pos.x, e.pos.z) > radius * radius) continue;
+      applyDamage(e, dmg, { source: env ? 'env' : 'player', knock: 1.2, crit: true, crime: 2, crimeMsg: '你的火球炸到了卫兵!' });
     }
   }
 }
@@ -1055,12 +1037,7 @@ function castSpell() {
         if (e.dead || e.downT > 0 || e.stunT === undefined) continue;
         if (dist2(player.pos.x, player.pos.z, e.pos.x, e.pos.z) > 49) continue;
         e.stunT = Math.max(e.stunT || 0, 3.5); e.stunSrc = 'other';
-        e.hp -= 1;
-        showDamage(e.pos, 1);
-        if (list === guards && !e.wantedHit) { e.wantedHit = true; crime(1, '你的寒气冻伤了卫兵!'); }
-        if (e.hp <= 0 && list === wolves) killWolf(e);
-        else if (e.hp <= 0 && list === bandits) slayBandit(e);
-        else if (e.hp <= 0 && list === guards) downGuard(e);
+        applyDamage(e, 1, { crimeMsg: '你的寒气冻伤了卫兵!' });
       }
     };
     freeze(bandits);
@@ -1215,25 +1192,11 @@ function doShout() {
   camShake = 0.6;
   hitStopT = Math.max(hitStopT, 0.08);
   spawnDust(player.pos.x, 0.4, player.pos.z, 26, 4, 2.6);
-  const wave = (list, onDead) => {
+  for (const list of [bandits, wolves, guards]) {
     for (const e of list) {
-      if (e.dead || e.downT > 0) continue;
-      if (dist2(player.pos.x, player.pos.z, e.pos.x, e.pos.z) > 100) continue;
-      e.hp -= 1;
-      if (e.stunT !== undefined) e.stunT = Math.max(e.stunT || 0, 2); e.stunSrc = 'other';
-      hitFX(e, 4); // FUS RO DAH:掀飞
-      showDamage(e.pos, 1);
-      if (e.hp <= 0) onDead(e);
-    }
-  };
-  wave(bandits, (b) => slayBandit(b));
-  wave(wolves, (w) => killWolf(w));
-  wave(guards, (g) => downGuard(g));
-  for (const g of guards) {
-    if (!g.dead && !(g.downT > 0) && dist2(player.pos.x, player.pos.z, g.pos.x, g.pos.z) < 100 && !g.wantedHit) {
-      g.wantedHit = true;
-      crime(1, '你的战吼掀翻了卫兵!');
-      break;
+      if (e.dead || e.downT > 0 || dist2(player.pos.x, player.pos.z, e.pos.x, e.pos.z) > 100) continue;
+      if (e.stunT !== undefined) { e.stunT = Math.max(e.stunT || 0, 2); e.stunSrc = 'other'; }
+      applyDamage(e, 1, { knock: 4, crimeMsg: '你的战吼掀翻了卫兵!' }); // FUS RO DAH:掀飞
     }
   }
   toast('🐉 冲击战吼!!', 2);
@@ -1286,12 +1249,7 @@ function updateMercs(dt) {
         m.swingT = 0.32;
         sfx.sword();
         const dmg = m.veteran ? 2 : 1;
-        target.hp -= dmg;
-        showDamage(target.pos, dmg);
-        hitFX(target, 0.5);
-        if (target.hp <= 0) {
-          if (wolves.includes(target)) killWolf(target);
-          else slayBandit(target, { credit: '佣兵助攻' });
+        if (applyDamage(target, dmg, { source: 'companion', knock: 0.5, credit: '佣兵助攻' })) {
           m.kills = (m.kills || 0) + 1;
           if (m.kills >= 5 && !m.veteran) { // 五个人头,升老兵:更能打、更扛揍
             m.veteran = true;
@@ -1512,10 +1470,8 @@ function arrowHitEntities(a) {
     return false;
   };
   if (tryHit(guards, (g) => {
-    g.hp -= dmg; sfx.hit(); hitFX(g, 0.4); showDamage(g.pos, dmg);
-    if (!g.wantedHit) { g.wantedHit = true; crime(1, '你放箭射击卫兵!'); }
-    if (g.hp <= 0) downGuard(g);
-    else g.state = 'chase';
+    sfx.hit();
+    if (!applyDamage(g, dmg, { knock: 0.4, crit: false, crimeMsg: '你放箭射击卫兵!' })) g.state = 'chase';
   })) return true;
   if (tryHit(bandits, (b) => {
     // 战术演化:被射多了的匪帮学会侧身闪箭(贴脸射/法术/飞刀不受影响)
@@ -1524,15 +1480,13 @@ function arrowHitEntities(a) {
       hitFX(b, 0.15);
       return;
     }
-    b.hp -= dmg; sfx.hit(); hitFX(b, 0.4); showDamage(b.pos, dmg);
-    if (b.hp <= 0) {
-      slayBandit(b); // 统一死亡结算(连杀/村务/军旗/任务进度/掉落)
-      EVO.kills.arrow++;
-    }
+    sfx.hit();
+    if (applyDamage(b, dmg, { knock: 0.4, crit: false })) EVO.kills.arrow++;
+    else flinch(b, false); // 箭/法弹也能打断起手
   })) return true;
   if (tryHit(wolves, (w) => {
-    w.hp -= dmg; sfx.hit(); hitFX(w, 0.4); showDamage(w.pos, dmg);
-    if (w.hp <= 0) killWolf(w);
+    sfx.hit();
+    if (!applyDamage(w, dmg, { knock: 0.4, crit: false })) flinch(w, false);
   })) return true;
   if (tryHit(deers, (d) => {
     sfx.hit();
@@ -2245,9 +2199,6 @@ function spawnWhiteWolf(x, z) {
   return w;
 }
 frostfang.wary = spawnWhiteWolf(-286, -128);
-function slayBanditByWolf(b) {
-  slayBandit(b, { companion: true, coins: 3, credit: '霜牙助攻' });
-}
 function updateFrostfang(dt) {
   // 未驯服:白狼在隘口游荡,保持距离打量你
   if (!frostfang.tamed && frostfang.wary) {
@@ -2300,13 +2251,7 @@ function updateFrostfang(dt) {
     } else if (frostfang.atkCd <= 0) {
       frostfang.atkCd = 0.9;
       sfx.hit();
-      hitFX(target, 0.4);
-      showDamage(target.pos, 1);
-      target.hp -= 1;
-      if (target.hp <= 0) {
-        if (wolves.includes(target)) killWolf(target);
-        else slayBanditByWolf(target);
-      }
+      applyDamage(target, 1, { source: 'companion', knock: 0.4, credit: '霜牙助攻', coins: 3 });
     }
   } else if (pd > 3.5) {
     moveEntity(w, player.pos.x + 1.5, player.pos.z + 1.5, pd > 12 ? 9 : 5.5, dt);
@@ -4581,6 +4526,11 @@ let fxHigh = !LOWFX;
 function setPaused(p) {
   paused = p;
   pauseEl.style.display = p ? 'flex' : 'none';
+  if (p) { // 暂停:丢掉排队的输入,松开蓄力(否则恢复时会凭空蓄满一记重击)
+    inputQ.length = 0;
+    player.atkHeld = false;
+    cancelCharge();
+  }
 }
 // 画质三档:流畅(集显/老机器)、均衡(默认)、精致(独显:环境光遮蔽 + 高分辨率)
 // 开局后按实测帧时自动降档(每档至少观察 8 秒),玩家手动选过就不再自动改
@@ -5626,7 +5576,10 @@ function loadGame() {
     return false;
   }
   if (!s || typeof s !== 'object') return false;
-  try {
+  // 分段读档:每段各自 try,一段坏了不拖累其他段;有段失败就停用本局自动存档并备份原档
+  const failed = [];
+  const section = (name, fn) => { try { fn(); } catch (err) { failed.push(name); console.error(`读档[${name}]失败`, err); } };
+  section('进度', () => {
     player.coins = s.coins || 0;
     quest.idx = Math.min(s.questIdx || 0, missions.length);
     // v2 及更早:旧序 ①金币 ②快递 ③竞速 ④剿匪;旧档停在"剿匪待接"(3)的,新序里剿匪是第 2 单
@@ -5638,10 +5591,14 @@ function loadGame() {
       const king = namedNPCs.find((n) => n.key === 'king');
       if (king) king.rewarded = true;
     }
+  });
+  section('成就统计', () => {
     if (Array.isArray(s.ach)) achUnlocked = s.ach;
     if (s.stats) Object.assign(stats, s.stats);
     stats.lastStomp = -99; // 时间戳不跨会话:performance.now 重置会误发"弹簧靴"成就
     calendar.day = Math.max(1, s.day || 1);
+  });
+  section('物品', () => {
     player.herbs = s.herbs || 0;
     player.venison = s.venison || 0;
     if (Array.isArray(s.lore)) loreRead = s.lore;
@@ -5651,12 +5608,16 @@ function loadGame() {
     player.relic = !!s.relic;
     if (s.chore && s.chore.active) Object.assign(sideQuest, s.chore);
     if (s.lake) lakeBlessed = true;
+  });
+  section('伙伴', () => {
     if (s.wolf && !frostfang.tamed) {
       frostfang.tamed = true;
       frostfang.ent = frostfang.wary;
       frostfang.wary = null;
       if (frostfang.ent) frostfang.ent.pos.set(world.playerSpawn.x + 2, 0, world.playerSpawn.z + 2);
     }
+  });
+  section('装备与家', () => {
     if (Array.isArray(s.weaponsOwned)) player.weaponsOwned = s.weaponsOwned;
     if (s.weapon && player.weaponsOwned.includes(s.weapon)) player.weapon = s.weapon;
     if (s.home) {
@@ -5666,6 +5627,8 @@ function loadGame() {
       refreshTrophies();
     }
     player.firefly = !!s.firefly;
+  });
+  section('世界记忆', () => {
     mindLoad(s.mind); // 这颗心接着上次的样子继续长
     if (s.evo) { // 自进化的内容也接着长
       if (Array.isArray(s.evo.legends)) EVO.legends = s.evo.legends.filter((l) => l && l.base);
@@ -5680,6 +5643,8 @@ function loadGame() {
         w.hp = Math.max(w.hp, EVO.wolfGen >= 3 ? 3 : 2);
       }
     }
+  });
+  section('技能法术', () => {
     if (Array.isArray(s.spells)) player.spells = s.spells.filter((k) => SPELLS[k]);
     if (lakeBlessed && !player.spells.includes('frost')) player.spells.push('frost'); // 旧档补授
     player.spellIdx = Math.min(player.spellIdx, Math.max(0, player.spells.length - 1));
@@ -5688,23 +5653,24 @@ function loadGame() {
         if (s.skills[k] && s.skills[k].lv >= 1) player.skills[k] = { lv: Math.min(10, s.skills[k].lv), xp: s.skills[k].xp || 0 };
       }
     }
+  });
+  section('战吼与佣兵', () => {
     shout.learned = !!s.shout;
     for (let i = 0; i < Math.min(2, s.mercN || 0); i++) hireMercSilent(); // 佣兵跟着存档回来
     player.loot = s.loot || 0;
     vendetta.stage = [0, 1, 2, 3].includes(s.vendetta) ? s.vendetta : 0;
     player.blackstoneToken = !!s.bsToken;
     if (s.armor && ARMORS[s.armor]) player.armor = s.armor;
-    recomputeMaxHp();
-    player.hp = player.maxHp;
-    return true;
-  } catch (err) {
-    // 读到一半出错:本局不再自动存档,免得把半截状态写回去覆盖好档;原档另存一份备份
+  });
+  recomputeMaxHp();
+  player.hp = player.maxHp;
+  if (failed.length) {
+    // 有段没读好:本局不自动存档,免得把半截状态写回去覆盖好档;原档另存一份备份
     saveBlocked = true;
     try { localStorage.setItem(SAVE_KEY + '-bak', localStorage.getItem(SAVE_KEY)); } catch { /* 存储已满等 */ }
-    console.error('读档失败,已停用本局自动存档', err);
-    setTimeout(() => toast('⚠️ 存档读取出错:本局不会覆盖原存档(备份已保留)', 6), 1500);
-    return true;
+    setTimeout(() => toast(`⚠️ 存档部分读取失败(${failed.join('、')}):本局不会覆盖原存档,备份已保留`, 6), 1500);
   }
+  return true;
 }
 
 // 目标光柱
@@ -5880,6 +5846,16 @@ if (player.royalHorse) {
 }
 
 // ================= 输入 =================
+// 玩法动作先入队,在 tick 开头统一消费:动作总在模拟步内、按发生顺序生效(不再在两帧之间
+// 偷偷改状态);暂停/看地图时清空,测试也可以直接往队列里注入。界面操作(对话翻页、菜单)仍即时。
+const inputQ = [];
+function queueInput(fn) { if (started && !paused && !mapOpen) inputQ.push(fn); }
+function drainInput() {
+  while (inputQ.length) {
+    const fn = inputQ.shift();
+    try { fn(); } catch (err) { console.error(err); }
+  }
+}
 const keys = {};
 let camYaw = 0, camPitch = 0.35, locked = false;
 window.addEventListener('keydown', (e) => {
@@ -5889,11 +5865,11 @@ window.addEventListener('keydown', (e) => {
   if (paused || shopOpen) return;
   keys[e.code] = true;
   if (e.code === 'KeyE') {
-    if (armRT.active) armPress(); // 掰手腕中:E 是发力,不是交互
+    if (armRT.active) queueInput(armPress); // 掰手腕中:E 是发力,不是交互
     else if (dialog.open) advanceDialog();
-    else tryInteract();
+    else queueInput(() => tryInteract());
   }
-  if (e.code === 'KeyF' && !dialog.open) attackDown();
+  if (e.code === 'KeyF' && !dialog.open) queueInput(attackDown);
   if (e.code === 'KeyM' && started) toggleBigMap(); // M=地图(音乐开关在暂停菜单)
   if (e.code === 'KeyP' && started) togglePhoto();
   if (e.code === 'KeyJ' && started && !dialog.open) openJournal();
@@ -5905,12 +5881,12 @@ window.addEventListener('keydown', (e) => {
     document.getElementById('btn-style').textContent = `画风:${nm}`;
     toast(`🎨 画风:${nm}(K 键继续切换)`, 1.6);
   }
-  if (e.code === 'KeyQ') cycleWeapon();
+  if (e.code === 'KeyQ') queueInput(cycleWeapon);
   // 施法键做冗余判定:部分输入法/键盘布局下 e.code 会被吞,补上 e.key 兜底
-  if ((e.code === 'KeyR' || e.key === 'r' || e.key === 'R') && !dialog.open) castSpell();
-  if (e.code === 'KeyV' && !dialog.open) cycleSpell();
-  if (e.code === 'KeyZ' && !dialog.open) toggleSneak();
-  if (e.code === 'KeyX' && !dialog.open) doShout();
+  if ((e.code === 'KeyR' || e.key === 'r' || e.key === 'R') && !dialog.open) queueInput(castSpell);
+  if (e.code === 'KeyV' && !dialog.open) queueInput(cycleSpell);
+  if (e.code === 'KeyZ' && !dialog.open) queueInput(toggleSneak);
+  if (e.code === 'KeyX' && !dialog.open) queueInput(doShout);
   if (/^Digit[1-4]$/.test(e.code) && !dialog.open) {
     const idx = +e.code.slice(5) - 1;
     if (idx < player.spells.length && idx !== player.spellIdx) {
@@ -5920,11 +5896,11 @@ window.addEventListener('keydown', (e) => {
       toast(`${SPELLS[player.spells[idx]].icon} ${SPELLS[player.spells[idx]].name}`, 1.2);
     }
   }
-  if ((e.code === 'KeyC' || e.code === 'ControlLeft') && !dialog.open) doRoll();
-  if (e.code === 'Tab' && !dialog.open) toggleLock();
+  if ((e.code === 'KeyC' || e.code === 'ControlLeft') && !dialog.open) queueInput(doRoll);
+  if (e.code === 'Tab' && !dialog.open) queueInput(toggleLock);
   if (e.code === 'KeyO' && prologue.on) skipPrologue();
-  if (e.code === 'KeyG' && !dialog.open) tryRob();
-  if (e.code === 'KeyB' && started && !dialog.open) whistleHorse();
+  if (e.code === 'KeyG' && !dialog.open) queueInput(tryRob);
+  if (e.code === 'KeyB' && started && !dialog.open) queueInput(whistleHorse);
 });
 // 右键格挡(按住)
 renderer.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
@@ -5936,21 +5912,21 @@ window.addEventListener('mousedown', (e) => {
   }
 });
 window.addEventListener('mouseup', (e) => {
-  if (e.button === 0) attackUp();
+  if (e.button === 0) queueInput(attackUp);
   if (e.button === 2) player.blocking = false;
   if (e.button === 1) midHeld = false;
 });
 let midHeld = false;
 window.addEventListener('keyup', (e) => {
   keys[e.code] = false;
-  if (e.code === 'KeyF') attackUp();
+  if (e.code === 'KeyF') queueInput(attackUp);
 });
 renderer.domElement.addEventListener('mousedown', (e) => {
   if (!started) return;
   if (dialog.open) { advanceDialog(); return; }
   if (!locked) renderer.domElement.requestPointerLock();
-  else if (e.button === 0) attackDown();
-  else if (e.button === 1) { e.preventDefault(); midHeld = true; castSpell(); } // 中键施法:左手不用离开 WASD
+  else if (e.button === 0) queueInput(attackDown);
+  else if (e.button === 1) { e.preventDefault(); midHeld = true; queueInput(castSpell); } // 中键施法:左手不用离开 WASD
 });
 document.addEventListener('pointerlockchange', () => {
   locked = document.pointerLockElement === renderer.domElement;
@@ -7434,6 +7410,31 @@ function banditSlain(b) {
   }
 }
 let meleeExecBase = 0; // 处决基准伤害:出手前由 tryAttack/heavyAttack 填入(不含弹反/偷袭乘区)
+// ================= 统一伤害结算 =================
+// 所有"对敌人造成伤害"都走这里:扣血 → 受击表现 → 伤卫兵即犯罪(仅玩家来源)→ 按身份走死亡结算。
+// source: 'player'(默认)| 'companion'(佣兵/白狼/卫兵援手,不进玩家连杀)| 'env'(龙息等,不算你的罪也不进连杀)| 'foe'(敌人互殴)
+// opts: knock(击退/受击闪白,不给则无)、crit(数字放大)、silent(不出数字)、crime/crimeMsg(伤卫兵的罪名)、credit/coins(伙伴击杀)
+function foeKind(e) {
+  return wolves.includes(e) ? 'wolf' : guards.includes(e) ? 'guard' : bandits.includes(e) ? 'bandit' : 'other';
+}
+function applyDamage(e, n, opts = {}) {
+  if (!e || e.dead || e.downT > 0) return false;
+  const src = opts.source || 'player';
+  e.hp -= n;
+  if (opts.knock !== undefined) hitFX(e, opts.knock);
+  if (!opts.silent) showDamage(e.pos, n, opts.crit ?? n >= 3);
+  const kind = foeKind(e);
+  if (kind === 'guard' && src === 'player' && !e.wantedHit) {
+    e.wantedHit = true;
+    crime(opts.crime || 1, opts.crimeMsg || '你袭击了卫兵!');
+  }
+  if (e.hp > 0) return false;
+  if (kind === 'wolf') killWolf(e, src === 'env' || src === 'foe' ? { env: true } : {});
+  else if (kind === 'bandit') {
+    slayBandit(e, src === 'player' ? {} : { companion: true, credit: opts.credit, coins: opts.coins ?? (src === 'env' ? 2 : undefined) });
+  } else if (kind === 'guard') downGuard(e);
+  return true;
+}
 // 特殊身份的盗贼(剧情首领/押解/悬赏/劫匪/竞技/单挑/囚犯/事件):不算"普通盗贼",各处判定共用这一张表
 const SPECIAL_BANDIT = ['boss', 'escort', 'bountyHead', 'robber', 'arena', 'duel', 'convict', 'eventFoe'];
 function specialBandit(b) {
@@ -7567,10 +7568,8 @@ function meleeSweep(dmg, range, arcDot, knock, opts = {}) {
   };
   hitOne(guards, (g) => {
     const dmg = execDmg(g);
-    g.hp -= dmg; sfx.hitMetal(); hitFX(g, knock); showDamage(g.pos, dmg, dmg >= 3); // 砍在甲上叮当响
-    if (!g.wantedHit) { g.wantedHit = true; crime(1, '你袭击了卫兵!'); }
-    if (g.hp <= 0) downGuard(g);
-    else g.state = 'chase';
+    sfx.hitMetal(); // 砍在甲上叮当响
+    if (!applyDamage(g, dmg, { knock })) g.state = 'chase';
   });
   hitOne(bandits, (b) => {
     // 战术演化:被砍多了的匪帮学会举盾——普通斩击有概率被格挡(重击破格挡)
@@ -7581,26 +7580,25 @@ function meleeSweep(dmg, range, arcDot, knock, opts = {}) {
       return;
     }
     const dmg2 = execDmg(b);
-    b.hp -= dmg2; sfx.hit(); hitFX(b, b.boss ? knock * 0.4 : knock);
-    showDamage(b.pos, dmg2, dmg2 >= 3);
+    sfx.hit();
+    if (b.boss && b.hp - dmg2 <= 0) toast('⚔️ 血斧巴罗克倒下了!黑石兄弟会土崩瓦解!', 5);
+    if (applyDamage(b, dmg2, { knock: b.boss ? knock * 0.4 : knock })) { // 统一结算(连杀/村务/军旗/任务/掉落)
+      EVO.kills.melee++;
+      addPickup('heart', b.pos.x, b.pos.z + 1, 30); // 近战击杀的额外犒赏
+      return;
+    }
     // 破防:重刃(下劈/重击 dmg≥3)砸在举盾的人身上=盾开人晃,处决窗口大开
-    if ((heavy || dmg >= 3) && !(b.stunT > 0) && b.hp > 0 && (heavy || rand() < EVO.tactics.block * 0.6)) {
+    if ((heavy || dmg >= 3) && !(b.stunT > 0) && (heavy || rand() < EVO.tactics.block * 0.6)) {
       b.stunT = heavy ? 1.2 : 1.0;
       b.stunSrc = 'break';
       sfx.clank();
       callout('破防!(再砍=处决)', 'gold', b.pos);
     }
-    if (b.hp <= 0) {
-      if (b.boss) toast('⚔️ 血斧巴罗克倒下了!黑石兄弟会土崩瓦解!', 5);
-      slayBandit(b); // 统一死亡结算(连杀/村务/军旗/任务进度/掉落/遣散喽啰)
-      EVO.kills.melee++;
-      addPickup('heart', b.pos.x, b.pos.z + 1, 30); // 近战击杀的额外犒赏
-    }
   });
   hitOne(wolves, (w) => {
     const dmg3 = execDmg(w);
-    w.hp -= dmg3; sfx.hitFlesh(); hitFX(w, knock); showDamage(w.pos, dmg3, dmg3 >= 3); // 砍进皮肉闷声
-    if (w.hp <= 0) killWolf(w);
+    sfx.hitFlesh(); // 砍进皮肉闷声
+    applyDamage(w, dmg3, { knock });
   });
   if (executed) { // 处决演出:时停 + 震屏 + 镜头急推;目击者胆寒;按武器各有终结技
     hitStopT = Math.max(hitStopT, 0.22);
@@ -8222,11 +8220,9 @@ function updateGuards(dt) {
         else if (g.attackCd <= 0) {
           g.attackCd = 1.1;
           g.swingT = 0.3;
-          tgt.hp -= 1;
           sfx.clank();
           spawnDust(tgt.pos.x, 1.0, tgt.pos.z, 2, 0.4, 1.2);
-          showDamage(tgt.pos, 1);
-          if (tgt.hp <= 0) slayBandit(tgt, { companion: true, credit: '卫兵击破' });
+          applyDamage(tgt, 1, { source: 'companion', credit: '卫兵击破' });
         }
         g.yaw = angleLerp(g.yaw, Math.atan2(tgt.pos.x - g.pos.x, tgt.pos.z - g.pos.z), dt * 8);
         g.group.position.copy(g.pos);
@@ -8402,12 +8398,10 @@ function updateBandits(dt) {
         else if (b.attackCd <= 0) {
           b.attackCd = 1.1;
           b.swingT = 0.35;
-          gt.hp -= 1;
           sfx.clank();
           spawnDust(gt.pos.x, 1.0, gt.pos.z, 2, 0.4, 1.2);
-          showDamage(gt.pos, 1);
           gt.state = 'chase';
-          if (gt.hp <= 0) downGuard(gt);
+          applyDamage(gt, 1, { source: 'foe' });
         }
         b.group.position.copy(b.pos);
         b.group.rotation.y = b.yaw;
@@ -8718,17 +8712,11 @@ function updatePlayer(dt) {
           if (e.dead || e.downT > 0 || (e._trampleCd || 0) > 0) continue;
           if (dist2(h.pos.x, h.pos.z, e.pos.x, e.pos.z) > 3.2) continue;
           e._trampleCd = 2.5;
-          e.hp -= 1;
           if (e.stunT !== undefined) { e.stunT = Math.max(e.stunT || 0, 0.9); e.stunSrc = 'bash'; } // 撞翻≠处决窗口
-          hitFX(e, 2.6);
-          showDamage(e.pos, 1, true);
+          applyDamage(e, 1, { knock: 2.6, crit: true }); // 践踏致死同样走完整结算(任务/军旗/村务不漏)
           sfx.hoof();
           camShake = Math.max(camShake, 0.25);
           skillXp('riding', 2);
-          if (e.hp <= 0) {
-            if (wolves.includes(e)) killWolf(e);
-            else slayBandit(e); // 践踏致死同样走完整结算(任务/军旗/村务不漏)
-          }
         }
       }
     }
@@ -10445,7 +10433,7 @@ window.__gtm = {
   slayBandit, killWolf, stats, recomputeMaxHp, getSaveBlocked: () => saveBlocked, loadGame,
   getTimers: () => pendingTimers(), flashing,
   getBeacon: () => ({ x: beacon.position.x, z: beacon.position.z, v: beacon.visible }),
-  attackDown, attackUp, callout, flinch, telegraphArea, dragonAim, seedRng,
+  attackDown, attackUp, callout, flinch, telegraphArea, dragonAim, seedRng, applyDamage,
   worldTops: () => worldTops,
   getPrompt: () => { computePrompt(); return promptText; },
   groundH,
@@ -10517,6 +10505,7 @@ function fitViewDistance() {
 }
 // 一帧的全部模拟(不含渲染):主循环与测试步进(__gtm.step)共用
 function tick(dt, now) {
+  drainInput();
   // 击杀慢动作
   if (hitStopT > 0) {
     hitStopT -= dt;

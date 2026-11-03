@@ -207,6 +207,30 @@ const TESTS = {
     if (r.hp !== r.maxHp) throw new Error('序章结束没有回满血');
     if (!r.horse) throw new Error('序章结束没有送马');
   },
+  // 伤害来源 × 目标矩阵:谁打的决定算不算你的罪、进不进你的连杀
+  async damageMatrix(page) {
+    await boot(page);
+    const r = await page.evaluate(() => {
+      const g = window.__gtm, out = {};
+      const gd = () => g.guards.find((x) => !x.dead && !(x.downT > 0));
+      const bd = () => g.bandits.find((x) => !x.dead && !x.boss && !x.duel);
+      // 敌人互殴/伙伴伤到卫兵:不算你的罪
+      let x = gd(); x.hp = 5; g.applyDamage(x, 1, { source: 'foe' }); out.foeWanted = g.getWanted();
+      x = gd(); x.hp = 5; g.applyDamage(x, 1, { source: 'companion' }); out.compWanted = g.getWanted();
+      // 伙伴击杀盗贼:不进你的连杀
+      let b = bd(); const k0 = g.stats.kills || 0; b.hp = 1; g.applyDamage(b, 1, { source: 'companion', credit: '测试' });
+      out.compKill = (g.stats.kills || 0) - k0; out.compDead = b.dead;
+      // 你亲手击杀:进连杀
+      b = bd(); const k1 = g.stats.kills || 0; b.hp = 1; g.applyDamage(b, 1); out.playerKill = (g.stats.kills || 0) - k1;
+      // 你伤到卫兵:通缉
+      x = gd(); x.hp = 5; x.wantedHit = false; g.applyDamage(x, 1); out.playerWanted = g.getWanted();
+      return out;
+    });
+    if (r.foeWanted !== 0 || r.compWanted !== 0) throw new Error(`非玩家来源伤到卫兵却通缉了你:${JSON.stringify(r)}`);
+    if (!r.compDead || r.compKill !== 0) throw new Error(`伙伴击杀结算不对:${JSON.stringify(r)}`);
+    if (r.playerKill !== 1) throw new Error('亲手击杀没有进连杀');
+    if (!(r.playerWanted > 0)) throw new Error('你伤到卫兵却没有通缉');
+  },
   // 交互与提示同源:提示说什么,按 E 就做什么(且提示本身不产生副作用)
   async interact(page) {
     await boot(page);
