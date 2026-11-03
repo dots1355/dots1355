@@ -35,10 +35,32 @@ scene.environment = pmrem.fromScene(new RoomEnvironment(renderer), 0.04).texture
 // 低画质模式(?lowfx=1):跳过后处理,适合低配设备
 export const LOWFX = new URLSearchParams(location.search).has('lowfx');
 export const composer = new EffectComposer(renderer);
+// 主 pass 的深度直接写进可采样的深度纹理(两个乒乓缓冲各一张),GTAO 从它重建法线——
+// 不再用 overrideMaterial 把整个场景再画一遍法线(那一遍等于主 pass 的全部绘制 + 两次全场景遍历)
+for (const rt of [composer.renderTarget1, composer.renderTarget2]) {
+  rt.depthTexture = new THREE.DepthTexture(rt.width, rt.height);
+  rt.depthTexture.type = THREE.UnsignedIntType;
+}
 composer.addPass(new RenderPass(scene, camera));
-// 环境光遮蔽:让物体接触处产生柔和阴影,大幅提升体积感
+// 环境光遮蔽:让物体接触处产生柔和阴影,大幅提升体积感(只在"精致"档开)
 export const gtao = new GTAOPass(scene, camera, window.innerWidth, window.innerHeight);
+gtao.setGBuffer(composer.readBuffer.depthTexture); // 只给深度:法线由深度重建,跳过 G-buffer 重画
 gtao.updateGtaoMaterial({ radius: 0.35, distanceExponent: 1.5, thickness: 1.2, scale: 0.85, samples: 12 });
+// AO 与降噪在半分辨率算,混合时双线性放大(深度仍按全分辨率采样)
+gtao.setSize = (w, h) => GTAOPass.prototype.setSize.call(gtao, Math.max(1, Math.round(w / 2)), Math.max(1, Math.round(h / 2)));
+{
+  const render = gtao.render.bind(gtao);
+  gtao.render = (r, writeBuffer, readBuffer, dt, mask) => {
+    // 主 pass 刚画进 readBuffer:用它那张深度(乒乓缓冲每帧可能换边)
+    const depth = readBuffer.depthTexture;
+    if (depth && gtao.depthTexture !== depth) {
+      gtao.depthTexture = depth;
+      gtao.gtaoMaterial.uniforms.tDepth.value = depth;
+      gtao.pdMaterial.uniforms.tDepth.value = depth;
+    }
+    render(r, writeBuffer, readBuffer, dt, mask);
+  };
+}
 gtao.enabled = !LOWFX;
 composer.addPass(gtao);
 export const bloom = new UnrealBloomPass(
