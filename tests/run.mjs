@@ -207,6 +207,34 @@ const TESTS = {
     if (r.hp !== r.maxHp) throw new Error('序章结束没有回满血');
     if (!r.horse) throw new Error('序章结束没有送马');
   },
+  // 交互与提示同源:提示说什么,按 E 就做什么(且提示本身不产生副作用)
+  async interact(page) {
+    await boot(page);
+    const r = await page.evaluate(() => {
+      const g = window.__gtm, out = {};
+      g.player.pos.set(g.steward.pos.x + 1.2, 0, g.steward.pos.z);
+      g.step(2);
+      out.stewardPrompt = g.getPrompt();
+      const coins0 = g.player.coins;
+      for (let i = 0; i < 5; i++) g.getPrompt(); // 反复试运行不能改状态
+      out.sideEffect = g.player.coins !== coins0 || g.dialogOpen();
+      g.tryInteract();
+      out.dialog = g.dialogOpen();
+      while (g.dialogOpen()) g.advanceDialog();
+      const ch = g.world.chests.find((c) => !c.opened);
+      g.player.pos.set(ch.x + 1, 0, ch.z);
+      g.step(2);
+      out.chestPrompt = g.getPrompt();
+      g.tryInteract();
+      out.chestOpened = ch.opened;
+      return out;
+    });
+    if (!/埃隆/.test(r.stewardPrompt)) throw new Error(`管家旁的提示不对:${r.stewardPrompt}`);
+    if (r.sideEffect) throw new Error('试运行提示产生了副作用');
+    if (!r.dialog) throw new Error('按 E 没有和管家对话');
+    if (!/宝箱/.test(r.chestPrompt)) throw new Error(`宝箱旁的提示不对:${r.chestPrompt}`);
+    if (!r.chestOpened) throw new Error('按 E 没有打开宝箱');
+  },
   // 生命上限只有一个来源:护甲 + 湖神 + 屠龙
   async maxhp(page) {
     await boot(page);

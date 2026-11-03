@@ -1,5 +1,6 @@
 // 中世纪开放世界构建:城墙王国、城堡主堡、村庄、集市、风车、农田、森林、湖泊、盗贼营地
 import * as THREE from 'three';
+import { rand } from './core/rng.js';
 import { buildTree, buildPine, buildDeadTree, buildCactus, buildRock, buildBush, getBuildingModel } from './flora.js';
 import { lambert } from './entities.js';
 import { makeTextures } from './textures.js';
@@ -359,42 +360,42 @@ export function buildWorld(scene) {
     const p = geo.attributes.position;
     for (let i = 0; i < p.count; i++) {
       p.setXYZ(i,
-        p.getX(i) + (Math.random() - 0.5) * amt,
-        p.getY(i) + (Math.random() - 0.5) * amt,
-        p.getZ(i) + (Math.random() - 0.5) * amt);
+        p.getX(i) + (rand() - 0.5) * amt,
+        p.getY(i) + (rand() - 0.5) * amt,
+        p.getZ(i) + (rand() - 0.5) * amt);
     }
     geo.computeVertexNormals();
     return geo;
   }
   function tree(x, z, pine = false) {
-    const scale = 0.85 + Math.random() * 0.5;
-    const built = pine ? buildPine(Math.random) : (Math.random() < 0.12 ? buildBush(Math.random) : buildTree(Math.random));
+    const scale = 0.85 + rand() * 0.5;
+    const built = pine ? buildPine(rand) : (rand() < 0.12 ? buildBush(rand) : buildTree(rand));
     const g = built.group;
     g.scale.setScalar(scale);
     g.position.set(x, 0, z);
-    g.rotation.y = Math.random() * Math.PI * 2;
+    g.rotation.y = rand() * Math.PI * 2;
     scene.add(g);
     circle(x, z, built.r * scale);
     feat('tree', x, z, 1.5, 1.5);
   }
   // 西部森林
   for (let i = 0; i < 75; i++) {
-    const x = -235 + Math.random() * 140;
-    const z = -140 + Math.random() * 180;
+    const x = -235 + rand() * 140;
+    const z = -140 + rand() * 180;
     if (Math.hypot(x + 100, z - 100) < 40) continue;             // 避开湖
     if (Math.hypot(x + 130, z + 60) < 14) continue;              // 避开营地
     if (Math.hypot(x + 170, z + 90) < 22) continue;              // 避开要塞
     if (Math.abs(x + 95) < 7 && z < 72) continue;                // 避开河道
     if (x > -78 && z > -60 && z < 60) continue;                  // 避开城墙口
-    tree(x, z, Math.random() < 0.55);
+    tree(x, z, rand() < 0.55);
   }
   // 北部森林
   for (let i = 0; i < 34; i++) {
-    const x = -60 + Math.random() * 220;
-    const z = -160 + Math.random() * 65;
+    const x = -60 + rand() * 220;
+    const z = -160 + rand() * 65;
     if (Math.hypot(x - 80, z + 120) < 20) continue;              // 避开遗迹
     if (Math.hypot(x + 40, z + 120) < 20) continue;              // 避开墓园
-    tree(x, z, Math.random() < 0.5);
+    tree(x, z, rand() < 0.5);
   }
   // 零散树
   const scatter = [[20, 68], [-25, 72], [40, 62], [90, 35], [110, -10], [60, 80], [-40, 65], [15, 110], [-10, 95]];
@@ -442,13 +443,13 @@ export function buildWorld(scene) {
     for (const [cx, cz, h] of [[-102.5, 98, 2.6], [-97.8, 98.4, 1.8], [-100.2, 103, 3.4]]) {
       const col = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.5, h, 9), lambert(0xd8d2c0, { roughness: 0.9 }));
       col.position.set(cx, h / 2, cz);
-      col.rotation.z = (Math.random() - 0.5) * 0.1;
+      col.rotation.z = (rand() - 0.5) * 0.1;
       col.castShadow = true;
       scene.add(col);
       circle(cx, cz, 0.6);
       const cap = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.3, 1.1), lambert(0xd8d2c0));
       cap.position.set(cx, h + 0.15, cz);
-      cap.rotation.y = Math.random();
+      cap.rotation.y = rand();
       scene.add(cap);
     }
     // 月光祭坛:满月夜会亮
@@ -642,7 +643,7 @@ export function buildWorld(scene) {
     if (btpl) {
       const g = btpl.clone();
       g.position.set(x, 0, z);
-      g.rotation.y = Math.random() * Math.PI * 2;
+      g.rotation.y = rand() * Math.PI * 2;
       scene.add(g);
       circle(x, z, 0.5);
       return;
@@ -668,7 +669,7 @@ export function buildWorld(scene) {
   function crate(x, z, s = 1) {
     const c = new THREE.Mesh(new THREE.BoxGeometry(0.9 * s, 0.9 * s, 0.9 * s), woodMat);
     c.position.set(x, 0.45 * s, z);
-    c.rotation.y = Math.random() * 1.5;
+    c.rotation.y = rand() * 1.5;
     c.castShadow = true;
     scene.add(c);
     circle(x, z, 0.6 * s);
@@ -680,7 +681,7 @@ export function buildWorld(scene) {
     const h = new THREE.Mesh(new THREE.CylinderGeometry(0.85, 0.85, 1.3, 12),
       lambert(0xd0a848, { roughness: 1 }));
     h.rotation.z = Math.PI / 2;
-    h.rotation.y = Math.random() * 3;
+    h.rotation.y = rand() * 3;
     h.position.set(x, 0.85, z);
     h.castShadow = true;
     scene.add(h);
@@ -835,9 +836,9 @@ export function buildWorld(scene) {
     scene.add(boat);
     // 芦苇
     for (let i = 0; i < 24; i++) {
-      const a = Math.random() * Math.PI * 2;
-      const rr = 31 + Math.random() * 3.5;
-      const reed = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.05, 1.4 + Math.random(), 4),
+      const a = rand() * Math.PI * 2;
+      const rr = 31 + rand() * 3.5;
+      const reed = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.05, 1.4 + rand(), 4),
         lambert(0x7a9a4a, { roughness: 1 }));
       reed.position.set(-100 + Math.cos(a) * rr, 0.7, 100 + Math.sin(a) * rr);
       scene.add(reed);
@@ -880,10 +881,10 @@ export function buildWorld(scene) {
     scene.add(ruin);
     // 断口碎石
     for (let i = 0; i < 7; i++) {
-      const a = Math.random() * Math.PI * 2;
-      const rk = buildRock(Math.random);
+      const a = rand() * Math.PI * 2;
+      const rk = buildRock(rand);
       rk.group.scale.setScalar(0.7);
-      rk.group.position.set(80 + Math.cos(a) * (4.5 + Math.random() * 3), 0, -120 + Math.sin(a) * (4.5 + Math.random() * 3));
+      rk.group.position.set(80 + Math.cos(a) * (4.5 + rand() * 3), 0, -120 + Math.sin(a) * (4.5 + rand() * 3));
       scene.add(rk.group);
     }
     circle(80, -120, 4.2);
@@ -893,17 +894,17 @@ export function buildWorld(scene) {
   // ---- 静眠墓园 ----
   {
     for (let i = 0; i < 9; i++) {
-      const gx = -48 + (i % 3) * 7 + Math.random() * 2;
-      const gz = -127 + Math.floor(i / 3) * 6 + Math.random() * 2;
-      const stone = new THREE.Mesh(new THREE.BoxGeometry(0.7, 1.1 + Math.random() * 0.4, 0.18), towerMat);
+      const gx = -48 + (i % 3) * 7 + rand() * 2;
+      const gz = -127 + Math.floor(i / 3) * 6 + rand() * 2;
+      const stone = new THREE.Mesh(new THREE.BoxGeometry(0.7, 1.1 + rand() * 0.4, 0.18), towerMat);
       stone.position.set(gx, 0.55, gz);
-      stone.rotation.y = (Math.random() - 0.5) * 0.4;
-      stone.rotation.z = (Math.random() - 0.5) * 0.12;
+      stone.rotation.y = (rand() - 0.5) * 0.4;
+      stone.rotation.z = (rand() - 0.5) * 0.12;
       stone.castShadow = true;
       scene.add(stone);
     }
     // 枯树
-    const dead = buildDeadTree(Math.random);
+    const dead = buildDeadTree(rand);
     dead.group.scale.setScalar(1.4);
     dead.group.position.set(-34, 0, -112);
     scene.add(dead.group);
@@ -915,10 +916,10 @@ export function buildWorld(scene) {
   for (let i = 0; i < 6; i++) {
     const a = (i / 6) * Math.PI * 2;
     const sx = 170 + Math.cos(a) * 8, sz = -60 + Math.sin(a) * 8;
-    const menhir = new THREE.Mesh(new THREE.BoxGeometry(1.3, 3 + Math.random(), 0.9), rockMat);
+    const menhir = new THREE.Mesh(new THREE.BoxGeometry(1.3, 3 + rand(), 0.9), rockMat);
     menhir.position.set(sx, 1.5, sz);
     menhir.rotation.y = a;
-    menhir.rotation.z = (Math.random() - 0.5) * 0.15;
+    menhir.rotation.z = (rand() - 0.5) * 0.15;
     menhir.castShadow = true;
     scene.add(menhir);
     circle(sx, sz, 0.9);
@@ -1038,7 +1039,7 @@ export function buildWorld(scene) {
   {
     // 村中三块立石与水井
     for (const [sx, sz] of [[8, 302], [12, 303], [10, 306]]) {
-      const st = new THREE.Mesh(new THREE.BoxGeometry(1.1, 2.2 + Math.random(), 0.9), rockMat);
+      const st = new THREE.Mesh(new THREE.BoxGeometry(1.1, 2.2 + rand(), 0.9), rockMat);
       st.position.set(sx, 1.1, sz);
       st.castShadow = true;
       scene.add(st);
@@ -1059,15 +1060,15 @@ export function buildWorld(scene) {
   // ---- 琥珀荒漠(东南) ----
   zoneDisc(300, 190, 92, 0xd9c48f, 'sand');
   function cactus(x, z) {
-    const built = buildCactus(Math.random);
+    const built = buildCactus(rand);
     built.group.position.set(x, 0, z);
-    built.group.rotation.y = Math.random() * 6.28;
+    built.group.rotation.y = rand() * 6.28;
     scene.add(built.group);
     circle(x, z, built.r);
     feat('cactus', x, z, 1, 1);
   }
   for (let i = 0; i < 14; i++) {
-    const a = Math.random() * 6.28, rr = 15 + Math.random() * 70;
+    const a = rand() * 6.28, rr = 15 + rand() * 70;
     cactus(300 + Math.cos(a) * rr, 190 + Math.sin(a) * rr);
   }
   {
@@ -1095,12 +1096,12 @@ export function buildWorld(scene) {
     feat('water', px, pz, pr * 2, pr * 2);
   }
   for (let i = 0; i < 12; i++) {
-    const a = Math.random() * 6.28, rr = 12 + Math.random() * 62;
+    const a = rand() * 6.28, rr = 12 + rand() * 62;
     const dx = -290 + Math.cos(a) * rr, dz = 240 + Math.sin(a) * rr;
-    const dead = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.3, 3 + Math.random() * 1.5, 5),
+    const dead = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.3, 3 + rand() * 1.5, 5),
       lambert(0x3a352c, { roughness: 1 }));
     dead.position.set(dx, 1.6, dz);
-    dead.rotation.z = (Math.random() - 0.5) * 0.3;
+    dead.rotation.z = (rand() - 0.5) * 0.3;
     dead.castShadow = true;
     scene.add(dead);
     circle(dx, dz, 0.4);
@@ -1116,25 +1117,25 @@ export function buildWorld(scene) {
   // ---- 灰烬荒地(极西) ----
   zoneDisc(-380, -40, 74, 0x57524c, 'ash');
   for (let i = 0; i < 14; i++) {
-    const a = Math.random() * 6.28, rr = 10 + Math.random() * 60;
+    const a = rand() * 6.28, rr = 10 + rand() * 60;
     const bx = -380 + Math.cos(a) * rr, bz = -40 + Math.sin(a) * rr;
-    const burnt = buildDeadTree(Math.random, { bark: 0x211d1a });
-    burnt.group.scale.setScalar(0.8 + Math.random() * 0.5);
+    const burnt = buildDeadTree(rand, { bark: 0x211d1a });
+    burnt.group.scale.setScalar(0.8 + rand() * 0.5);
     burnt.group.position.set(bx, 0, bz);
-    burnt.group.rotation.y = Math.random() * 6.28;
+    burnt.group.rotation.y = rand() * 6.28;
     scene.add(burnt.group);
     circle(bx, bz, 0.35);
     feat('tree', bx, bz, 1, 1);
   }
   // 古战场:插地断剑与白骨
   for (let i = 0; i < 9; i++) {
-    const a = Math.random() * 6.28, rr = Math.random() * 22;
+    const a = rand() * 6.28, rr = rand() * 22;
     const sx = -372 + Math.cos(a) * rr, sz = -52 + Math.sin(a) * rr;
     const bl = new THREE.Mesh(new THREE.BoxGeometry(0.09, 1.3, 0.03),
       lambert(0x8a8f96, { metalness: 0.7, roughness: 0.5 }));
     bl.position.set(sx, 0.6, sz);
-    bl.rotation.z = (Math.random() - 0.5) * 0.7;
-    bl.rotation.y = Math.random() * 3;
+    bl.rotation.z = (rand() - 0.5) * 0.7;
+    bl.rotation.y = rand() * 3;
     scene.add(bl);
     const bone = new THREE.Mesh(new THREE.SphereGeometry(0.22, 6, 5), lambert(0xe4ded0, { roughness: 0.9 }));
     bone.position.set(sx + 0.5, 0.15, sz + 0.3);
@@ -1192,12 +1193,12 @@ export function buildWorld(scene) {
   // ---- 霜风隘口(西北) ----
   zoneDisc(-260, -150, 58, 0xe8edf2, 'snow');
   for (let i = 0; i < 10; i++) {
-    const a = Math.random() * 6.28, rr = 10 + Math.random() * 45;
+    const a = rand() * 6.28, rr = 10 + rand() * 45;
     const sx = -260 + Math.cos(a) * rr, sz = -150 + Math.sin(a) * rr;
-    const g2 = buildPine(Math.random, { snow: true }).group;
-    g2.scale.setScalar(0.9 + Math.random() * 0.4);
+    const g2 = buildPine(rand, { snow: true }).group;
+    g2.scale.setScalar(0.9 + rand() * 0.4);
     g2.position.set(sx, 0, sz);
-    g2.rotation.y = Math.random() * 6.28;
+    g2.rotation.y = rand() * 6.28;
     scene.add(g2);
     circle(sx, sz, 0.55);
     feat('tree', sx, sz, 1.5, 1.5);
@@ -1343,9 +1344,9 @@ function makeRuneTextures() {
   const g = base.getContext('2d'), e = glow.getContext('2d');
   g.fillStyle = '#7d776d'; g.fillRect(0, 0, 128, 128);
   for (let i = 0; i < 900; i++) {
-    const l = 90 + Math.random() * 70;
+    const l = 90 + rand() * 70;
     g.fillStyle = `rgba(${l},${l - 4},${l - 10},0.35)`;
-    g.fillRect(Math.random() * 128, Math.random() * 128, 1 + Math.random() * 3, 1 + Math.random() * 3);
+    g.fillRect(rand() * 128, rand() * 128, 1 + rand() * 3, 1 + rand() * 3);
   }
   g.strokeStyle = 'rgba(40,36,30,0.7)'; g.lineWidth = 6; g.strokeRect(3, 3, 122, 122); // 磨圆的边
   e.fillStyle = '#000'; e.fillRect(0, 0, 128, 128);

@@ -1,5 +1,6 @@
 // 角色与马匹的低多边形卡通模型构建器 + 通用碰撞/数学工具
 import * as THREE from 'three';
+import { rand } from './core/rng.js';
 import { mergeGeometries } from '../lib/jsm/utils/BufferGeometryUtils.js';
 
 // 名字沿用 lambert,实际已升级为 PBR 标准材质
@@ -397,7 +398,7 @@ export function makeHorse(color = 0x8b5a2b, saddled = true, opts = {}) {
       if (o.name.startsWith('Antlers') && !opts.antlers) toRemove.push(o);
       if (o.name === 'Saddle' && !saddled) toRemove.push(o);
       if (o.name === 'Mane' && opts.antlers) toRemove.push(o);
-      if (o.name === 'Blaze' && (opts.antlers || Math.random() >= 0.3)) toRemove.push(o);
+      if (o.name === 'Blaze' && (opts.antlers || rand() >= 0.3)) toRemove.push(o);
     });
     for (const o of toRemove) o.parent && o.parent.remove(o);
     g.add(body);
@@ -459,7 +460,7 @@ export function makeHorse(color = 0x8b5a2b, saddled = true, opts = {}) {
   muzzle.position.set(0, 1.8, 1.28);
   g.add(muzzle);
   // 面斑(三成的马有一道白)
-  if (Math.random() < 0.3) {
+  if (rand() < 0.3) {
     const blaze = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.2, 0.3), lambert(0xe8e2d4));
     blaze.position.set(0, 1.94, 1.1);
     blaze.rotation.x = -0.2;
@@ -637,9 +638,9 @@ export function makeSheep() {
     const p = woolGeo.attributes.position;
     for (let i = 0; i < p.count; i++) {
       p.setXYZ(i,
-        p.getX(i) + (Math.random() - 0.5) * 0.1,
-        p.getY(i) + (Math.random() - 0.5) * 0.1,
-        p.getZ(i) + (Math.random() - 0.5) * 0.1);
+        p.getX(i) + (rand() - 0.5) * 0.1,
+        p.getY(i) + (rand() - 0.5) * 0.1,
+        p.getZ(i) + (rand() - 0.5) * 0.1);
     }
     woolGeo.computeVertexNormals();
   }

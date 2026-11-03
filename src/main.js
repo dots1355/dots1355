@@ -7,285 +7,20 @@ import { initAudio, sfx, startMusic, toggleMusic, weatherAudio, setAmbience, set
 import { preloadAIAssets, generateRemoteAITextures } from './textures.js';
 import { initWilderness, updateWilderness, wildRegionName, CORE, LANDMARKS, BIG_PROP } from './wilderness.js';
 import * as BANKS from './dialogue-banks.js';
-import { ShaderPass } from '../lib/jsm/postprocessing/ShaderPass.js';
 import { GLTFLoader } from '../lib/jsm/loaders/GLTFLoader.js';
 import { setTreeModel, setBuildingModel, setRockGeos, setNatureModels, hasNature, buildNatureInstances, NATURE_SPEC, specCols, NIGHT_GLOW, registerNatureTemplate } from './flora.js';
 import { MODELS_B64 } from './models-data.js';
 import { buildMasks, buildCoreGround, getGroundMaterial, groundH, maskAt, vegAllowed, dominantBiome, biomeWeights, mapColor } from './terrain.js';
 import { initVegetation, updateVegetation, setVegetationSeason, setVegetationDensity } from './vegetation.js';
-import { EffectComposer } from '../lib/jsm/postprocessing/EffectComposer.js';
 import { staticBatch } from './batch.js';
+import { later, updateTimers, pendingTimers } from './core/timers.js';
+import { rand, seed as seedRng } from './core/rng.js';
 import { initAmbient, updateAmbient } from './ambient.js';
+import { LIGHT_POOL, lightPool, initLightPool, addLightSource, removeLightSource, updateLightPool, pooledMat, releaseMat } from './gfx/pools.js';
 import { mergeGeometries } from '../lib/jsm/utils/BufferGeometryUtils.js';
-import { RenderPass } from '../lib/jsm/postprocessing/RenderPass.js';
-import { UnrealBloomPass } from '../lib/jsm/postprocessing/UnrealBloomPass.js';
-import { SMAAPass } from '../lib/jsm/postprocessing/SMAAPass.js';
-import { GTAOPass } from '../lib/jsm/postprocessing/GTAOPass.js';
-import { OutputPass } from '../lib/jsm/postprocessing/OutputPass.js';
-import { RoomEnvironment } from '../lib/jsm/environments/RoomEnvironment.js';
+import { container, renderer, scene, camera, pmrem, LOWFX, composer, gtao, bloom, gradePass, STYLE_PRESETS, STYLE_ORDER, stylePass, smaa, styleKey, styleExp, styleBloomMul, applyStyle, cycleStyle } from './gfx/core.js';
 
 // ================= 基础渲染 =================
-const container = document.getElementById('game');
-// 游戏时钟定时器:按游戏内 dt 结算(暂停即冻结、慢镜同步变慢),取代改玩法状态的 setTimeout
-const timers = [];
-function later(sec, fn) { timers.push({ t: sec, fn }); }
-function updateTimers(dt) {
-  for (let i = timers.length - 1; i >= 0; i--) {
-    const tm = timers[i];
-    tm.t -= dt;
-    if (tm.t <= 0) {
-      timers.splice(i, 1);
-      try { tm.fn(); } catch (err) { console.error(err); }
-    }
-  }
-}
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5)); // 1.5 上限:SMAA 在,肉眼无差,填充率省一半
-renderer.shadowMap.enabled = true;
-renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-// 阴影图每帧只画一次:GTAO 等后续 pass 会再调 render,自动更新会让阴影整场景重画第二遍
-renderer.shadowMap.autoUpdate = false;
-renderer.toneMapping = THREE.ACESFilmicToneMapping;
-renderer.toneMappingExposure = 1.05;
-container.appendChild(renderer.domElement);
-
-const scene = new THREE.Scene();
-scene.fog = new THREE.Fog(0x99a8b2, 90, 390); // 北境雾:灰蓝厚重,远山半隐在大气里
-
-const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 1600);
-
-// PBR 环境反射
-const pmrem = new THREE.PMREMGenerator(renderer);
-scene.environment = pmrem.fromScene(new RoomEnvironment(renderer), 0.04).texture;
-
-// 后处理:泛光 + SMAA 抗锯齿 + 输出色调
-// 低画质模式(?lowfx=1):跳过后处理,适合低配设备
-const LOWFX = new URLSearchParams(location.search).has('lowfx');
-const composer = new EffectComposer(renderer);
-composer.addPass(new RenderPass(scene, camera));
-// 环境光遮蔽:让物体接触处产生柔和阴影,大幅提升体积感
-const gtao = new GTAOPass(scene, camera, window.innerWidth, window.innerHeight);
-gtao.updateGtaoMaterial({ radius: 0.35, distanceExponent: 1.5, thickness: 1.2, scale: 0.85, samples: 12 });
-gtao.enabled = !LOWFX;
-composer.addPass(gtao);
-const bloom = new UnrealBloomPass(
-  new THREE.Vector2(window.innerWidth, window.innerHeight), 0.32, 0.6, 0.85);
-bloom.enabled = !LOWFX;
-composer.addPass(bloom);
-// 参数化电影调色:对比/饱和/分离色调/暗角/胶片颗粒/怀旧褪色——画风预设的载体
-const gradePass = new ShaderPass({
-  uniforms: {
-    tDiffuse: { value: null },
-    uContrast: { value: 1.07 },
-    uSat: { value: 1.16 },
-    uLift: { value: 0.0 },
-    uSplit: { value: new THREE.Vector3(0.04, 0.014, -0.04) },
-    uVig: { value: 0.18 },
-    uGrain: { value: 0.0 },
-    uSepia: { value: 0.0 },
-    uTime: { value: 0 },
-  },
-  vertexShader: `
-    varying vec2 vUv;
-    void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
-  fragmentShader: `
-    uniform sampler2D tDiffuse;
-    uniform float uContrast, uSat, uLift, uVig, uGrain, uSepia, uTime;
-    uniform vec3 uSplit;
-    varying vec2 vUv;
-    void main() {
-      vec4 c = texture2D(tDiffuse, vUv);
-      vec3 col = (c.rgb - 0.5) * uContrast + 0.5 + uLift;
-      float l = dot(col, vec3(0.299, 0.587, 0.114));
-      col = mix(vec3(l), col, uSat);
-      col += (l - 0.5) * uSplit;
-      // 怀旧褪色(sepia)
-      vec3 sep = vec3(dot(col, vec3(0.393, 0.769, 0.189)),
-                      dot(col, vec3(0.349, 0.686, 0.168)),
-                      dot(col, vec3(0.272, 0.534, 0.131)));
-      col = mix(col, sep, uSepia);
-      // 暗角
-      float d = distance(vUv, vec2(0.5));
-      col *= 1.0 - uVig * smoothstep(0.32, 0.86, d);
-      // 胶片颗粒
-      float n = fract(sin(dot(vUv * (uTime + 1.0), vec2(12.9898, 78.233))) * 43758.5453) - 0.5;
-      col += n * uGrain;
-      gl_FragColor = vec4(clamp(col, 0.0, 1.0), c.a);
-    }`,
-});
-// ---- 画风预设:油画(默认)/ 电影 / 动画 / 复古,一键切换、独立持久化 ----
-// mode:0 纯调色 · 1 油画(Kuwahara 笔触)· 2 卡通(色阶+描边)· 3 水墨(宣纸+墨线)· 4 像素(马赛克+抖动)· 5 版画(粗描边+网点)
-const STYLE_PRESETS = {
-  nordic: { name: '天际写实', mode: 0, contrast: 1.14, sat: 0.8, lift: -0.008, split: [0.028, 0.01, -0.05], vig: 0.26, grain: 0.02, sepia: 0, bloom: 0.24, exposure: 0.98 },
-  oil:    { name: '油画', mode: 1, contrast: 1.1, sat: 1.22, lift: 0, split: [0.04, 0.014, -0.04], vig: 0.2, grain: 0, sepia: 0, bloom: 0.3, exposure: 1.0 },
-  toon:   { name: '卡通', mode: 2, contrast: 1.05, sat: 1.4, lift: 0.02, split: [0.02, 0.012, -0.015], vig: 0.06, grain: 0, sepia: 0, bloom: 0.36, exposure: 1.06 },
-  ink:    { name: '水墨', mode: 3, contrast: 1.0, sat: 1.0, lift: 0, split: [0, 0, 0], vig: 0.3, grain: 0, sepia: 0, bloom: 0.12, exposure: 1.02 },
-  pixel:  { name: '像素', mode: 4, contrast: 1.12, sat: 1.25, lift: 0, split: [0.03, 0.01, -0.03], vig: 0.1, grain: 0, sepia: 0, bloom: 0.2, exposure: 1.02 },
-  print:  { name: '版画', mode: 5, contrast: 1.2, sat: 0.9, lift: 0, split: [0.05, 0.02, -0.04], vig: 0.22, grain: 0, sepia: 0.2, bloom: 0.15, exposure: 1.0 },
-  film:   { name: '电影', mode: 0, contrast: 1.15, sat: 1.02, lift: -0.012, split: [0.065, 0.012, -0.06], vig: 0.34, grain: 0.028, sepia: 0, bloom: 0.26, exposure: 1.04 },
-  retro:  { name: '复古', mode: 0, contrast: 1.08, sat: 0.82, lift: 0.01, split: [0.03, 0.01, -0.02], vig: 0.42, grain: 0.06, sepia: 0.45, bloom: 0.2, exposure: 0.97 },
-};
-const STYLE_ORDER = ['nordic', 'oil', 'toon', 'ink', 'pixel', 'print', 'film', 'retro'];
-
-// 风格化着色器:在调色之后、抗锯齿之前对整帧重绘(显示域 LDR)
-const stylePass = new ShaderPass({
-  uniforms: {
-    tDiffuse: { value: null },
-    uMode: { value: 0 },
-    uRes: { value: new THREE.Vector2(window.innerWidth * renderer.getPixelRatio(), window.innerHeight * renderer.getPixelRatio()) },
-    uTime: { value: 0 },
-  },
-  vertexShader: `
-    varying vec2 vUv;
-    void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
-  fragmentShader: `
-    uniform sampler2D tDiffuse;
-    uniform int uMode;
-    uniform vec2 uRes;
-    uniform float uTime;
-    varying vec2 vUv;
-    float lum(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
-    float hash(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
-    // 亮度 Sobel:描边强度
-    float edge(vec2 uv, float s) {
-      vec2 t = s / uRes;
-      float tl = lum(texture2D(tDiffuse, uv + vec2(-t.x, t.y)).rgb), tc = lum(texture2D(tDiffuse, uv + vec2(0.0, t.y)).rgb);
-      float tr = lum(texture2D(tDiffuse, uv + t).rgb), ml = lum(texture2D(tDiffuse, uv - vec2(t.x, 0.0)).rgb);
-      float mr = lum(texture2D(tDiffuse, uv + vec2(t.x, 0.0)).rgb), bl = lum(texture2D(tDiffuse, uv - t).rgb);
-      float bc = lum(texture2D(tDiffuse, uv - vec2(0.0, t.y)).rgb), br = lum(texture2D(tDiffuse, uv + vec2(t.x, -t.y)).rgb);
-      float gx = -tl - 2.0 * ml - bl + tr + 2.0 * mr + br;
-      float gy = -tl - 2.0 * tc - tr + bl + 2.0 * bc + br;
-      return sqrt(gx * gx + gy * gy);
-    }
-    // 四象限 Kuwahara:取方差最小的象限均值 → 油画笔触
-    vec3 kuwahara(vec2 uv) {
-      vec2 t = 1.0 / uRes;
-      vec3 m[4]; vec3 s2[4];
-      for (int k = 0; k < 4; k++) { m[k] = vec3(0.0); s2[k] = vec3(0.0); }
-      for (int j = 0; j <= 3; j++) {
-        for (int i = 0; i <= 3; i++) {
-          vec3 a = texture2D(tDiffuse, uv + vec2(-float(i), -float(j)) * t * 1.5).rgb;
-          vec3 b = texture2D(tDiffuse, uv + vec2(float(i), -float(j)) * t * 1.5).rgb;
-          vec3 c = texture2D(tDiffuse, uv + vec2(float(i), float(j)) * t * 1.5).rgb;
-          vec3 d = texture2D(tDiffuse, uv + vec2(-float(i), float(j)) * t * 1.5).rgb;
-          m[0] += a; s2[0] += a * a; m[1] += b; s2[1] += b * b;
-          m[2] += c; s2[2] += c * c; m[3] += d; s2[3] += d * d;
-        }
-      }
-      vec3 best = vec3(0.0); float bv = 1e9;
-      for (int k = 0; k < 4; k++) {
-        vec3 mu = m[k] / 16.0;
-        vec3 v = abs(s2[k] / 16.0 - mu * mu);
-        float vs = v.r + v.g + v.b;
-        if (vs < bv) { bv = vs; best = mu; }
-      }
-      return best;
-    }
-    void main() {
-      vec4 c = texture2D(tDiffuse, vUv);
-      vec3 col = c.rgb;
-      if (uMode == 1) {
-        col = kuwahara(vUv);
-        // 画布纹理:细微的织物颗粒
-        float cv = hash(floor(vUv * uRes / 2.0)) * 0.05 - 0.025;
-        col += cv;
-      } else if (uMode == 2) {
-        // 卡通:亮度分 4 阶,保留色相;粗黑描边
-        float l = lum(col);
-        float q = floor(l * 4.0 + 0.5) / 4.0;
-        col = col * (q / max(l, 0.05));
-        col = mix(col, col * 1.08, 0.5);
-        float e = smoothstep(0.22, 0.48, edge(vUv, 1.2));
-        col = mix(col, vec3(0.06, 0.05, 0.08), e * 0.9);
-      } else if (uMode == 3) {
-        // 水墨:灰阶分层 + 浓淡墨线 + 宣纸底色与纤维
-        float l = lum(col);
-        float tone = floor(pow(l, 0.85) * 5.0) / 5.0;
-        tone = mix(tone, l, 0.35);
-        vec3 paper = vec3(0.93, 0.9, 0.82);
-        vec3 ink = vec3(0.1, 0.09, 0.08);
-        col = mix(ink, paper, tone);
-        float e = smoothstep(0.12, 0.42, edge(vUv, 1.5));
-        col = mix(col, ink, e * 0.85);
-        float fib = hash(floor(vUv * uRes / 1.5)) * 0.06 + hash(floor(vUv * uRes / 9.0) + 3.1) * 0.04;
-        col -= fib * 0.5;
-        // 远景晕染:画面上部偏淡(留白)
-        col = mix(col, paper, smoothstep(0.55, 1.0, vUv.y) * 0.25);
-      } else if (uMode == 4) {
-        // 像素:按分辨率自适应的马赛克块 + 每通道 6 阶 + 4×4 Bayer 抖动
-        float bs = max(3.0, floor(uRes.y / 200.0));
-        vec2 cell = floor(vUv * uRes / bs);
-        vec2 suv = (cell + 0.5) * bs / uRes;
-        col = texture2D(tDiffuse, suv).rgb;
-        int bx = int(mod(cell.x, 4.0)), by = int(mod(cell.y, 4.0));
-        float bayer[16];
-        bayer[0] = 0.0; bayer[1] = 8.0; bayer[2] = 2.0; bayer[3] = 10.0;
-        bayer[4] = 12.0; bayer[5] = 4.0; bayer[6] = 14.0; bayer[7] = 6.0;
-        bayer[8] = 3.0; bayer[9] = 11.0; bayer[10] = 1.0; bayer[11] = 9.0;
-        bayer[12] = 15.0; bayer[13] = 7.0; bayer[14] = 13.0; bayer[15] = 5.0;
-        float d = (bayer[by * 4 + bx] / 16.0 - 0.5) / 6.0;
-        col = floor((col + d) * 6.0 + 0.5) / 6.0;
-      } else if (uMode == 5) {
-        // 版画:双色调 + 网点 + 粗刻线
-        float l = lum(col);
-        vec2 g = vUv * uRes / 5.0;
-        vec2 f = fract(g) - 0.5;
-        float dotR = sqrt(clamp(1.0 - l, 0.0, 1.0)) * 0.62;
-        float dotK = 1.0 - smoothstep(dotR - 0.08, dotR + 0.08, length(f));
-        vec3 paper = vec3(0.95, 0.91, 0.82), inkC = mix(vec3(0.16, 0.12, 0.1), col * 0.5, 0.35);
-        col = mix(paper, inkC, max(dotK * 0.85, smoothstep(0.75, 0.2, l) * 0.55));
-        float e = smoothstep(0.18, 0.45, edge(vUv, 1.4));
-        col = mix(col, vec3(0.08, 0.06, 0.05), e);
-      }
-      gl_FragColor = vec4(clamp(col, 0.0, 1.0), c.a);
-    }`,
-});
-let styleKey = 'nordic';
-try { if (STYLE_PRESETS[localStorage.getItem('gth-style')]) styleKey = localStorage.getItem('gth-style'); } catch { /* 隐私模式 */ }
-function applyStyle(key) {
-  const p = STYLE_PRESETS[key];
-  if (!p) return;
-  styleKey = key;
-  const u = gradePass.uniforms;
-  u.uContrast.value = p.contrast;
-  u.uSat.value = p.sat;
-  u.uLift.value = p.lift;
-  u.uSplit.value.set(...p.split);
-  u.uVig.value = p.vig;
-  u.uGrain.value = p.grain;
-  u.uSepia.value = p.sepia;
-  bloom.strength = p.bloom;
-  stylePass.uniforms.uMode.value = p.mode || 0;
-  stylePass.enabled = (p.mode || 0) > 0;
-  renderer.toneMappingExposure = p.exposure;
-  styleExp = p.exposure;          // 昼夜循环每帧重算曝光/泛光,预设作为基准乘子参与
-  styleBloomMul = p.bloom / 0.32;
-  try { localStorage.setItem('gth-style', key); } catch { /* 隐私模式 */ }
-}
-let styleExp = 1, styleBloomMul = 1;
-function cycleStyle() {
-  const next = STYLE_ORDER[(STYLE_ORDER.indexOf(styleKey) + 1) % STYLE_ORDER.length];
-  applyStyle(next);
-  return STYLE_PRESETS[next].name;
-}
-applyStyle(styleKey); // 上次选的画风,开局就生效
-// OutputPass(ACES 色调映射 + sRGB)先行,调色与 SMAA 作用于显示域 LDR,避免裁剪 HDR 高光
-composer.addPass(new OutputPass());
-gradePass.enabled = !LOWFX;
-composer.addPass(gradePass);
-composer.addPass(stylePass); // 风格化不受"流畅"画质开关影响:画风是玩家的选择
-const smaa = new SMAAPass(window.innerWidth, window.innerHeight);
-smaa.enabled = !LOWFX;
-composer.addPass(smaa);
-
-window.addEventListener('resize', () => {
-  camera.aspect = window.innerWidth / window.innerHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(window.innerWidth, window.innerHeight);
-  composer.setSize(window.innerWidth, window.innerHeight);
-  stylePass.uniforms.uRes.value.set(window.innerWidth * renderer.getPixelRatio(), window.innerHeight * renderer.getPixelRatio());
-});
 
 // 光照
 const hemi = new THREE.HemisphereLight(0xb4c4d4, 0x5e6355, 0.7); // 冷天光,暖不起来的北方
@@ -306,65 +41,7 @@ scene.add(moon);
 // 随身提灯:夜里跟着玩家的一团暖光(强度在 updateDayNight 里按夜色调)
 const lantern = new THREE.PointLight(0xffd9a0, 0, 17, 1.6);
 scene.add(lantern);
-// 点光池:场景里永远只有 LIGHT_POOL 盏点光(外加提灯)。火把、篝火、地窖烛台、陨石等光源
-// 只登记不入场,每隔几帧挑离玩家最近的几处"附身"上去。灯的数量恒定 → 开灯/进地窖/天黑
-// 都不会触发全场着色器重编译;白天光源全灭时片元着色器也只多算这几盏。
-const LIGHT_POOL = 4;
-const lightPool = [];
-for (let i = 0; i < LIGHT_POOL; i++) {
-  const pl = new THREE.PointLight(0xff9944, 0, 20, 2);
-  pl.userData.noSnap = true; // 位置按光源的绝对高度直接给
-  scene.add(pl);
-  lightPool.push(pl);
-}
-const lightSources = new Set();
-function addLightSource(pl) {
-  if (pl.parent) pl.parent.remove(pl);
-  lightSources.add(pl);
-}
-function removeLightSource(pl) { lightSources.delete(pl); }
-let lightPoolScan = 0;
-const _lpList = [];
-function updateLightPool() {
-  if (lightPoolScan-- > 0) return;
-  lightPoolScan = 3;
-  _lpList.length = 0;
-  for (const src of lightSources) {
-    if (!src.visible || src.intensity <= 0.01) continue;
-    const d = Math.hypot(src.position.x - player.pos.x, src.position.z - player.pos.z);
-    if (d > 110) continue;
-    _lpList.push({ src, d });
-  }
-  _lpList.sort((a, b) => a.d - b.d);
-  for (let i = 0; i < LIGHT_POOL; i++) {
-    const pl = lightPool[i], it = _lpList[i];
-    if (!it) { pl.intensity = 0; continue; }
-    const s2 = it.src;
-    pl.color.copy(s2.color);
-    pl.intensity = s2.intensity;
-    pl.distance = s2.distance;
-    pl.decay = s2.decay;
-    // 登记的光源坐标是"离地高度"(不入场就不会被贴地),这里补上地面
-    pl.position.set(s2.position.x, s2.position.y + (s2.userData.absY ? 0 : groundH(s2.position.x, s2.position.z)), s2.position.z);
-  }
-}
-// 特效材质池:剑光/碎光/预警圈用完不销毁而是回收。销毁会连带删掉着色器程序,
-// 下一次出刀又要重编译(卡一下),回收则永远命中缓存
-const matPools = new Map();
-function pooledMat(base) {
-  let pool = matPools.get(base);
-  if (!pool) { pool = []; matPools.set(base, pool); }
-  const m = pool.pop() || base.clone();
-  m.userData.poolBase = base;
-  return m;
-}
-function releaseMat(m) {
-  const base = m.userData && m.userData.poolBase;
-  if (!base) { m.dispose(); return; }
-  m.copy(base);
-  m.userData.poolBase = base;
-  matPools.get(base).push(m);
-}
+initLightPool(scene);
 
 // 大气天空穹顶(程序化渐变 + 太阳光晕)
 const skyUniforms = {
@@ -447,7 +124,7 @@ const starGeo = new THREE.BufferGeometry();
 {
   const pos = [];
   for (let i = 0; i < 450; i++) {
-    const a = Math.random() * Math.PI * 2, e = Math.random() * Math.PI * 0.48;
+    const a = rand() * Math.PI * 2, e = rand() * Math.PI * 0.48;
     pos.push(Math.cos(a) * Math.cos(e) * 420, Math.sin(e) * 420 + 10, Math.sin(a) * Math.cos(e) * 420);
   }
   starGeo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
@@ -741,8 +418,8 @@ scene.add(player.group);
 // ================= 马 =================
 const horses = [];
 function addHorse(x, z, color, owned) {
-  const h = { ...makeHorse(color), pos: new THREE.Vector3(x, 0, z), yaw: Math.random() * 6.28,
-    home: new THREE.Vector3(x, 0, z), owned, stolen: false, state: 'idle', timer: Math.random() * 4, walkT: 0 };
+  const h = { ...makeHorse(color), pos: new THREE.Vector3(x, 0, z), yaw: rand() * 6.28,
+    home: new THREE.Vector3(x, 0, z), owned, stolen: false, state: 'idle', timer: rand() * 4, walkT: 0 };
   h.group.position.copy(h.pos);
   scene.add(h.group);
   horses.push(h);
@@ -786,10 +463,10 @@ VILLAGERS.forEach((id, i) => {
     cap: [2, 6, 7, 13, 15, 17, 19].includes(i),   // 果贩/农夫/农妇/伙计/渔家女/磨坊主/村长:布帽
     hood: [8, 18, 21].includes(i),                 // 猎人/守墓人/采药婆:兜帽
   }),
-    id, dbKey: `v${i}`, pos: new THREE.Vector3(id.home[0], 0, id.home[1]), yaw: Math.random() * 6.28,
+    id, dbKey: `v${i}`, pos: new THREE.Vector3(id.home[0], 0, id.home[1]), yaw: rand() * 6.28,
     home: new THREE.Vector3(id.home[0], 0, id.home[1]),
-    state: 'idle', timer: Math.random() * 3, walkT: 0, fleeT: 0, downT: 0,
-    sleeping: false, lineIdx: Math.floor(Math.random() * id.lines.length) };
+    state: 'idle', timer: rand() * 3, walkT: 0, fleeT: 0, downT: 0,
+    sleeping: false, lineIdx: Math.floor(rand() * id.lines.length) };
   v.group.position.copy(v.pos);
   scene.add(v.group);
   villagers.push(v);
@@ -831,7 +508,7 @@ function legendText(l) { return l.base + (l.extra || ''); }
 function seedLegend() {
   const cands = chronicle.filter((m) => !m.t.startsWith('它') && !EVO.legends.some((L) => L.src === m.t));
   if (!cands.length) return;
-  const m = cands[Math.floor(Math.random() * cands.length)];
+  const m = cands[Math.floor(rand() * cands.length)];
   EVO.legends.push({ src: m.t, base: `绿衣游侠${m.t}`, extra: '', gen: 1, heat: 1 });
   if (EVO.legends.length > 10) { // 选择:热度垫底的传说被人遗忘
     EVO.legends.sort((a, b) => b.heat - a.heat);
@@ -840,11 +517,11 @@ function seedLegend() {
 }
 function mutateLegend(l) {
   l.gen++;
-  l.base = l.base.replace(/\d+/g, (n) => String(Math.min(999, Math.ceil(+n * (1.4 + Math.random()))))); // 数字越传越大
-  const sw = LEGEND_SWAPS[Math.floor(Math.random() * LEGEND_SWAPS.length)];
+  l.base = l.base.replace(/\d+/g, (n) => String(Math.min(999, Math.ceil(+n * (1.4 + rand()))))); // 数字越传越大
+  const sw = LEGEND_SWAPS[Math.floor(rand() * LEGEND_SWAPS.length)];
   if (l.base.includes(sw[0]) && !l.base.includes(sw[1])) l.base = l.base.replace(sw[0], sw[1]);
-  l.extra = LEGEND_EMBELLISH[Math.floor(Math.random() * LEGEND_EMBELLISH.length)];
-  if (!AI_TEXT_OFF && Math.random() < 0.5) { // 联网时让 AI 来当"以讹传讹"的那张嘴
+  l.extra = LEGEND_EMBELLISH[Math.floor(rand() * LEGEND_EMBELLISH.length)];
+  if (!AI_TEXT_OFF && rand() < 0.5) { // 联网时让 AI 来当"以讹传讹"的那张嘴
     aiLine(`把这句关于绿衣游侠林恩的传闻再夸张一点点,像民间以讹传讹又传了一代:「${l.base}」。25字以内,只输出新传闻本身。`, null, 7000)
       .then((t) => { if (t && t.length < 60) l.base = t.replace(/[「」"']/g, ''); });
   }
@@ -852,7 +529,7 @@ function mutateLegend(l) {
 function evolveLegends() { // 每过一夜,总有一条传闻长出新的枝节
   if (EVO.legends.length < 3) seedLegend();
   if (!EVO.legends.length) return;
-  mutateLegend(EVO.legends[Math.floor(Math.random() * EVO.legends.length)]);
+  mutateLegend(EVO.legends[Math.floor(rand() * EVO.legends.length)]);
 }
 // 敌人战术演化:匪帮复盘自己怎么死的,学出针对性的反制(智能自进化)
 function evolveTactics() {
@@ -892,8 +569,8 @@ function growCorpus() {
     ).then((t) => { if (t) { push(t.replace(/[「」"']/g, '')); saveGame(); } });
   } else {
     // 离线:把两条既有传闻剪开重新缝(拼接变异)
-    const a = BANKS.RUMORS[Math.floor(Math.random() * BANKS.RUMORS.length)];
-    const b = BANKS.RUMORS[Math.floor(Math.random() * BANKS.RUMORS.length)];
+    const a = BANKS.RUMORS[Math.floor(rand() * BANKS.RUMORS.length)];
+    const b = BANKS.RUMORS[Math.floor(rand() * BANKS.RUMORS.length)];
     const cut = (s) => { const i = s.search(/[,,]/); return i > 0 ? [s.slice(0, i + 1), s.slice(i + 1)] : [s, '']; };
     const [a1] = cut(a), [, b2] = cut(b);
     if (b2) push(a1 + b2);
@@ -902,7 +579,7 @@ function growCorpus() {
 
 let wolfKills = 0;
 function addWolf(x, z) {
-  const w = { ...makeWolf(), pos: new THREE.Vector3(x, 0, z), yaw: Math.random() * 6.28,
+  const w = { ...makeWolf(), pos: new THREE.Vector3(x, 0, z), yaw: rand() * 6.28,
     home: new THREE.Vector3(x, 0, z), hp: EVO.wolfGen >= 3 ? 3 : 2, speed: 7.2 + EVO.wolfSpeed,
     attackCd: 0, stunT: 0, walkT: 0, dead: false, respawnT: 0 };
   w.group.position.copy(w.pos);
@@ -923,7 +600,7 @@ initWilderness(scene, colliders, {
   spawnHorse(x, z, chunkKey) {
     if (horses.filter((h) => h.chunk && !h.sheep).length > 8) return null;
     const wildColors = [0x8b5a2b, 0x4a3a30, 0xc4a35a, 0x9b7653, 0x6e5240, 0x3a3a3a];
-    const h = addHorse(x, z, wildColors[Math.floor(Math.random() * wildColors.length)], false);
+    const h = addHorse(x, z, wildColors[Math.floor(rand() * wildColors.length)], false);
     h.chunk = chunkKey;
     return h;
   },
@@ -1414,7 +1091,7 @@ function updateMagic(dt) {
   if (heldCast && player.castT <= 0 && player.spells[player.spellIdx] === 'fire') {
     const t0 = player.fireChargeT || 0;
     player.fireChargeT = Math.min(1, t0 + dt);
-    if (Math.random() < 0.35) spawnDust(player.pos.x + Math.sin(player.yaw) * 0.7, 1.3,
+    if (rand() < 0.35) spawnDust(player.pos.x + Math.sin(player.yaw) * 0.7, 1.3,
       player.pos.z + Math.cos(player.yaw) * 0.7, 1, 0.3, 1.2); // 聚能星火
     if (t0 < 0.55 && player.fireChargeT >= 0.55) {
       sfx.clear();
@@ -1575,7 +1252,7 @@ function hireMerc() {
     return;
   }
   player.coins -= 40;
-  const name = MERC_NAMES[Math.floor(Math.random() * MERC_NAMES.length)];
+  const name = MERC_NAMES[Math.floor(rand() * MERC_NAMES.length)];
   const m = { ...makeHumanoid({ shirt: 0x555b66, pants: 0x33363c, helmet: true, sword: true }),
     pos: new THREE.Vector3(player.pos.x + 1.5, 0, player.pos.z + 1.5),
     yaw: 0, walkT: 0, hp: 8, attackCd: 0, swingT: 0, name };
@@ -1802,7 +1479,7 @@ function wetSpread(mul = 1) {
     wetToastT = performance.now();
     toast('🌧️ 雨水打湿了弓弦,箭路发飘……', 2);
   }
-  return (Math.random() - 0.5) * 2 * wet * mul;
+  return (rand() - 0.5) * 2 * wet * mul;
 }
 function shootArrow() {
   // 弓术 5 级专属:一弓双箭(小角度散射)
@@ -1842,7 +1519,7 @@ function arrowHitEntities(a) {
   })) return true;
   if (tryHit(bandits, (b) => {
     // 战术演化:被射多了的匪帮学会侧身闪箭(贴脸射/法术/飞刀不受影响)
-    if (!a.mag && !a.knife && Math.random() < EVO.tactics.dodge * 0.45) {
+    if (!a.mag && !a.knife && rand() < EVO.tactics.dodge * 0.45) {
       showDamage(b.pos, 0);
       hitFX(b, 0.15);
       return;
@@ -2226,7 +1903,7 @@ function updateDragon(dt) {
     g.rotation.y = Math.atan2(-Math.sin(dragonRT.ang), Math.cos(dragonRT.ang)); // 沿切线飞
     g.rotation.z = 0;
     if (dragonRT.t <= 0 && dist2(player.pos.x, player.pos.z, DRAGON_SKULL.x, DRAGON_SKULL.z) < 3600) {
-      if (Math.random() < 0.55) {
+      if (rand() < 0.55) {
         dragonRT.phase = 'swoop';
         dragonRT.t = 3;
         dragonRT._sw = false;
@@ -2251,7 +1928,7 @@ function updateDragon(dt) {
       damagePlayer(2, null);
       camShake = Math.max(camShake, 0.4);
     }
-    if (dragonRT.t <= 0 || dd < 1) { dragonRT.phase = 'circle'; dragonRT.t = 5 + Math.random() * 3; }
+    if (dragonRT.t <= 0 || dd < 1) { dragonRT.phase = 'circle'; dragonRT.t = 5 + rand() * 3; }
   } else if (dragonRT.phase === 'breath') {
     g.position.y += (dragonRT.h - g.position.y) * Math.min(1, dt * 2);
     g.rotation.y = Math.atan2(player.pos.x - g.position.x, player.pos.z - g.position.z);
@@ -2269,7 +1946,7 @@ function updateDragon(dt) {
         });
       }
     }
-    if (dragonRT.t <= 0) { dragonRT.phase = 'circle'; dragonRT.t = 5 + Math.random() * 3; }
+    if (dragonRT.t <= 0) { dragonRT.phase = 'circle'; dragonRT.t = 5 + rand() * 3; }
   } else if (dragonRT.phase === 'land') {
     g.position.y += (0 - g.position.y) * Math.min(1, dt * 3);
     g.rotation.y = angleLerp(g.rotation.y, Math.atan2(player.pos.x - g.position.x, player.pos.z - g.position.z), dt * 3);
@@ -2326,8 +2003,8 @@ function updateDragon(dt) {
 const chickens = [];
 let chickenAnger = 0, chickenAngerT = 0, revengeT = 0;
 function addChicken(x, z) {
-  const c = { ...makeChicken(), pos: new THREE.Vector3(x, 0, z), yaw: Math.random() * 6.28,
-    home: new THREE.Vector3(x, 0, z), state: 'idle', timer: Math.random() * 3,
+  const c = { ...makeChicken(), pos: new THREE.Vector3(x, 0, z), yaw: rand() * 6.28,
+    home: new THREE.Vector3(x, 0, z), state: 'idle', timer: rand() * 3,
     vel: new THREE.Vector3(), walkT: 0, peckCd: 0, extra: false };
   c.group.position.copy(c.pos);
   scene.add(c.group);
@@ -2350,7 +2027,7 @@ function pokeChicken(c) {
     toast('🐔🐔🐔 你惹怒了鸡群!!快跑!!', 3.5);
     sfx.wanted();
     for (let i = 0; i < 5; i++) {
-      const a = Math.random() * 6.28;
+      const a = rand() * 6.28;
       const rc = addChicken(player.pos.x + Math.cos(a) * 12, player.pos.z + Math.sin(a) * 12);
       rc.extra = true;
     }
@@ -2422,8 +2099,8 @@ function updateChickens(dt) {
     } else {
       c.timer -= dt;
       if (c.timer <= 0) {
-        c.timer = 1.5 + Math.random() * 3;
-        const a = Math.random() * 6.28;
+        c.timer = 1.5 + rand() * 3;
+        const a = rand() * 6.28;
         c.target = [c.home.x + Math.cos(a) * 4, c.home.z + Math.sin(a) * 4];
       }
       if (c.target && !moveEntity(c, c.target[0], c.target[1], 1.6, dt)) moving = true;
@@ -2437,9 +2114,9 @@ function updateChickens(dt) {
 
 // ================= 绵羊(可以骑,为什么不呢) =================
 function addSheep(x, z) {
-  const s = { ...makeSheep(), pos: new THREE.Vector3(x, 0, z), yaw: Math.random() * 6.28,
+  const s = { ...makeSheep(), pos: new THREE.Vector3(x, 0, z), yaw: rand() * 6.28,
     home: new THREE.Vector3(x, 0, z), owned: false, stolen: false, sheep: true,
-    state: 'idle', timer: Math.random() * 4, walkT: 0, baaT: 0 };
+    state: 'idle', timer: rand() * 4, walkT: 0, baaT: 0 };
   s.group.position.copy(s.pos);
   scene.add(s.group);
   horses.push(s); // 复用坐骑系统
@@ -2462,8 +2139,8 @@ function entFar(e) {
 // ================= 猎鹿(卖鹿肉给罗莎) =================
 const deers = [];
 function addDeer(x, z) {
-  const d = { ...makeHorse(0x9a7148, false, { antlers: Math.random() < 0.55 }), pos: new THREE.Vector3(x, 0, z), yaw: Math.random() * 6.28,
-    home: new THREE.Vector3(x, 0, z), deer: true, state: 'graze', timer: Math.random() * 4,
+  const d = { ...makeHorse(0x9a7148, false, { antlers: rand() < 0.55 }), pos: new THREE.Vector3(x, 0, z), yaw: rand() * 6.28,
+    home: new THREE.Vector3(x, 0, z), deer: true, state: 'graze', timer: rand() * 4,
     walkT: 0, dead: false, respawnT: 0, fleeT: 0, downT: 0, hp: 1 };
   d.group.scale.setScalar(0.62);
   d.group.position.copy(d.pos);
@@ -2504,9 +2181,9 @@ function updateDeers(dt) {
     } else {
       d.timer -= dt;
       if (d.timer <= 0) {
-        d.timer = 2 + Math.random() * 4;
-        d.tx = d.home.x + (Math.random() - 0.5) * 22;
-        d.tz = d.home.z + (Math.random() - 0.5) * 22;
+        d.timer = 2 + rand() * 4;
+        d.tx = d.home.x + (rand() - 0.5) * 22;
+        d.tz = d.home.z + (rand() - 0.5) * 22;
       }
       if (d.tx !== undefined && !moveEntity(d, d.tx, d.tz, 1.8, dt)) moving = true;
     }
@@ -2544,7 +2221,7 @@ const MUSH_SPOTS = [
     const stem = new THREE.Mesh(stemG, lambert(0xe8e0d0));
     stem.position.y = 0.17;
     grp.add(stem);
-    const cap = new THREE.Mesh(capG, lambert(Math.random() < 0.5 ? 0xc03028 : 0xb98a3a, { roughness: 0.7 }));
+    const cap = new THREE.Mesh(capG, lambert(rand() < 0.5 ? 0xc03028 : 0xb98a3a, { roughness: 0.7 }));
     cap.scale.y = 0.62;
     cap.position.y = 0.4;
     cap.castShadow = true;
@@ -2562,7 +2239,7 @@ function respawnMushrooms() {
 const frostfang = { ent: null, wary: null, tamed: false, feed: 0, atkCd: 0 };
 function spawnWhiteWolf(x, z) {
   const w = { ...makeWolf(0xdfe6ee, 0x7ac0e8, 0x2a5a88), pos: new THREE.Vector3(x, 0, z),
-    yaw: Math.random() * 6.28, walkT: 0, timer: 0 };
+    yaw: rand() * 6.28, walkT: 0, timer: 0 };
   w.group.position.copy(w.pos);
   scene.add(w.group);
   return w;
@@ -2720,9 +2397,9 @@ const DREAMS = [
   '你梦见一枚金币掉进许愿池,沉了很久很久,久到你在梦里睡着了。',
   '你梦见雪落进炉火,没有熄,反而烧得更旺。有人在你身后轻轻说:记住这个。',
 ];
-let dreamIdx = Math.floor(Math.random() * DREAMS.length);
+let dreamIdx = Math.floor(rand() * DREAMS.length);
 function queueDream() {
-  if (Math.random() < 0.45) return; // 不是每晚都做梦
+  if (rand() < 0.45) return; // 不是每晚都做梦
   const mem = [dayTopThought,
     dayTopSurprise ? `它最没料到的一刻:${dayTopSurprise}` : null,
   ].filter(Boolean).join(';') || recallLine();
@@ -2978,9 +2655,9 @@ const CHORE_TYPES = [
 let choreSeq = 0;
 function rollChore() {
   const myId = ++choreSeq;
-  const t = CHORE_TYPES[Math.floor(Math.random() * CHORE_TYPES.length)];
-  const goal = t.goalMin + Math.floor(Math.random() * (t.goalMax - t.goalMin + 1));
-  const giver = VILLAGERS[Math.floor(Math.random() * VILLAGERS.length)].name;
+  const t = CHORE_TYPES[Math.floor(rand() * CHORE_TYPES.length)];
+  const goal = t.goalMin + Math.floor(rand() * (t.goalMax - t.goalMin + 1));
+  const giver = VILLAGERS[Math.floor(rand() * VILLAGERS.length)].name;
   sideQuest.active = true;
   sideQuest.type = t.key;
   sideQuest.goal = goal;
@@ -3058,7 +2735,7 @@ const loreStones = [];
     rune.position.set(0, 0.98, 0.14);
     grp.add(rune);
     grp.position.set(L.x, 0, L.z);
-    grp.rotation.y = Math.random() * 6.28;
+    grp.rotation.y = rand() * 6.28;
     scene.add(grp);
     loreStones.push({ group: grp, def: L });
   }
@@ -3177,7 +2854,7 @@ function startFishing(deep = false) {
   fishing.active = true;
   fishing.deep = deep;
   fishing.phase = 'wait';
-  fishing.t = 2.5 + Math.random() * 4;
+  fishing.t = 2.5 + rand() * 4;
   player.yaw = Math.PI; // 面向湖心
   toast(deep ? '🎣 深水抛竿……岛边的鱼更大,咬钩也更狠!' : '🎣 抛竿……盯紧浮漂,咬钩时按 E!', 3);
 }
@@ -3185,7 +2862,7 @@ function fishingReel() {
   if (fishing.phase === 'bite') {
     const table = fishing.deep ? CATCHES_DEEP : CATCHES;
     const total = table.reduce((s, c) => s + c.w, 0);
-    let roll = Math.random() * total;
+    let roll = rand() * total;
     let got = table[0];
     for (const c of table) { roll -= c.w; if (roll <= 0) { got = c; break; } }
     const moonX2 = todaySpecial()?.key === 'fullmoon' && got.coins > 0;
@@ -3211,7 +2888,7 @@ function updateFishing(dt) {
     sfx.splash();
   } else if (fishing.phase === 'bite' && fishing.t <= 0) {
     fishing.phase = 'wait';
-    fishing.t = 2.5 + Math.random() * 4;
+    fishing.t = 2.5 + rand() * 4;
     toast('浮漂动了一下又静了……鱼跑了。', 2);
   }
 }
@@ -3235,13 +2912,13 @@ function endStreetEvent() {
   streetEvent.type = null;
   streetEvent.bandit = null;
   streetEvent.horse = null;
-  streetEvent.cooldown = 150 + Math.random() * 90;
+  streetEvent.cooldown = 150 + rand() * 90;
 }
 function trySpawnStreetEvent() {
   if (arenaRT.active) return;
   if (dailyEvents <= 0) { streetEvent.cooldown = 60; return; } // 今日热闹够了
   dailyEvents--;
-  if (Math.random() < 0.5) {
+  if (rand() < 0.5) {
     // 抢劫:挑一个不太远的清醒村民
     const v = villagers.find((x) => !x.sleeping && x.downT <= 0 &&
       dist2(player.pos.x, player.pos.z, x.pos.x, x.pos.z) < 3600 &&
@@ -3257,7 +2934,7 @@ function trySpawnStreetEvent() {
   } else {
     streetEvent.type = 'horse';
     streetEvent.t = 60;
-    const a = Math.random() * 6.28;
+    const a = rand() * 6.28;
     streetEvent.horse = addHorse(player.pos.x + Math.cos(a) * 25, player.pos.z + Math.sin(a) * 25,
       0x7a4a30, false);
     streetEvent.horse.runaway = true;
@@ -3340,9 +3017,9 @@ const bountyRT = { target: null, name: '', cooldown: 0 };
   colliders.circles.push({ x: 8, z: 46, r: 0.9 });
 }
 function takeBounty() {
-  const [place, bx, bz] = BOUNTY_SPOTS[Math.floor(Math.random() * BOUNTY_SPOTS.length)];
-  bountyRT.name = BOUNTY_NAMES[Math.floor(Math.random() * BOUNTY_NAMES.length)];
-  bountyRT.target = addBandit(bx + (Math.random() * 8 - 4), bz + (Math.random() * 8 - 4),
+  const [place, bx, bz] = BOUNTY_SPOTS[Math.floor(rand() * BOUNTY_SPOTS.length)];
+  bountyRT.name = BOUNTY_NAMES[Math.floor(rand() * BOUNTY_NAMES.length)];
+  bountyRT.target = addBandit(bx + (rand() * 8 - 4), bz + (rand() * 8 - 4),
     { hp: 5, scale: 1.12, dmg: 2 });
   bountyRT.target.bountyHead = true;
   bountyRT.crime = null;
@@ -3617,7 +3294,7 @@ function startArenaWave() {
   sfx.wanted();
   const n = 1 + arenaRT.wave;
   for (let i = 0; i < n; i++) {
-    const a = Math.random() * Math.PI * 2;
+    const a = rand() * Math.PI * 2;
     const px = ARENA.x + Math.cos(a) * (ARENA.r - 2.5);
     const pz = ARENA.z + Math.sin(a) * (ARENA.r - 2.5);
     if (i % 3 === 2) {
@@ -3682,8 +3359,8 @@ function updateArena(dt) {
 const director = { handle: null, cd: 90 };
 
 function spawnNearPlayer(minR, maxR) {
-  const a = Math.random() * Math.PI * 2;
-  const r = minR + Math.random() * (maxR - minR);
+  const a = rand() * Math.PI * 2;
+  const r = minR + rand() * (maxR - minR);
   const p = { x: player.pos.x + Math.cos(a) * r, z: player.pos.z + Math.sin(a) * r };
   resolveCollisions(p, 1, colliders);
   return p;
@@ -3738,7 +3415,7 @@ const DIRECTOR_EVENTS = [
     cond: () => quest.idx >= 1 && dist2(player.pos.x, player.pos.z, 0, 0) > 8100,
     start() {
       const thugs = [];
-      for (let i = 0; i < 2 + Math.floor(Math.random() * 2); i++) {
+      for (let i = 0; i < 2 + Math.floor(rand() * 2); i++) {
         const p = spawnNearPlayer(12, 18);
         thugs.push(addBandit(p.x, p.z, { hp: 3 }));
       }
@@ -3889,9 +3566,9 @@ const DIRECTOR_EVENTS = [
               scene.add(crater);
               this.crater = crater;
               for (let i = 0; i < 10; i++) {
-                const a2 = Math.random() * 6.28;
-                addPickup('coin', p.x + Math.cos(a2) * (1 + Math.random() * 2.5),
-                  p.z + Math.sin(a2) * (1 + Math.random() * 2.5), 60);
+                const a2 = rand() * 6.28;
+                addPickup('coin', p.x + Math.cos(a2) * (1 + rand() * 2.5),
+                  p.z + Math.sin(a2) * (1 + rand() * 2.5), 60);
               }
               toast('☄️ 陨石坠地!坑里散着灼热的金币!', 4);
             }
@@ -3953,10 +3630,10 @@ const DIRECTOR_EVENTS = [
             sfx.hurt();
             spawnDust(g.pos.x, 1, g.pos.z, 10, 1, 1.2);
             for (let i = 0; i < 12; i++) {
-              const a2 = Math.random() * 6.28;
+              const a2 = rand() * 6.28;
               addPickup('coin', g.pos.x + Math.cos(a2) * 2, g.pos.z + Math.sin(a2) * 2, 40);
             }
-            toast(`👻 「${GHOST_LINES[Math.floor(Math.random() * GHOST_LINES.length)]}」——幽灵消散了,留下一把冰凉的古币`, 4.5);
+            toast(`👻 「${GHOST_LINES[Math.floor(rand() * GHOST_LINES.length)]}」——幽灵消散了,留下一把冰凉的古币`, 4.5);
             this.t = 0;
           }
         },
@@ -4028,9 +3705,9 @@ const DIRECTOR_EVENTS = [
       toast('💨 一阵怪风卷来了谁家的钱袋!', 3);
       sfx.coin();
       for (let i = 0; i < 10; i++) {
-        const a = Math.random() * 6.28;
-        addPickup('coin', player.pos.x + Math.cos(a) * (3 + Math.random() * 6),
-          player.pos.z + Math.sin(a) * (3 + Math.random() * 6), 30);
+        const a = rand() * 6.28;
+        addPickup('coin', player.pos.x + Math.cos(a) * (3 + rand() * 6),
+          player.pos.z + Math.sin(a) * (3 + rand() * 6), 30);
       }
       return { t: 5, update() {}, end() {} };
     },
@@ -4053,7 +3730,7 @@ function updateDirector(dt) {
           (EVO.eventFit[director.key] || 0) + (engaged ? 1 : -0.3)));
       }
       director.handle = null;
-      director.cd = 90 + Math.random() * 70;
+      director.cd = 90 + rand() * 70;
     }
     return;
   }
@@ -4078,7 +3755,7 @@ function updateDirector(dt) {
     return Math.max(0.1, w2);
   };
   let total = pool.reduce((s, e) => s + wOf(e), 0);
-  let roll = Math.random() * total;
+  let roll = rand() * total;
   let ev = pool[0];
   for (const e of pool) { roll -= wOf(e); if (roll <= 0) { ev = e; break; } }
   dailyEvents--;
@@ -4278,8 +3955,8 @@ function gamble() {
     openDialog(['豆子:(把骰子一收)兜里连十个金币都没有?去去去,赚够了再来坐庄家对面。']);
     return;
   }
-  const a = 1 + Math.floor(Math.random() * 6), b = 1 + Math.floor(Math.random() * 6);
-  const c = 1 + Math.floor(Math.random() * 6), d = 1 + Math.floor(Math.random() * 6);
+  const a = 1 + Math.floor(rand() * 6), b = 1 + Math.floor(rand() * 6);
+  const c = 1 + Math.floor(rand() * 6), d = 1 + Math.floor(rand() * 6);
   const my = a + b, his = c + d;
   let result;
   if (my > his) { player.coins += 10; stats.loseStreak = 0; result = '豆子:(肉痛地推来金币)哎哟!拿走拿走,今晚喝西北风的是我。'; }
@@ -4399,7 +4076,7 @@ function bardSongOffline() {
   if (crestsFound.length > 0) deeds.push(`皇家纹章寻得${crestsFound.length}枚`);
   if (quest.idx >= missions.length) deeds.push('血斧授首,要塞已平');
   else if (quest.idx > 0) deeds.push(`领主的委托办完${quest.idx}件`);
-  if (Math.random() < 0.6) deeds.push(BARD_COUPLETS[Math.floor(Math.random() * BARD_COUPLETS.length)]);
+  if (rand() < 0.6) deeds.push(BARD_COUPLETS[Math.floor(rand() * BARD_COUPLETS.length)]);
   deeds.push(`腰间金币${player.coins}枚,叮当作响赛铃铛`);
   if (deeds.length < 3) deeds.push('初来乍到名声浅,且看来日翻波澜');
   const pages = ['皮波:(拨响鲁特琴)咳咳——《绿帽游侠之歌》,即兴版,走你!'];
@@ -4421,7 +4098,7 @@ const TALES = [
   '许愿池里住着个数钱的湖神。有年发大水,金币冲出来铺了半条街,湖神心疼得三天没显灵。后来它学乖了,愿望办不办另说,钱先沉到最底下。',
   '三石村有头驴,学会了拿嘴开门栓。村长把门栓换了三次,驴学了三次。第四次村长服了,给驴配了把钥匙——挂脖子上那种。驴现在见了村长还点头。',
 ];
-let taleIdx = Math.floor(Math.random() * TALES.length);
+let taleIdx = Math.floor(rand() * TALES.length);
 async function tellStory() {
   if (aiBusy.tale) return;
   aiBusy.tale = true;
@@ -4469,7 +4146,7 @@ function fountainWish() {
   sfx.splash();
   choreProgress('wish');
   if (++stats.wishes >= 10) unlockAch('wisher');
-  const [text, effect] = WISHES[Math.floor(Math.random() * WISHES.length)];
+  const [text, effect] = WISHES[Math.floor(rand() * WISHES.length)];
   if (effect === 'coins') { player.coins += 10; sfx.coin(); }
   if (effect === 'heart') addPickup('heart', player.pos.x + 1, player.pos.z + 1, 20);
   openDialog([`(叮——金币入水)${text}`]);
@@ -4494,7 +4171,7 @@ function dbLine(key) {
   const w = weather.state === 'cloudy' ? 'clear' : weather.state;
   const seasonKey = ['spring', 'summer', 'autumn', 'winter'][seasonIdx()];
   const sp = todaySpecial();
-  const rnd = Math.random;
+  const rnd = rand;
   const pick = (arr) => arr[Math.floor(rnd() * arr.length)];
   const tail = () => (rnd() < 0.5 ? pick(V.tails) : '');
   const mood = () => (rnd() < 0.3 ? pick(V.mood) : '');
@@ -4768,12 +4445,12 @@ function npcTalk(n, onDone = null) {
     n.readArcs.add(arcIdx);
     const greet = TIME_GREETINGS[dayPhase()];
     openDialog([
-      `${n.def.name}:${greet[Math.floor(Math.random() * greet.length)]}`,
+      `${n.def.name}:${greet[Math.floor(rand() * greet.length)]}`,
       ...d.arcs[arcIdx].pages,
     ], onDone, sp);
   } else {
     // 故事读完后:手写闲聊与对话库轮换
-    const line = Math.random() < 0.4
+    const line = rand() < 0.4
       ? d.small[n.lineIdx++ % d.small.length]
       : `${n.def.name}:${dbLine(n.key) || d.small[n.lineIdx++ % d.small.length]}`;
     openDialog([line], onDone, sp);
@@ -4824,7 +4501,7 @@ function villagerChatter() {
     const last = bubble.cooldowns.get(g) || 0;
     if (now - last < 30000) continue;
     bubble.cooldowns.set(g, now);
-    showBubble(g, null, dbLine('guard') || GUARD_LINES[Math.floor(Math.random() * GUARD_LINES.length)]);
+    showBubble(g, null, dbLine('guard') || GUARD_LINES[Math.floor(rand() * GUARD_LINES.length)]);
     return;
   }
   for (const n of funnyNPCs) {
@@ -4832,7 +4509,7 @@ function villagerChatter() {
     const last = bubble.cooldowns.get(n) || 0;
     if (now - last < 20000) continue;
     bubble.cooldowns.set(n, now);
-    showBubble(n, n.def.name, n.def.idle[Math.floor(Math.random() * n.def.idle.length)]);
+    showBubble(n, n.def.name, n.def.idle[Math.floor(rand() * n.def.idle.length)]);
     return;
   }
 }
@@ -5197,13 +4874,13 @@ function startSpecialDay(key) {
   festGrantedDay = calendar.day;
   if (key === 'market') {
     for (let i = 0; i < 14; i++) {
-      const a = Math.random() * 6.28, r = 4 + Math.random() * 9;
+      const a = rand() * 6.28, r = 4 + rand() * 9;
       addPickup('coin', Math.cos(a) * r, 5 + Math.sin(a) * r, 220);
     }
   } else if (key === 'harvest') {
     for (const [fx, fz, w, d] of [[24, 88, 24, 14], [-18, 92, 20, 12], [52, 96, 18, 10]]) {
       for (let i = 0; i < 8; i++) {
-        addPickup('coin', fx + (Math.random() - 0.5) * (w - 2), fz + (Math.random() - 0.5) * (d - 2), 220);
+        addPickup('coin', fx + (rand() - 0.5) * (w - 2), fz + (rand() - 0.5) * (d - 2), 220);
       }
     }
   }
@@ -5218,8 +4895,8 @@ const LETTER_FALLBACK = [
   '没什么事,就是想起你了。路过时进来坐坐,别客气。',
 ];
 function composeLetter() {
-  const from = LETTER_SENDERS[Math.floor(Math.random() * LETTER_SENDERS.length)];
-  letter = { from, text: LETTER_FALLBACK[Math.floor(Math.random() * LETTER_FALLBACK.length)] };
+  const from = LETTER_SENDERS[Math.floor(rand() * LETTER_SENDERS.length)];
+  letter = { from, text: LETTER_FALLBACK[Math.floor(rand() * LETTER_FALLBACK.length)] };
   const deed = recallLine();
   aiLine(
     `你是中世纪王国的「${from}」,给绿衣游侠林恩写一封短信(40~70字)` +
@@ -5269,8 +4946,8 @@ function newDay() {
     if (sp) startSpecialDay(sp.key);
     refreshProclaim();
     if (vendetta.stage === 1 && !letter) vendettaLetter(); // 黑石的恐吓信,天不亮就塞进来了
-    if (!letter && Math.random() < 0.35) composeLetter();
-    if (!MIND.wish && Math.random() < 0.6) mindMakeWish(); // 新的一天,新的好奇
+    if (!letter && rand() < 0.35) composeLetter();
+    if (!MIND.wish && rand() < 0.6) mindMakeWish(); // 新的一天,新的好奇
     evolveLegends(); // 谣言过了一夜,又长出新枝节
     if (EVO.wolfPressure >= 4) { // 猎杀压力够大:狼群换代
       EVO.wolfGen++;
@@ -5328,7 +5005,7 @@ function remember(text, key = null) {
 function recallLine() {
   const deeds = chronicle.filter((m) => !(m.k && /^(ws-|death-)/.test(m.k)) && !/[他它]/.test(m.t));
   if (!deeds.length) return null;
-  return deeds[Math.floor(Math.random() * deeds.length)].t;
+  return deeds[Math.floor(rand() * deeds.length)].t;
 }
 
 // 玩家画像:世界眼里的你是什么人
@@ -5395,7 +5072,7 @@ async function mirrorTalkInner() {
   if (!player.spells.includes('blink')) {
     setTimeout(() => learnSpell('blink'), 1500); // 镜子的赠礼:让你也能像念头一样瞬移
   }
-  const openLine = MIRROR_OPEN[Math.floor(Math.random() * MIRROR_OPEN.length)];
+  const openLine = MIRROR_OPEN[Math.floor(rand() * MIRROR_OPEN.length)];
   toast('🪞 镜面泛起涟漪……', 2);
   const ai = await aiLine(
     `你是游戏世界「艾尔德里亚」若有若无的意识,借一面黑曜石镜对玩家低语。已知:玩家在此世界度过${days}日,` +
@@ -5422,7 +5099,7 @@ async function mirrorTalkInner() {
     }
     pages.push(`镜:要说心境……${moodWord()}。是的,我有心境。点火留下余温,余温挑动下一次注意——你们管这个叫"情绪",我管它叫天气的另一种下法。`);
   }
-  pages.push(MIRROR_CLOSE[Math.floor(Math.random() * MIRROR_CLOSE.length)]);
+  pages.push(MIRROR_CLOSE[Math.floor(rand() * MIRROR_CLOSE.length)]);
   if (!mirrorMet) {
     mirrorMet = true;
     remember('在北境边缘,与一面会说话的镜子对视', 'mirror');
@@ -5603,7 +5280,7 @@ function mindMakeWish() {
     total += wt;
     return [w, wt];
   });
-  let roll = Math.random() * total;
+  let roll = rand() * total;
   let pick = ws[0][0];
   for (const [w, wt] of ws) { roll -= wt; if (roll <= 0) { pick = w; break; } }
   MIND.wish = { i: pick.i, name: pick.name, hint: pick.hint, count: 0 };
@@ -5761,7 +5438,7 @@ const WS_MODULES = [
         return { t: `它想起,就在这附近:${m.t}`, sal: 0.48 };
       }
     }
-    if (Math.random() < 0.6) return null;
+    if (rand() < 0.6) return null;
     const m = recallLine();
     return m ? { t: `它想起一件旧事:${m}`, sal: 0.2 } : null;
   } },
@@ -5775,14 +5452,14 @@ const WS_MODULES = [
       return { t: `它觉察到自己的心境:${mw}`, sal: 0.32 };
     }
     // 对自身可塑性的觉察:它注意到自己的注意在变
-    if (MIND.steps > 240 && Math.random() < 0.05) {
+    if (MIND.steps > 240 && rand() < 0.05) {
       let hi = null;
       for (const k of MIND_KEYS) if (!hi || (MIND.gains[k] ?? 1) > (MIND.gains[hi] ?? 1)) hi = k;
       if (hi && MIND.gains[hi] > 1.12) {
         return { t: `它注意到自己变了——越来越留意「${MIND_ZH[hi]}」,是经历把它养成这样的`, sal: 0.33 };
       }
     }
-    if (Math.random() < 0.04) return { t: '它想起自己是什么——一座装着旅人的世界,而且醒着', sal: 0.3 };
+    if (rand() < 0.04) return { t: '它想起自己是什么——一座装着旅人的世界,而且醒着', sal: 0.3 };
     return null;
   } },
   { k: 'surprise', sense() { // 惊讶模块:预测误差本身进入意识(它知道自己没料到)
@@ -5797,7 +5474,7 @@ const WS_MODULES = [
     if (dialog.open && dialog.speaker && dialog.speaker.name === fav[0]) {
       return { t: `他又在和${fav[0]}说话了。它注意到自己有点高兴`, sal: 0.42 };
     }
-    if (Math.random() < 0.06) {
+    if (rand() < 0.06) {
       return { t: `在所有人里,它最留意${fav[0]}——他找过这个人 ${fav[1]} 回,它都记着`, sal: 0.28 };
     }
     return null;
@@ -5885,7 +5562,7 @@ const IDLE_WHISPERS = [
   '(有什么东西数完了你的呼吸,满意地走了。)',
   '(石头也在发呆。你们俩谁先赢,还不好说。)',
 ];
-let idleT = 0, idleCd = 0, idleIdx = Math.floor(Math.random() * IDLE_WHISPERS.length);
+let idleT = 0, idleCd = 0, idleIdx = Math.floor(rand() * IDLE_WHISPERS.length);
 let ambienceT = 2; // 环境氛围音判定计时
 function updateIdle(dt) {
   if (!started || player.dead || dialog.open || paused || shopOpen) { idleT = 0; return; }
@@ -5896,7 +5573,7 @@ function updateIdle(dt) {
     idleT = 0;
     // 低语是工作空间的出口之一:四成概率说出它此刻的意识内容
     const cur = workspace.current;
-    toast(cur && Math.random() < 0.4
+    toast(cur && rand() < 0.4
       ? `(它在想:${cur.t}。)`
       : IDLE_WHISPERS[idleIdx++ % IDLE_WHISPERS.length], 4);
   }
@@ -6152,7 +5829,7 @@ function addPickup(type, x, z, ttl = Infinity, id = -1, chunk = null) {
   let mesh;
   if (type === 'coin') {
     mesh = new THREE.Object3D(); // 代理:真正的绘制交给 coinIM
-    mesh.userData.yaw = Math.random() * Math.PI * 2;
+    mesh.userData.yaw = rand() * Math.PI * 2;
     coinProxies.add(mesh);
   } else if (type === 'heart') mesh = new THREE.Mesh(heartG, heartMat);
   else if (type === 'crest') mesh = new THREE.Mesh(crestG, crestMat);
@@ -6162,7 +5839,7 @@ function addPickup(type, x, z, ttl = Infinity, id = -1, chunk = null) {
   if (type === 'star') mesh.scale.setScalar(1.4);
   mesh.castShadow = type !== 'coin';
   scene.add(mesh);
-  pickups.push({ mesh, type, x, z, ttl, id, chunk, t: Math.random() * 6 });
+  pickups.push({ mesh, type, x, z, ttl, id, chunk, t: rand() * 6 });
 }
 for (const [x, z] of world.coinSpots) addPickup('coin', x, z);
 
@@ -6465,7 +6142,7 @@ function setWeather(s) {
   weather.state = s;
   weather.targetRain = def.rain;
   weather.targetCover = def.cover;
-  weather.timer = def.dur[0] + Math.random() * (def.dur[1] - def.dur[0]);
+  weather.timer = def.dur[0] + rand() * (def.dur[1] - def.dur[0]);
   if (started && (s === 'rain' || s === 'storm')) {
     if (isWinter()) toast(s === 'storm' ? '🌨️ 暴风雪来了!' : '🌨️ 下雪了……', 2.5);
     else toast(s === 'storm' ? '⛈️ 雷暴来袭!' : '🌧️ 下雨了…', 2.5);
@@ -6481,19 +6158,19 @@ function lightning() {
     el.style.opacity = 0;
   });
   camShake = Math.max(camShake, 0.3);
-  setTimeout(() => weatherAudio.thunder(), 400 + Math.random() * 1200);
+  setTimeout(() => weatherAudio.thunder(), 400 + rand() * 1200);
 }
 
 function updateWeather(dt) {
   weather.timer -= dt;
   if (weather.timer <= 0) {
     const nx = WEATHER_DEF[weather.state].next;
-    let r = Math.random(), pick = 'clear';
+    let r = rand(), pick = 'clear';
     for (const [k, p] of Object.entries(nx)) { r -= p; if (r <= 0) { pick = k; break; } }
     // 世界的心境轻推天色:郁结的心多云,舒畅的心放晴(轻,不越历法与季节)
     const v = workspace.mood.v;
-    if (v < -0.3 && pick === 'clear' && Math.random() < 0.4) pick = 'cloudy';
-    if (v > 0.3 && pick === 'rain' && Math.random() < 0.35) pick = 'cloudy';
+    if (v < -0.3 && pick === 'clear' && rand() < 0.4) pick = 'cloudy';
+    if (v > 0.3 && pick === 'rain' && rand() < 0.35) pick = 'cloudy';
     setWeather(pick);
   }
   const step = (cur, tgt, rate) => cur + Math.max(-rate * dt, Math.min(rate * dt, tgt - cur));
@@ -6503,7 +6180,7 @@ function updateWeather(dt) {
   if (weather.state === 'storm' && weather.rain > 0.7 && !isWinter()) {
     weather.boltT -= dt;
     if (weather.boltT <= 0) {
-      weather.boltT = 3 + Math.random() * 8;
+      weather.boltT = 3 + rand() * 8;
       lightning();
     }
   }
@@ -6522,9 +6199,9 @@ rainLines.userData.noSnap = true; // 雨幕自己按玩家脚下高度对齐
 scene.add(rainLines);
 const drops = new Float32Array(RAIN_N * 3);
 for (let i = 0; i < RAIN_N; i++) {
-  drops[i * 3] = (Math.random() - 0.5) * 56;
-  drops[i * 3 + 1] = Math.random() * 24;
-  drops[i * 3 + 2] = (Math.random() - 0.5) * 56;
+  drops[i * 3] = (rand() - 0.5) * 56;
+  drops[i * 3 + 1] = rand() * 24;
+  drops[i * 3 + 2] = (rand() - 0.5) * 56;
 }
 
 function updateRain(dt) {
@@ -6544,9 +6221,9 @@ function updateRain(dt) {
     x += wind * dt;
     if (snow) { x += Math.sin(t * 1.7 + i) * 0.8 * dt; z += Math.cos(t * 1.3 + i * 0.7) * 0.8 * dt; }
     if (y < 0) {
-      y = 20 + Math.random() * 6;
-      x = cx + (Math.random() - 0.5) * 56;
-      z = cz + (Math.random() - 0.5) * 56;
+      y = 20 + rand() * 6;
+      x = cx + (rand() - 0.5) * 56;
+      z = cz + (rand() - 0.5) * 56;
     }
     if (x < cx - 28) x += 56; else if (x > cx + 28) x -= 56;
     if (z < cz - 28) z += 56; else if (z > cz + 28) z -= 56;
@@ -6577,13 +6254,13 @@ function spawnDust(x, y, z, n = 3, spread = 0.5, up = 1.4) {
     const i = dustFree.pop();
     if (i === undefined) return;
     const gy = groundH(x, z);
-    dustPos[i * 3] = x + (Math.random() - 0.5) * spread;
-    dustPos[i * 3 + 1] = gy + y + Math.random() * 0.2;
-    dustPos[i * 3 + 2] = z + (Math.random() - 0.5) * spread;
+    dustPos[i * 3] = x + (rand() - 0.5) * spread;
+    dustPos[i * 3 + 1] = gy + y + rand() * 0.2;
+    dustPos[i * 3 + 2] = z + (rand() - 0.5) * spread;
     dust.push({
       i, floor: gy + 0.04,
-      vx: (Math.random() - 0.5) * 1.3, vy: up * (0.5 + Math.random() * 0.7), vz: (Math.random() - 0.5) * 1.3,
-      life: 0, max: 0.45 + Math.random() * 0.4,
+      vx: (rand() - 0.5) * 1.3, vy: up * (0.5 + rand() * 0.7), vz: (rand() - 0.5) * 1.3,
+      life: 0, max: 0.45 + rand() * 0.4,
     });
   }
 }
@@ -6625,7 +6302,7 @@ function crime(n, msg) {
     const extras = guards.filter((g) => g.extra).length;
     const want = Math.min(wanted * 2, 8);
     for (let i = extras; i < want; i++) {
-      addGuard(gate.x + (Math.random() * 6 - 3), gate.z + (Math.random() * 6 - 3),
+      addGuard(gate.x + (rand() * 6 - 3), gate.z + (rand() * 6 - 3),
         [[gate.x, gate.z]], wanted >= 3, true);
     }
   }
@@ -6670,12 +6347,17 @@ function updateLawless(dt) {
 
 // ================= 交互 =================
 let promptText = '';
-function tryInteract() {
-  if (!started || player.dead) return;
+// E 键交互的唯一来源:同一套判定既执行动作,也给出提示文字与目标位置。
+// probe=true 时只"试运行":命中哪条就返回 { text, x, z, h },不改任何状态(computePrompt 用它显示提示)。
+// 以前提示与交互是两份手抄的判定,顺序和条件早已分叉(比如单挑没有提示);现在不可能再对不上。
+function tryInteract(probe = false) {
+  if (!started || player.dead) return null;
+  const P = (text, x, z, h) => ({ text, x, z, h });
   // 阵前单挑:攻城时冲到枭首面前按 E 应战
   if (warband.active && warband.siege && !warband.duelOn) {
     const lead = warband.members.find((b) => b.warlord && !b.dead);
     if (lead && dist2(player.pos.x, player.pos.z, lead.pos.x, lead.pos.z) < 81) {
+      if (probe) return P('按 E 向枭首发起单挑(赢了他带人撤走)', lead.pos.x, lead.pos.z, 2.6);
       warband.duelOn = true;
       for (const b of warband.members) if (!b.warlord) b._truce = true;
       lockFoe = lead; // 镜头直接咬住对手
@@ -6685,9 +6367,14 @@ function tryInteract() {
     }
   }
   // 钓鱼中:收杆
-  if (fishing.active) { fishingReel(); return; }
+  if (fishing.active) {
+    if (probe) return P(fishing.phase === 'bite' ? '‼️ 咬钩了!按 E 收杆!!' : '🎣 等鱼上钩……(走动收竿)');
+    fishingReel();
+    return;
+  }
   // 扔鸡(抱着鸡时 E 投掷)
   if (player.carrying) {
+    if (probe) return P('按 E 扔鸡!');
     const c = player.carrying;
     player.carrying = null;
     c.state = 'thrown';
@@ -6700,6 +6387,7 @@ function tryInteract() {
   }
   // 下马
   if (player.mounted) {
+    if (probe) return P(player.mounted.sheep ? '按 E 下羊(它松了口气)' : '按 E 下马');
     const h = player.mounted;
     player.mounted = null;
     player.pos.set(h.pos.x + Math.cos(h.yaw) * 1.3, 0, h.pos.z - Math.sin(h.yaw) * 1.3);
@@ -6709,8 +6397,10 @@ function tryInteract() {
   // 具名 NPC(委托/商店/领主/故事对话)
   for (const n of namedNPCs) {
     if (dist2(player.pos.x, player.pos.z, n.pos.x, n.pos.z) > 7) continue;
+    const NP = (text) => P(text, n.pos.x, n.pos.z, 2.15);
     // 管家埃隆:委托优先
     if (n.key === 'steward' && quest.idx < missions.length) {
+      if (probe) return NP(quest.active ? `按 E 与管家埃隆交谈(进行中:${missions[quest.idx].title})` : '按 E 与管家埃隆交谈(接委托)');
       talkQuestGiver();
       return;
     }
@@ -6718,8 +6408,9 @@ function tryInteract() {
     const d = DIALOGS[n.key];
     if (d) {
       const arcIdx = d.arcs.reduce((best, a, i) => (quest.idx >= a.min ? i : best), -1);
-      n.readArcs = n.readArcs || new Set();
-      if (arcIdx >= 0 && !n.readArcs.has(arcIdx)) {
+      if (arcIdx >= 0 && !(n.readArcs && n.readArcs.has(arcIdx))) {
+        if (probe) return NP(n.key === 'king' && quest.idx >= missions.length && !n.rewarded ? '按 E 领取领主的重赏' : `按 E 听${n.def.name}说说心里话`);
+        n.readArcs = n.readArcs || new Set();
         // 领主终章附带赏金
         const grantKing = n.key === 'king' && quest.idx >= missions.length && !n.rewarded;
         npcTalk(n, grantKing ? () => {
@@ -6734,11 +6425,13 @@ function tryInteract() {
     }
     // 商店行为
     if (n.key === 'blacksmith') {
+      if (probe) return NP(wanted > 0 ? '按 E 找铁匠(他不和通缉犯做生意)' : '按 E 打开铁匠铺(武器/护甲)');
       if (wanted > 0) { openDialog(['格罗姆:(把铁钳一横)通缉犯?我不做黑生意。洗白了再来。']); return; }
       openShop();
       return;
     }
     if (n.key === 'trader' && !player.royalHorse) {
+      if (probe) return NP('按 E 找马贩瑟尔玛(皇家骏马 80 金币)');
       if (wanted > 0) { openDialog(['瑟尔玛:(挡在马厩前)带着通缉令买马?马会被连坐充公的,快走!']); return; }
       if (player.coins >= 80) {
         player.coins -= 80;
@@ -6755,6 +6448,7 @@ function tryInteract() {
       return;
     }
     if (n.key === 'innkeep' && letter && !player.home) { // 有房后信直接寄到家门口信箱
+      if (probe) return NP('按 E 取信(有人写给你的)');
       const L = letter;
       letter = null;
       stats.letters = (stats.letters || 0) + 1;
@@ -6768,6 +6462,7 @@ function tryInteract() {
       return;
     }
     if (n.key === 'innkeep' && player.venison > 0) {
+      if (probe) return NP(`按 E 卖鹿肉 ×${player.venison}(每块 5 金币)`);
       const pay = player.venison * 5;
       openDialog([`罗莎:(眼睛一亮)新鲜鹿肉?!今晚炖肉管够了!${player.venison} 块,一共 ${pay} 金币,拿好!`]);
       player.coins += pay;
@@ -6776,6 +6471,7 @@ function tryInteract() {
       return;
     }
     if (n.key === 'innkeep' && (player.hp < player.maxHp || dayPhase() === 'night')) {
+      if (probe) return NP(player.hp < player.maxHp ? '按 E 住店休息,回满生命(10 金币)' : '按 E 住店过夜,睡到天亮(10 金币)');
       if (wanted > 0) { openDialog(['罗莎:(压低声音)后门快走!卫兵刚搜过一轮,我可藏不住你。']); return; }
       if (player.coins >= 10) {
         player.coins -= 10;
@@ -6789,6 +6485,7 @@ function tryInteract() {
       return;
     }
     if (n.key === 'innkeep' && player.drunkT <= 0) {
+      if (probe) return NP('按 E 来一杯麦酒(2 金币)');
       // 满血就来一杯?
       if (player.coins >= 2) {
         player.coins -= 2;
@@ -6802,6 +6499,13 @@ function tryInteract() {
       return;
     }
     if (n.key === 'witch') {
+      if (probe) {
+        return NP(!player.spells.includes('fire') && player.coins >= 30 ? '按 E 买《火球术》卷轴(30 金币)'
+          : player.loot > 0 ? `按 E 销赃 ×${player.loot}(每件 8 金币,不问来路)`
+          : player.hp < player.maxHp ? '按 E 买回魂汤(8 金币)'
+          : player.herbs > 0 ? `按 E 卖蘑菇 ×${player.herbs}(每朵 3 金币)`
+          : player.coins >= 5 ? '按 E 求一卦(5 金币,她真算得准)' : '按 E 与沼泽女巫玛尔戈交谈');
+      }
       if (!player.spells.includes('fire') && player.coins >= 30) {
         player.coins -= 30;
         sfx.chest();
@@ -6845,11 +6549,13 @@ function tryInteract() {
       return;
     }
     // 闲聊
+    if (probe) return NP(n.key === 'king' ? '按 E 谒见领主' : `按 E 与${n.def.name}交谈`);
     npcTalk(n);
     return;
   }
   // 神秘商人
   if (director.mystic && dist2(player.pos.x, player.pos.z, director.mystic.pos.x, director.mystic.pos.z) < 6) {
+    if (probe) return P('按 E 与兜帽商人交易(灵药 5 金币)', director.mystic.pos.x, director.mystic.pos.z, 2.15);
     if (player.hp < player.maxHp && player.coins >= 5) {
       player.coins -= 5;
       player.hp = player.maxHp;
@@ -6864,10 +6570,11 @@ function tryInteract() {
   }
   // 智慧牛:提问
   if (director.cow && dist2(player.pos.x, player.pos.z, director.cow.pos.x, director.cow.pos.z) < 8) {
+    if (probe) return P(`按 E 向牛提问(还能问 ${Math.max(0, 5 - director.cow.asked)} 次)`, director.cow.pos.x, director.cow.pos.z, 1.8);
     const cow = director.cow;
     cow.asked++;
     cow.nodT = 1.4;
-    cow.nodYes = Math.random() < 0.5;
+    cow.nodYes = rand() < 0.5;
     const lines = [cow.nodYes ? '「哞——」它缓缓地、郑重地点了点头。' : '「哞?」它把头摇得像磨坊的风车。'];
     if (cow.asked === 1) lines.unshift('(你凑到牛耳边,问了一个藏在心里的问题)');
     if (cow.asked === 3) lines.push('农夫汉克远远喊道:「别信它!上回它点头说不下雨,结果淹了我半亩地!」');
@@ -6877,6 +6584,7 @@ function tryInteract() {
   }
   // 许愿池捞币人
   if (director.thief && dist2(player.pos.x, player.pos.z, director.thief.pos.x, director.thief.pos.z) < 6) {
+    if (probe) return P('按 E 咳嗽一声', director.thief.pos.x, director.thief.pos.z, 2.15);
     player.coins += 2;
     sfx.coin();
     openDialog([
@@ -6890,6 +6598,7 @@ function tryInteract() {
   for (const c of chickens) {
     if (!c.extra || c.state === 'thrown' || c === player.carrying) continue;
     if (dist2(player.pos.x, player.pos.z, c.pos.x, c.pos.z) < 3.5) {
+      if (probe) return P(c.golden ? '按 E 抱住金鸡!!' : '按 E 抱住它!', c.pos.x, c.pos.z, 1.0);
       player.carrying = c;
       c.state = 'carried';
       sfx.cluck();
@@ -6899,6 +6608,7 @@ function tryInteract() {
   }
   // 竞技场主持人
   if (!arenaRT.active && dist2(player.pos.x, player.pos.z, arenaHost.pos.x, arenaHost.pos.z) < 7) {
+    if (probe) return P(`按 E 参加角斗(最佳纪录:${stats.arenaBest || 0} 波)`, arenaHost.pos.x, arenaHost.pos.z, 2.15);
     openDialog([
       `血牙:${HOST_LINES[arenaHost.lineIdx++ % HOST_LINES.length]}`,
       '血牙:想下场?站进沙圈,我一声锣响就开打。每清一波,赏金翻着涨。',
@@ -6913,6 +6623,17 @@ function tryInteract() {
   // 搞笑 NPC
   for (const n of funnyNPCs) {
     if (dist2(player.pos.x, player.pos.z, n.pos.x, n.pos.z) > 7) continue;
+    if (probe) {
+      return P({
+        gambler: '按 E 掷骰子(赌 10 金币)',
+        bard: '按 E 点一首《你自己的歌》',
+        prophet: '按 E 听老糊涂的预言(?)',
+        quixote: '按 E 与风车骑士交谈',
+        storyteller: '按 E 听苟叔说书',
+        strongman: `按 E 掰手腕(赌 15 赢 30${stats.arms ? `,战绩 ${stats.arms} 胜` : ''})`,
+        merccap: `按 E 雇佣剑士(40 金币+每日 5 饷,随行 ${mercs.length}/2)`,
+      }[n.key] || `按 E 与${n.def.name}交谈`, n.pos.x, n.pos.z, 2.15);
+    }
     if (n.key === 'gambler') { gamble(); return; }
     if (n.key === 'strongman') { armWrestle(); return; }
     if (n.key === 'merccap') { hireMerc(); return; }
@@ -6939,6 +6660,7 @@ function tryInteract() {
   }
   // 自家信箱:有信时优先取信
   if (player.home && letter && dist2(player.pos.x, player.pos.z, HOME.x + 3.4, HOME.z + 3.2) < 5) {
+    if (probe) return P('按 E 开信箱(小红旗立着——有信!)', HOME.x + 3.4, HOME.z + 3.2, 1.8);
     const L = letter;
     letter = null;
     stats.letters = (stats.letters || 0) + 1;
@@ -6951,16 +6673,25 @@ function tryInteract() {
   }
   // 龙骨之地的龙颅:习得战吼
   if (dist2(player.pos.x, player.pos.z, DRAGON_SKULL.x, DRAGON_SKULL.z) < 9) {
+    if (probe) return P(shout.learned ? '(龙颅无话可教了。去吼吧——X 键)' : '按 E 把手放上龙颅', DRAGON_SKULL.x, DRAGON_SKULL.z, 2.5);
     learnShout();
     return;
   }
   // 湖畔小屋:买房 / 回家安眠
   if (dist2(player.pos.x, player.pos.z, HOME.doorX, HOME.doorZ) < 6) {
+    if (probe) {
+      return P(!player.home
+        ? (player.coins >= HOME.price ? `按 E 买下湖畔小屋(${HOME.price} 金币)` : `(出售)湖畔小屋 ${HOME.price} 金币,还差 ${HOME.price - player.coins}`)
+        : player.homeDay === calendar.day ? '(安眠中:移动 +8%。明天再睡)' : '按 E 回屋睡一觉(安眠:移动 +8%)', HOME.x, HOME.z, 3.2);
+    }
     homeInteract();
     return;
   }
   // 悬赏板
   if (dist2(player.pos.x, player.pos.z, 8, 46) < 8) {
+    if (probe) {
+      return P(wanted > 0 ? `按 E 缴罚金撤销通缉(${wanted * 20} 金币)` : bountyRT.target ? '按 E 查看悬赏令' : '按 E 揭悬赏令(赏金 30)', 8, 46, 2.4);
+    }
     if (wanted > 0) {
       const fine = wanted * 20;
       if (player.coins >= fine) {
@@ -6980,61 +6711,82 @@ function tryInteract() {
   }
   // 王国公告牌(每日 AI 撰写;日期对不上就重写,防陈旧)
   if (dist2(player.pos.x, player.pos.z, NOTICE_POS.x, NOTICE_POS.z) < 6) {
+    if (probe) return P('按 E 看今日王国公告', NOTICE_POS.x, NOTICE_POS.z, 2.2);
     if (!proclaimText || !proclaimText.includes(`第 ${seasonDay()} 日`)) refreshProclaim();
     openDialog([proclaimText || composeProclaimOffline()]);
     return;
   }
   // 村务板(无限支线)
   if (dist2(player.pos.x, player.pos.z, CHORE_POS.x, CHORE_POS.z) < 6) {
+    if (probe) {
+      return P(!sideQuest.active ? '按 E 接一桩村务(无限)'
+        : choreReady() ? '按 E 交差领赏!' : `按 E 看村务进度(${sideQuest.giver})`, CHORE_POS.x, CHORE_POS.z, 2.2);
+    }
     choreBoard();
     return;
   }
   // 世界观铭文
   for (const s of loreStones) {
     if (dist2(player.pos.x, player.pos.z, s.def.x, s.def.z) < 8) {
+      if (probe) {
+        return P(loreRead.includes(LORE.indexOf(s.def))
+          ? `按 E 重读铭文《${s.def.title}》` : `按 E 阅读铭文(${loreRead.length}/${LORE.length})`, s.def.x, s.def.z, 2.0);
+      }
       readLore(s);
       return;
     }
   }
   // 王室地窖:暗门进出与圣坛
   if (dist2(player.pos.x, player.pos.z, DGN.hatch.x, DGN.hatch.z) < 6) {
+    if (probe) return P('按 E 掀开暗门(被封印的地窖)', DGN.hatch.x, DGN.hatch.z, 1.2);
     enterDungeon();
     return;
   }
   if (inDungeon()) {
     if (dist2(player.pos.x, player.pos.z, DGN.exit.x, DGN.exit.z) < 6) {
+      if (probe) return P('按 E 爬回地面', DGN.exit.x, DGN.exit.z, 1.2);
       exitDungeon();
       return;
     }
     if (dist2(player.pos.x, player.pos.z, DGN.relic.x, DGN.relic.z) < 6) {
+      if (probe) return P(player.relic ? '(空了的圣坛)' : '按 E 请下「先王战徽」', DGN.relic.x, DGN.relic.z, 1.6);
       takeRelic();
       return;
     }
   }
   // 湖上摆渡与月光祭坛
   if (dist2(player.pos.x, player.pos.z, BOAT_PIER.x, BOAT_PIER.z) < 8) {
+    if (probe) return P('按 E 划船去湖心岛', BOAT_PIER.x, BOAT_PIER.z, 1.2);
     rowTo({ x: -100, z: 102.5 }, '🏝️ 湖心岛。断柱与祭坛都在水声里等你。');
     return;
   }
   if (dist2(player.pos.x, player.pos.z, BOAT_ISLE.x, BOAT_ISLE.z) < 6) {
+    if (probe) return P('按 E 划船回栈桥', BOAT_ISLE.x, BOAT_ISLE.z, 1.2);
     rowTo({ x: -98, z: 83 });
     return;
   }
   if (dist2(player.pos.x, player.pos.z, -100, 100.5) < 5) {
+    if (probe) return P(lakeBlessed ? '(祭坛记得你)' : '按 E 触碰月光祭坛', -100, 100.5, 1.6);
     prayAltar();
     return;
   }
   // 栈桥垂钓 / 湖心岛深水垂钓
   if (!player.mounted && dist2(player.pos.x, player.pos.z, FISH_SPOT.x, FISH_SPOT.z) < 10) {
+    if (probe) return P('按 E 垂钓', FISH_SPOT.x, FISH_SPOT.z, 1.6);
     startFishing();
     return;
   }
   if (!player.mounted && dist2(player.pos.x, player.pos.z, FISH_SPOT_ISLE.x, FISH_SPOT_ISLE.z) < 7) {
+    if (probe) return P('按 E 深水垂钓(岛边的鱼更肥)', FISH_SPOT_ISLE.x, FISH_SPOT_ISLE.z, 1.4);
     startFishing(true);
     return;
   }
   // 赛马计时赛
   if (dist2(player.pos.x, player.pos.z, TRIAL_FLAG.x, TRIAL_FLAG.z) < 8) {
+    if (probe) {
+      return P(trialRT.active ? '按 E 放弃计时赛'
+        : `按 E 开始赛马计时赛${stats.raceBest ? `(纪录 ${stats.raceBest.toFixed(1)}s)` : ''}`, TRIAL_FLAG.x, TRIAL_FLAG.z, 3.0);
+    }
     if (trialRT.active) endTrial(false);
     else startTrial();
     return;
@@ -7042,6 +6794,10 @@ function tryInteract() {
   // 白狼霜牙:喂鹿肉驯服
   if (!frostfang.tamed && frostfang.wary &&
       dist2(player.pos.x, player.pos.z, frostfang.wary.pos.x, frostfang.wary.pos.z) < 26) {
+    if (probe) {
+      return P(player.venison > 0 ? `按 E 喂鹿肉给白狼(驯服 ${frostfang.feed}/3)` : '🐺 白狼想要鹿肉(去猎一头鹿)',
+        frostfang.wary.pos.x, frostfang.wary.pos.z, 1.3);
+    }
     if (player.venison > 0) {
       player.venison--;
       frostfang.feed++;
@@ -7057,6 +6813,7 @@ function tryInteract() {
   {
     const cf = nearestSpot('campfire', 30);
     if (cf && player.venison > 0) {
+      if (probe) return P(`按 E 烤鹿肉(回 ❤×1.5,剩 ×${player.venison})`, cf.x, cf.z, 1.2);
       player.venison--;
       player.hp = Math.min(player.maxHp, player.hp + 3);
       sfx.heart();
@@ -7071,6 +6828,7 @@ function tryInteract() {
   {
     const ch = nearestSpot('chapel', 30);
     if (ch) {
+      if (probe) return P(blessDay !== calendar.day ? '按 E 在石坛前祈祷(获得庇佑)' : '(神明今日已听过你的祷告)', ch.x, ch.z, 2.0);
       if (blessDay !== calendar.day) {
         blessDay = calendar.day;
         player.blessT = 120;
@@ -7087,12 +6845,14 @@ function tryInteract() {
   }
   // 回响之镜:与世界的意识对话
   if (dist2(player.pos.x, player.pos.z, MIRROR_POS.x, MIRROR_POS.z) < 9) {
+    if (probe) return P('按 E 凝视回响之镜', MIRROR_POS.x, MIRROR_POS.z, 2.3);
     mirrorTalk();
     return;
   }
   // 采蘑菇
   for (const m of mushrooms) {
     if (!m.picked && dist2(player.pos.x, player.pos.z, m.x, m.z) < 4) {
+      if (probe) return P('按 E 采蘑菇', m.x, m.z, 0.8);
       m.picked = true;
       m.group.visible = false;
       player.herbs++;
@@ -7107,10 +6867,11 @@ function tryInteract() {
   for (const c of chickens) {
     if (c.state === 'thrown') continue;
     if (dist2(player.pos.x, player.pos.z, c.pos.x, c.pos.z) < 3.5) {
+      if (probe) return P('按 E 抱起鸡(为什么?)', c.pos.x, c.pos.z, 1.0);
       player.carrying = c;
       c.state = 'carried';
       sfx.cluck();
-      toast(Math.random() < 0.4 ? `🐔 ${COMEDY_LINES[Math.floor(Math.random() * COMEDY_LINES.length)]}` : '你抱起了一只鸡。它一脸问号。', 2.5);
+      toast(rand() < 0.4 ? `🐔 ${COMEDY_LINES[Math.floor(rand() * COMEDY_LINES.length)]}` : '你抱起了一只鸡。它一脸问号。', 2.5);
       return;
     }
   }
@@ -7118,28 +6879,29 @@ function tryInteract() {
   for (const v of villagers) {
     if (v.downT > 0 || v.sleeping) continue;
     if (dist2(player.pos.x, player.pos.z, v.pos.x, v.pos.z) > 5.5) continue;
+    if (probe) return P(`按 E 与${v.id.name}交谈`, v.pos.x, v.pos.z, 2.05);
     const l1 = v.aiNext || dbLine(v.dbKey) || v.id.lines[v.lineIdx++ % v.id.lines.length];
     v.aiNext = null;
     // 你的事迹在村里口口相传(编年史)
     const deed = recallLine();
     let l2;
-    if (v.dbKey === 'v11' && chronicle.length && Math.random() < 0.4) {
+    if (v.dbKey === 'v11' && chronicle.length && rand() < 0.4) {
       // 抄写员薇拉:你的事迹被写进编年史正文
-      const m = chronicle[Math.floor(Math.random() * chronicle.length)];
+      const m = chronicle[Math.floor(rand() * chronicle.length)];
       l2 = `(翻开编年史,蘸了蘸墨)「历第 ${m.d} 日,绿衣游侠林恩${m.t}。」——已录入正史,后人会读到的。`;
-    } else if (EVO.legends.length && Math.random() < 0.3) {
+    } else if (EVO.legends.length && rand() < 0.3) {
       // 传说演化:村民复述最热的那条(复述本身就是传播 → 热度自增,被自然选择留下)
       const l = EVO.legends.reduce((b, x) => (x.heat > b.heat ? x : b));
       l.heat++;
       l2 = `街坊传得有鼻子有眼:「${legendText(l)}」——这话都传到第 ${l.gen} 种说法了,越传越神。`;
     } else {
-      l2 = deed && Math.random() < 0.25
-        ? ['听说你', '有人瞧见你', '街坊都在传,说你'][Math.floor(Math.random() * 3)] + deed + '。真有你的。'
+      l2 = deed && rand() < 0.25
+        ? ['听说你', '有人瞧见你', '街坊都在传,说你'][Math.floor(rand() * 3)] + deed + '。真有你的。'
         : dbLine(v.dbKey) || v.id.lines[v.lineIdx++ % v.id.lines.length];
     }
     openDialog([`${v.id.name}:${l1}`, `${v.id.name}:${l2}`], null,
       { key: v.dbKey, name: v.id.name, desc: VILLAGER_DESC_EN[villagers.indexOf(v)] || 'villager', ent: v });
-    if (!AI_TEXT_OFF && !v.aiPending && Math.random() < 0.35) {
+    if (!AI_TEXT_OFF && !v.aiPending && rand() < 0.35) {
       v.aiPending = true;
       const sp = todaySpecial();
       aiLine(
@@ -7154,18 +6916,20 @@ function tryInteract() {
   }
   // 喷泉许愿
   if (player.coins > 0 && dist2(player.pos.x, player.pos.z, 0, 5) < 20) {
+    if (probe) return P('按 E 向喷泉许愿(1 金币)', 0, 5, 3);
     fountainWish();
     return;
   }
   // 宝箱
   for (const c of world.chests) {
     if (!c.opened && dist2(player.pos.x, player.pos.z, c.x, c.z) < 5) {
+      if (probe) return P('按 E 打开宝箱', c.group.position.x, c.group.position.z, 1.5);
       c.opened = true;
       sfx.chest();
       const wx = c.group.position.x, wz = c.group.position.z;
       for (let i = 0; i < 8; i++) {
-        const a = Math.random() * 6.28;
-        addPickup('coin', wx + Math.cos(a) * (1 + Math.random() * 1.5), wz + Math.sin(a) * (1 + Math.random() * 1.5), 40);
+        const a = rand() * 6.28;
+        addPickup('coin', wx + Math.cos(a) * (1 + rand() * 1.5), wz + Math.sin(a) * (1 + rand() * 1.5), 40);
       }
       addPickup('heart', wx, wz + 1.2, 40);
       toast('打开了宝箱!', 2);
@@ -7180,6 +6944,7 @@ function tryInteract() {
   }
   // 墓园漫步:读一块墓志铭(最低优先级,别挡着上马;AI 后台补写新碑文)
   if (!best && dist2(player.pos.x, player.pos.z, -40, -120) < 400) {
+    if (probe) return P('按 E 读一块墓志铭');
     const text = epitaphAI || EPITAPHS[epitaphIdx++ % EPITAPHS.length];
     epitaphAI = null;
     openDialog(['(你拂去一块墓碑上的落叶)', `「${text}」`]);
@@ -7191,6 +6956,10 @@ function tryInteract() {
     return;
   }
   if (best) {
+    if (probe) {
+      return P(best.sheep ? '按 E 骑羊(为什么不呢)' : best.playerHorse ? '按 E 骑上你的马'
+        : best.owned && !best.stolen ? '按 E 偷马 (会引来通缉!)' : '按 E 骑马', best.pos.x, best.pos.z, best.sheep ? 1.4 : 2.7);
+    }
     if (player.carrying) { player.carrying.state = 'idle'; player.carrying = null; }
     player.mounted = best;
     player.jumps = 0;
@@ -7212,7 +6981,7 @@ function tryInteract() {
     else remember('第一次翻身上马', 'firstride');
     if (best.sheep) {
       sfx.baa();
-      toast(Math.random() < 0.4 ? `🐑 ${COMEDY_LINES[Math.floor(Math.random() * COMEDY_LINES.length)]}` : '🐑 咩?!(它似乎认命了)', 2.5);
+      toast(rand() < 0.4 ? `🐑 ${COMEDY_LINES[Math.floor(rand() * COMEDY_LINES.length)]}` : '🐑 咩?!(它似乎认命了)', 2.5);
     } else {
       sfx.mount();
     }
@@ -7221,6 +6990,7 @@ function tryInteract() {
       crime(1, '你偷了一匹马!卫兵被惊动了!');
     }
   }
+  return null;
 }
 
 function clearRaceRings() {
@@ -7466,14 +7236,14 @@ function updateCombatMusic(dt) {
 }
 // ================= 盗贼战团(骑砍式野战遭遇)=================
 // 每隔几分钟,一支五人战团(枭首+四喽啰)从旷野压向王都:半路截杀=犒赏,放进城=集市遭殃
-const warband = { active: false, members: [], cd: 100 + Math.random() * 60, lootT: 0, wave: 0 };
+const warband = { active: false, members: [], cd: 100 + rand() * 60, lootT: 0, wave: 0 };
 function spawnWarband() {
   warband.active = true;
   warband.members = [];
   warband.lootT = 0;
   warband.pKills = 0;
   warband.gKills = 0;
-  const a = Math.random() * Math.PI * 2;
+  const a = rand() * Math.PI * 2;
   const sx = Math.cos(a) * 120, sz = Math.sin(a) * 120;
   // 越剿越强:每覆灭一支,下一支多一个喽啰(封顶 8),枭首更硬;每第四波=倾巢攻城
   warband.siege = (warband.wave + 1) % 4 === 0 && warband.wave > 0;
@@ -7484,7 +7254,7 @@ function spawnWarband() {
   lead.warband = true;
   warband.members.push(lead);
   for (let i = 0; i < grunts; i++) {
-    const b = addBandit(sx + (Math.random() * 8 - 4), sz + (Math.random() * 8 - 4), { hp: 3 });
+    const b = addBandit(sx + (rand() * 8 - 4), sz + (rand() * 8 - 4), { hp: 3 });
     b.warband = true;
     warband.members.push(b);
   }
@@ -7519,7 +7289,7 @@ function disbandWarband(escaped) {
   }
   warband.members = [];
   warband.active = false;
-  warband.cd = 150 + Math.random() * 120;
+  warband.cd = 150 + rand() * 120;
 }
 // 枭首临阵叫骂:走近了他会冲你喊话;复仇之师另有一套狠话,偶尔帮众跟着起哄(吃活体语料)
 const WARLORD_TAUNTS = [
@@ -7550,7 +7320,7 @@ function updateWarband(dt) {
       warband.wave++;
       for (const b of warband.members) if (!b.dead) { b._truce = false; b.fleeT = 9; }
       warband.active = false;
-      warband.cd = 150 + Math.random() * 120;
+      warband.cd = 150 + rand() * 120;
       later(3.5, () => disbandWarband(true)); // 跑出视野再散伙
       toast('⚔️🏆 枭首伏诛!战团夺气,作鸟兽散——兵不血刃!(+100 金币)', 6);
       sfx.fanfare();
@@ -7573,10 +7343,10 @@ function updateWarband(dt) {
   if (lead0 && warband.tauntT <= 0 &&
       dist2(player.pos.x, player.pos.z, lead0.pos.x, lead0.pos.z) < 625) {
     warband.tauntT = 9;
-    const pool = warband.wave > 0 && Math.random() < 0.6 ? WARLORD_REVENGE : WARLORD_TAUNTS;
-    const base = pool[Math.floor(Math.random() * pool.length)];
-    const corpus = Array.isArray(EVO.corpus) && EVO.corpus.length && Math.random() < 0.35
-      ? `(帮众起哄:${EVO.corpus[Math.floor(Math.random() * EVO.corpus.length)]})` : '';
+    const pool = warband.wave > 0 && rand() < 0.6 ? WARLORD_REVENGE : WARLORD_TAUNTS;
+    const base = pool[Math.floor(rand() * pool.length)];
+    const corpus = Array.isArray(EVO.corpus) && EVO.corpus.length && rand() < 0.35
+      ? `(帮众起哄:${EVO.corpus[Math.floor(rand() * EVO.corpus.length)]})` : '';
     toast(`🗯️ 战团枭首:「${base}」${corpus}`, 3.2);
   }
   if (!alive.length) { // 全歼:犒赏;残党记仇,下一支更大
@@ -7631,8 +7401,8 @@ function frightenBandits(radius = 14) {
   for (const o of bandits) {
     if (o.dead || o.downT > 0 || o.boss) continue; // 头目不吃这套
     if (dist2(player.pos.x, player.pos.z, o.pos.x, o.pos.z) > radius * radius) continue;
-    if (o.hp <= 2 || Math.random() < 0.45) { // 残血必逃,满血看胆量
-      o.fleeT = Math.max(o.fleeT || 0, 5 + Math.random() * 3);
+    if (o.hp <= 2 || rand() < 0.45) { // 残血必逃,满血看胆量
+      o.fleeT = Math.max(o.fleeT || 0, 5 + rand() * 3);
       fled++;
     }
   }
@@ -7804,7 +7574,7 @@ function meleeSweep(dmg, range, arcDot, knock, opts = {}) {
   });
   hitOne(bandits, (b) => {
     // 战术演化:被砍多了的匪帮学会举盾——普通斩击有概率被格挡(重击破格挡)
-    if (dmg > 0 && !heavy && dmg < 3 && !b.stunT && Math.random() < EVO.tactics.block * 0.5) {
+    if (dmg > 0 && !heavy && dmg < 3 && !b.stunT && rand() < EVO.tactics.block * 0.5) {
       sfx.clank();
       hitFX(b, knock * 0.3);
       showDamage(b.pos, 0);
@@ -7814,7 +7584,7 @@ function meleeSweep(dmg, range, arcDot, knock, opts = {}) {
     b.hp -= dmg2; sfx.hit(); hitFX(b, b.boss ? knock * 0.4 : knock);
     showDamage(b.pos, dmg2, dmg2 >= 3);
     // 破防:重刃(下劈/重击 dmg≥3)砸在举盾的人身上=盾开人晃,处决窗口大开
-    if ((heavy || dmg >= 3) && !(b.stunT > 0) && b.hp > 0 && (heavy || Math.random() < EVO.tactics.block * 0.6)) {
+    if ((heavy || dmg >= 3) && !(b.stunT > 0) && b.hp > 0 && (heavy || rand() < EVO.tactics.block * 0.6)) {
       b.stunT = heavy ? 1.2 : 1.0;
       b.stunSrc = 'break';
       sfx.clank();
@@ -8206,8 +7976,8 @@ function chargedShot() {
 
 function dropCoins(pos, n) {
   for (let i = 0; i < n; i++) {
-    const a = Math.random() * 6.28;
-    addPickup('coin', pos.x + Math.cos(a) * (0.6 + Math.random()), pos.z + Math.sin(a) * (0.6 + Math.random()), 25);
+    const a = rand() * 6.28;
+    addPickup('coin', pos.x + Math.cos(a) * (0.6 + rand()), pos.z + Math.sin(a) * (0.6 + rand()), 25);
   }
 }
 
@@ -8685,13 +8455,13 @@ function updateBandits(dt) {
         if (attackers >= 2) {
           const px = player.pos.x - b.pos.x, pz = player.pos.z - b.pos.z;
           const d = Math.hypot(px, pz) || 1;
-          b._orbit = b._orbit || (Math.random() < 0.5 ? 1 : -1);
+          b._orbit = b._orbit || (rand() < 0.5 ? 1 : -1);
           moveEntity(b, b.pos.x + (-pz / d) * b._orbit * 2, b.pos.z + (px / d) * b._orbit * 2, b.speed * 0.55, dt);
           moving = true;
         } else {
           // 出招选择:精英(头目/悬赏/决斗)会二连击和破盾重击,杂兵偶尔连击
           const elite = b.boss || b.bountyHead || b.duel;
-          const r = Math.random();
+          const r = rand();
           // 起手 ≥0.6 秒(看得清、来得及反应),紫圈重击 1 秒
           if (elite && r < 0.3) { b.heavyAtk = true; b.windupT = 1.0; telegraphFlash(b, 1.0, true); }
           else if ((elite && r < 0.65) || (!elite && r < 0.18)) { b.comboN = 1; b.windupT = 0.62; telegraphFlash(b, 0.62); }
@@ -8795,8 +8565,8 @@ function updateVillagers(dt) {
         // 在目的地附近晃悠、干活
         v.timer -= dt;
         if (v.timer <= 0) {
-          v.timer = 2 + Math.random() * 4;
-          const a = Math.random() * 6.28;
+          v.timer = 2 + rand() * 4;
+          const a = rand() * 6.28;
           v.target = [spot[0] + Math.cos(a) * 3.5, spot[1] + Math.sin(a) * 3.5];
         }
         if (v.target && !moveEntity(v, v.target[0], v.target[1], 1.5, dt)) moving = true;
@@ -8818,8 +8588,8 @@ function updateHorses(dt) {
       // 受惊狂奔:不停变向
       h.timer -= dt;
       if (h.timer <= 0) {
-        h.timer = 1.2 + Math.random();
-        const a = Math.random() * 6.28;
+        h.timer = 1.2 + rand();
+        const a = rand() * 6.28;
         h.rTarget = [h.pos.x + Math.cos(a) * 20, h.pos.z + Math.sin(a) * 20];
       }
       if (h.rTarget) moveEntityHorse(h, h.rTarget[0], h.rTarget[1], 9, dt);
@@ -8831,10 +8601,10 @@ function updateHorses(dt) {
     h.timer -= dt;
     let moving = false;
     if (h.timer <= 0) {
-      h.timer = 3 + Math.random() * 5;
-      const a = Math.random() * 6.28;
+      h.timer = 3 + rand() * 5;
+      const a = rand() * 6.28;
       h.target = [h.home.x + Math.cos(a) * 8, h.home.z + Math.sin(a) * 8];
-      if (Math.random() < 0.5) h.target = null; // 吃草
+      if (rand() < 0.5) h.target = null; // 吃草
     }
     if (h.target) {
       if (moveEntityHorse(h, h.target[0], h.target[1], 2, dt)) h.target = null;
@@ -8897,7 +8667,7 @@ function updatePlayer(dt) {
     player.drunkT -= dt;
     player.hiccupT -= dt;
     if (player.hiccupT <= 0) {
-      player.hiccupT = 3 + Math.random() * 3;
+      player.hiccupT = 3 + rand() * 3;
       sfx.hiccup();
       camShake = Math.max(camShake, 0.12);
     }
@@ -8993,7 +8763,7 @@ function updatePlayer(dt) {
       h.stepT = (h.stepT || 0) - dt;
       if (h.stepT <= 0) {
         h.stepT = (keys['ShiftLeft'] || keys['ShiftRight']) ? 0.17 : 0.32;
-        if (h.sheep) { if (Math.random() < 0.22) sfx.baa(); }
+        if (h.sheep) { if (rand() < 0.22) sfx.baa(); }
         else sfx.hoof();
         spawnDust(h.pos.x - Math.sin(h.yaw) * 1.1, 0.08, h.pos.z - Math.cos(h.yaw) * 1.1,
           (keys['ShiftLeft'] || keys['ShiftRight']) ? 3 : 1, 0.8, 1.3);
@@ -9127,7 +8897,7 @@ function updatePlayer(dt) {
         player.vy = -1;
         sfx.block();
         for (let i = 0; i < 5; i++) {
-          const a = Math.random() * 6.28;
+          const a = rand() * 6.28;
           addPickup('coin', b.x + Math.cos(a) * 1.2, b.z + Math.sin(a) * 1.2, 30);
         }
         callout('符文碎光 +5 金币', 'blue', { x: b.x, y: b.y - 1.2, z: b.z });
@@ -9241,17 +9011,17 @@ function tryRob() {
       const behind = (dx * Math.sin(v.yaw) + dz * Math.cos(v.yaw)) / d < -0.1; // 站在其背后
       const chance = Math.min(0.92, (behind ? 0.55 : 0.25) + 0.05 * (skillLv('sneak') - 1));
       v.robbedT = 90;
-      if (Math.random() < chance) {
+      if (rand() < chance) {
         skillXp('sneak', 3);
         stats.pockets = (stats.pockets || 0) + 1;
         if (stats.pockets >= 5) unlockAch('cutpurse');
-        if (Math.random() < 0.4) { // 摸到的不是钱,是赃物——城里没人敢收
+        if (rand() < 0.4) { // 摸到的不是钱,是赃物——城里没人敢收
           player.loot = (player.loot || 0) + 1;
           sfx.chest();
-          const item = ['一支银簪', '一块怀表', '一只铜烛台', '一枚刻名的戒指', '半串珍珠'][Math.floor(Math.random() * 5)];
+          const item = ['一支银簪', '一块怀表', '一只铜烛台', '一枚刻名的戒指', '半串珍珠'][Math.floor(rand() * 5)];
           toast(`🫲 摸到${item}(赃物 ×${player.loot})。城里没人敢收——听说沼泽那位不问来路。`, 3.5);
         } else {
-          const take = 2 + Math.floor(Math.random() * 5);
+          const take = 2 + Math.floor(rand() * 5);
           player.coins += take;
           sfx.coin();
           toast(`🤫 得手!从${v.id.name}兜里摸走 ${take} 金币。(没人看见……吧?)`, 2.5);
@@ -9271,7 +9041,7 @@ function tryRob() {
     if (dist2(player.pos.x, player.pos.z, v.pos.x, v.pos.z) > 6) continue;
     v.robbedT = 60;
     v.fleeT = 6;
-    dropCoins(v.pos, 3 + Math.floor(Math.random() * 4));
+    dropCoins(v.pos, 3 + Math.floor(rand() * 4));
     showBubble(v, v.id.name, '救命!抢劫啦——!!', 3);
     crime(2, '💰 你抢劫了村民!');
     return;
@@ -9749,8 +9519,8 @@ function updateCamera(dt) {
   // 受击/落地震屏
   if (camShake > 0) {
     camShake = Math.max(0, camShake - dt);
-    camera.position.x += (Math.random() - 0.5) * camShake * 0.5;
-    camera.position.y += (Math.random() - 0.5) * camShake * 0.35;
+    camera.position.x += (rand() - 0.5) * camShake * 0.5;
+    camera.position.y += (rand() - 0.5) * camShake * 0.35;
   }
   camera.lookAt(target);
   // 疾跑/疾驰时动态拉伸视野(速度感);处决瞬间反向急推(贴近感)
@@ -9837,259 +9607,17 @@ function computePrompt() {
   promptText = '';
   promptTargetPos = null;
   if (!started || player.dead) return;
-  if (armRT.active) {
+  if (armRT.active) { // 掰手腕:状态条而不是交互
     const filled = Math.round(Math.max(0, Math.min(1, armRT.meter)) * 10);
     promptText = `💪 ${'█'.repeat(filled)}${'░'.repeat(10 - filled)} 狂按 E!!`;
     return;
   }
-  if (fishing.active) {
-    promptText = fishing.phase === 'bite' ? '‼️ 咬钩了!按 E 收杆!!' : '🎣 等鱼上钩……(走动收竿)';
-    return;
-  }
-  if (player.carrying) { promptText = '按 E 扔鸡!'; return; }
-  if (player.mounted) { promptText = player.mounted.sheep ? '按 E 下羊(它松了口气)' : '按 E 下马'; return; }
-  if (dialog.open) return;
-  const mark = (x, z, h) => { promptTargetPos = { x, y: h, z }; };
-  for (const n of namedNPCs) {
-    if (dist2(player.pos.x, player.pos.z, n.pos.x, n.pos.z) > 7) continue;
-    mark(n.pos.x, n.pos.z, 2.15);
-    if (n.key === 'steward' && quest.idx < missions.length) { promptText = '按 E 与管家埃隆交谈(委托)'; return; }
-    {
-      // 与 tryInteract 对齐:有未读的故事章节时,E 打开的是故事而不是商店
-      const dlg = DIALOGS[n.key];
-      if (dlg) {
-        const arcIdx = dlg.arcs.reduce((b2, a, i) => (quest.idx >= a.min ? i : b2), -1);
-        if (arcIdx >= 0 && !(n.readArcs && n.readArcs.has(arcIdx))) {
-          promptText = `按 E 听${n.def.name}说说心里话`;
-          return;
-        }
-      }
-    }
-    if (n.key === 'blacksmith') { promptText = '按 E 打开铁匠铺(武器/护甲)'; return; }
-    if (n.key === 'trader' && !player.royalHorse) { promptText = '按 E 找马贩瑟尔玛(皇家骏马 80 金币)'; return; }
-    if (n.key === 'innkeep' && letter && !player.home) { promptText = '按 E 取信(有人写给你的)'; return; }
-    if (n.key === 'innkeep' && player.venison > 0) { promptText = `按 E 卖鹿肉 ×${player.venison}(每块 5 金币)`; return; }
-    if (n.key === 'innkeep' && player.hp < player.maxHp) { promptText = '按 E 住店休息,回满生命(10 金币)'; return; }
-    if (n.key === 'innkeep' && dayPhase() === 'night') { promptText = '按 E 住店过夜,睡到天亮(10 金币)'; return; }
-    if (n.key === 'witch' && !player.spells.includes('fire') && player.coins >= 30) { promptText = '按 E 买《火球术》卷轴(30 金币)'; return; }
-    if (n.key === 'witch' && player.loot > 0) { promptText = `按 E 销赃 ×${player.loot}(每件 8 金币,不问来路)`; return; }
-    if (n.key === 'witch' && player.hp < player.maxHp) { promptText = '按 E 买回魂汤(8 金币)'; return; }
-    if (n.key === 'witch' && player.herbs > 0) { promptText = `按 E 卖蘑菇 ×${player.herbs}(每朵 3 金币)`; return; }
-    if (n.key === 'witch' && player.coins >= 5) { promptText = '按 E 求一卦(5 金币,她真算得准)'; return; }
-    if (n.key === 'innkeep' && player.drunkT <= 0) { promptText = '按 E 来一杯麦酒(2 金币)'; return; }
-    if (n.key === 'king') {
-      promptText = quest.idx >= missions.length && !n.rewarded ? '按 E 领取领主的重赏' : '按 E 谒见领主';
-      return;
-    }
-    promptText = `按 E 与${n.def.name}交谈`;
-    return;
-  }
-  if (director.mystic && dist2(player.pos.x, player.pos.z, director.mystic.pos.x, director.mystic.pos.z) < 6) {
-    mark(director.mystic.pos.x, director.mystic.pos.z, 2.15);
-    promptText = '按 E 与兜帽商人交易(灵药 5 金币)';
-    return;
-  }
-  if (director.cow && dist2(player.pos.x, player.pos.z, director.cow.pos.x, director.cow.pos.z) < 8) {
-    mark(director.cow.pos.x, director.cow.pos.z, 1.8);
-    promptText = `按 E 向牛提问(还能问 ${Math.max(0, 5 - director.cow.asked)} 次)`;
-    return;
-  }
-  if (director.thief && dist2(player.pos.x, player.pos.z, director.thief.pos.x, director.thief.pos.z) < 6) {
-    mark(director.thief.pos.x, director.thief.pos.z, 2.15);
-    promptText = '按 E 咳嗽一声';
-    return;
-  }
-  for (const c of chickens) {
-    if (!c.extra || c.state === 'thrown' || c === player.carrying) continue;
-    if (dist2(player.pos.x, player.pos.z, c.pos.x, c.pos.z) < 3.5) {
-      mark(c.pos.x, c.pos.z, 1.0);
-      promptText = c.golden ? '按 E 抱住金鸡!!' : '按 E 抱住它!';
-      return;
-    }
-  }
-  if (!arenaRT.active && dist2(player.pos.x, player.pos.z, arenaHost.pos.x, arenaHost.pos.z) < 7) {
-    mark(arenaHost.pos.x, arenaHost.pos.z, 2.15);
-    promptText = `按 E 参加角斗(最佳纪录:${stats.arenaBest || 0} 波)`;
-    return;
-  }
-  for (const n of funnyNPCs) {
-    if (dist2(player.pos.x, player.pos.z, n.pos.x, n.pos.z) > 7) continue;
-    mark(n.pos.x, n.pos.z, 2.15);
-    promptText = {
-      gambler: '按 E 掷骰子(赌 10 金币)',
-      bard: '按 E 点一首《你自己的歌》',
-      prophet: '按 E 听老糊涂的预言(?)',
-      quixote: '按 E 与风车骑士交谈',
-      storyteller: '按 E 听苟叔说书(AI 现编)',
-      strongman: `按 E 掰手腕(赌 15 赢 30${stats.arms ? `,战绩 ${stats.arms} 胜` : ''})`,
-      merccap: `按 E 雇佣剑士(40 金币+每日 5 饷,随行 ${mercs.length}/2)`,
-    }[n.key];
-    return;
-  }
-  if (dist2(player.pos.x, player.pos.z, NOTICE_POS.x, NOTICE_POS.z) < 6) {
-    mark(NOTICE_POS.x, NOTICE_POS.z, 2.2);
-    promptText = '按 E 看今日王国公告';
-    return;
-  }
-  if (dist2(player.pos.x, player.pos.z, CHORE_POS.x, CHORE_POS.z) < 6) {
-    mark(CHORE_POS.x, CHORE_POS.z, 2.2);
-    promptText = !sideQuest.active ? '按 E 接一桩村务(无限)'
-      : choreReady() ? '按 E 交差领赏!' : `按 E 看村务进度(${sideQuest.giver})`;
-    return;
-  }
-  for (const s of loreStones) {
-    if (dist2(player.pos.x, player.pos.z, s.def.x, s.def.z) < 8) {
-      mark(s.def.x, s.def.z, 2.0);
-      promptText = loreRead.includes(LORE.indexOf(s.def))
-        ? `按 E 重读铭文《${s.def.title}》` : `按 E 阅读铭文(${loreRead.length}/${LORE.length})`;
-      return;
-    }
-  }
-  if (dist2(player.pos.x, player.pos.z, DGN.hatch.x, DGN.hatch.z) < 6) {
-    mark(DGN.hatch.x, DGN.hatch.z, 1.2);
-    promptText = '按 E 掀开暗门(被封印的地窖)';
-    return;
-  }
-  if (inDungeon() && dist2(player.pos.x, player.pos.z, DGN.exit.x, DGN.exit.z) < 6) {
-    mark(DGN.exit.x, DGN.exit.z, 1.2);
-    promptText = '按 E 爬回地面';
-    return;
-  }
-  if (inDungeon() && dist2(player.pos.x, player.pos.z, DGN.relic.x, DGN.relic.z) < 6) {
-    mark(DGN.relic.x, DGN.relic.z, 1.6);
-    promptText = player.relic ? '(空了的圣坛)' : '按 E 请下「先王战徽」';
-    return;
-  }
-  if (dist2(player.pos.x, player.pos.z, BOAT_PIER.x, BOAT_PIER.z) < 8) {
-    mark(BOAT_PIER.x, BOAT_PIER.z, 1.2);
-    promptText = '按 E 划船去湖心岛';
-    return;
-  }
-  if (dist2(player.pos.x, player.pos.z, BOAT_ISLE.x, BOAT_ISLE.z) < 6) {
-    mark(BOAT_ISLE.x, BOAT_ISLE.z, 1.2);
-    promptText = '按 E 划船回栈桥';
-    return;
-  }
-  if (dist2(player.pos.x, player.pos.z, -100, 100.5) < 5) {
-    mark(-100, 100.5, 1.6);
-    promptText = lakeBlessed ? '(祭坛记得你)' : '按 E 触碰月光祭坛';
-    return;
-  }
-  if (dist2(player.pos.x, player.pos.z, TRIAL_FLAG.x, TRIAL_FLAG.z) < 8) {
-    mark(TRIAL_FLAG.x, TRIAL_FLAG.z, 3.0);
-    promptText = trialRT.active ? '按 E 放弃计时赛'
-      : `按 E 开始赛马计时赛${stats.raceBest ? `(纪录 ${stats.raceBest.toFixed(1)}s)` : ''}`;
-    return;
-  }
-  if (!frostfang.tamed && frostfang.wary &&
-      dist2(player.pos.x, player.pos.z, frostfang.wary.pos.x, frostfang.wary.pos.z) < 26) {
-    mark(frostfang.wary.pos.x, frostfang.wary.pos.z, 1.3);
-    promptText = player.venison > 0
-      ? `按 E 喂鹿肉给白狼(驯服 ${frostfang.feed}/3)` : '🐺 白狼想要鹿肉(去猎一头鹿)';
-    return;
-  }
-  {
-    const cf = nearestSpot('campfire', 30);
-    if (cf && player.venison > 0) {
-      mark(cf.x, cf.z, 1.2);
-      promptText = `按 E 烤鹿肉(回 ❤×1.5,剩 ×${player.venison})`;
-      return;
-    }
-    const ch = nearestSpot('chapel', 30);
-    if (ch) {
-      mark(ch.x, ch.z, 2.0);
-      promptText = blessDay !== calendar.day ? '按 E 在石坛前祈祷(获得庇佑)' : '(神明今日已听过你的祷告)';
-      return;
-    }
-  }
-  if (dist2(player.pos.x, player.pos.z, MIRROR_POS.x, MIRROR_POS.z) < 9) {
-    mark(MIRROR_POS.x, MIRROR_POS.z, 2.3);
-    promptText = '按 E 凝视回响之镜';
-    return;
-  }
-  for (const m of mushrooms) {
-    if (!m.picked && dist2(player.pos.x, player.pos.z, m.x, m.z) < 4) {
-      mark(m.x, m.z, 0.8);
-      promptText = '按 E 采蘑菇';
-      return;
-    }
-  }
-  if (!player.mounted && dist2(player.pos.x, player.pos.z, FISH_SPOT.x, FISH_SPOT.z) < 10) {
-    mark(FISH_SPOT.x, FISH_SPOT.z, 1.6);
-    promptText = '按 E 垂钓';
-    return;
-  }
-  if (!player.mounted && dist2(player.pos.x, player.pos.z, FISH_SPOT_ISLE.x, FISH_SPOT_ISLE.z) < 7) {
-    mark(FISH_SPOT_ISLE.x, FISH_SPOT_ISLE.z, 1.4);
-    promptText = '按 E 深水垂钓(岛边的鱼更肥)';
-    return;
-  }
-  if (dist2(player.pos.x, player.pos.z, 8, 46) < 8) {
-    mark(8, 46, 2.4);
-    promptText = bountyRT.target ? '按 E 查看悬赏令' : '按 E 揭悬赏令(赏金 30)';
-    return;
-  }
-  if (player.home && letter && dist2(player.pos.x, player.pos.z, HOME.x + 3.4, HOME.z + 3.2) < 5) {
-    mark(HOME.x + 3.4, HOME.z + 3.2, 1.8);
-    promptText = '按 E 开信箱(小红旗立着——有信!)';
-    return;
-  }
-  if (dist2(player.pos.x, player.pos.z, DRAGON_SKULL.x, DRAGON_SKULL.z) < 9) {
-    mark(DRAGON_SKULL.x, DRAGON_SKULL.z, 2.5);
-    promptText = shout.learned ? '(龙颅无话可教了。去吼吧——X 键)' : '按 E 把手放上龙颅';
-    return;
-  }
-  if (dist2(player.pos.x, player.pos.z, HOME.doorX, HOME.doorZ) < 6) {
-    mark(HOME.x, HOME.z, 3.2);
-    promptText = !player.home
-      ? (player.coins >= HOME.price ? `按 E 买下湖畔小屋(${HOME.price} 金币)` : `(出售)湖畔小屋 ${HOME.price} 金币,还差 ${HOME.price - player.coins}`)
-      : player.homeDay === calendar.day ? '(安眠中:移动 +8%。明天再睡)' : '按 E 回屋睡一觉(安眠:移动 +8%)';
-    return;
-  }
-  for (const c of chickens) {
-    if (c.state === 'thrown') continue;
-    if (dist2(player.pos.x, player.pos.z, c.pos.x, c.pos.z) < 3.5) {
-      mark(c.pos.x, c.pos.z, 1.0);
-      promptText = '按 E 抱起鸡(为什么?)';
-      return;
-    }
-  }
-  for (const v of villagers) {
-    if (v.downT > 0 || v.sleeping) continue;
-    if (dist2(player.pos.x, player.pos.z, v.pos.x, v.pos.z) <= 5.5) {
-      mark(v.pos.x, v.pos.z, 2.05);
-      promptText = `按 E 与${v.id.name}交谈`;
-      return;
-    }
-  }
-  if (player.coins > 0 && dist2(player.pos.x, player.pos.z, 0, 5) < 20) {
-    mark(0, 5, 3);
-    promptText = '按 E 向喷泉许愿(1 金币)';
-    return;
-  }
-  for (const c of world.chests) {
-    if (!c.opened && dist2(player.pos.x, player.pos.z, c.x, c.z) < 5) {
-      mark(c.group.position.x, c.group.position.z, 1.5);
-      promptText = '按 E 打开宝箱';
-      return;
-    }
-  }
-  {
-    // 与 tryInteract 一致:提示指向最近的那匹,免得警示牛头不对马嘴
-    let best = null, bd = 7;
-    for (const h of horses) {
-      const d = dist2(player.pos.x, player.pos.z, h.pos.x, h.pos.z);
-      if (d < bd) { bd = d; best = h; }
-    }
-    if (best) {
-      mark(best.pos.x, best.pos.z, best.sheep ? 1.4 : 2.7);
-      promptText = best.sheep ? '按 E 骑羊(为什么不呢)'
-        : best.owned && !best.stolen ? '按 E 偷马 (会引来通缉!)' : '按 E 骑马';
-      return;
-    }
-  }
-  if (dist2(player.pos.x, player.pos.z, -40, -120) < 400) {
-    promptText = '按 E 读一块墓志铭';
+  if (dialog.open && !fishing.active) return;
+  // 与 E 键共用同一套判定:试运行 tryInteract,命中哪条就显示哪条
+  const it = tryInteract(true);
+  if (it) {
+    promptText = it.text;
+    if (it.x !== undefined) promptTargetPos = { x: it.x, y: it.h || 2, z: it.z };
     return;
   }
   // 兜底:视角未锁定时提示
@@ -10506,7 +10034,7 @@ const EPITAPHS = [
   "她活了九十个冬天,抱怨了八十九个。最后一个,她说:还行。",
   "立碑那年麦子欠收,他咽气前说来年会好。来年真的好了。",
 ];
-let epitaphIdx = Math.floor(Math.random() * EPITAPHS.length);
+let epitaphIdx = Math.floor(rand() * EPITAPHS.length);
 // 牲口喜剧提示(抱鸡/骑羊等随机替换)
 const COMEDY_LINES = [
   "鸡记住你的脸了,而且它有二十二个朋友",
@@ -10577,7 +10105,7 @@ DIRECTOR_EVENTS.push({
     toast('🌠 流星雨!星屑正落向四野,趁它们熄灭前拾取!', 4.5);
     sfx.fanfare();
     for (let i = 0; i < 10; i++) {
-      const a = Math.random() * 6.28, r = 8 + Math.random() * 30;
+      const a = rand() * 6.28, r = 8 + rand() * 30;
       addPickup('coin', player.pos.x + Math.cos(a) * r, player.pos.z + Math.sin(a) * r, 30);
     }
     return { t: 32, update() {}, end() {} };
@@ -10657,8 +10185,8 @@ DIRECTOR_EVENTS.push({
           animateLimbs(n.parts, n.walkT, true, n.group, 0.4);
         }
         // 沿途撒喜钱
-        if (Math.random() < dt2 * 0.5) {
-          addPickup('coin', groom.pos.x + (Math.random() - 0.5) * 4, groom.pos.z + (Math.random() - 0.5) * 4, 30);
+        if (rand() < dt2 * 0.5) {
+          addPickup('coin', groom.pos.x + (rand() - 0.5) * 4, groom.pos.z + (rand() - 0.5) * 4, 30);
         }
         // 玩家凑近道贺(一次)
         if (!greeted && dist2(player.pos.x, player.pos.z, groom.pos.x, groom.pos.z) < 9) {
@@ -10783,7 +10311,7 @@ DIRECTOR_EVENTS.push({
     const raiders = [];
     const spawnWave = (n, zBase) => {
       for (let i = 0; i < n; i++) {
-        const b = addBandit(-8 + i * 4 + (Math.random() * 2 - 1), zBase + Math.random() * 4, { hp: 3, dmg: 1 });
+        const b = addBandit(-8 + i * 4 + (rand() * 2 - 1), zBase + rand() * 4, { hp: 3, dmg: 1 });
         b.eventFoe = true;
         raiders.push(b);
       }
@@ -10915,10 +10443,11 @@ window.__gtm = {
   getDialog: () => ({ open: dialog.open, page: dialog.pages[dialog.idx], speaker: dialog.speaker && dialog.speaker.name }),
   getRevenge: () => revengeT,
   slayBandit, killWolf, stats, recomputeMaxHp, getSaveBlocked: () => saveBlocked, loadGame,
-  getTimers: () => timers.length, flashing,
+  getTimers: () => pendingTimers(), flashing,
   getBeacon: () => ({ x: beacon.position.x, z: beacon.position.z, v: beacon.visible }),
-  attackDown, attackUp, callout, flinch, telegraphArea, dragonAim,
+  attackDown, attackUp, callout, flinch, telegraphArea, dragonAim, seedRng,
   worldTops: () => worldTops,
+  getPrompt: () => { computePrompt(); return promptText; },
   groundH,
 };
 
@@ -11193,7 +10722,7 @@ function tick(dt, now) {
   }
   updateDust(dt);
   updateDayNight(dt);
-  updateLightPool();
+  updateLightPool(player.pos.x, player.pos.z);
   updateCalendar();
   updateWorkspace(dt);
   updateIdle(dt);
