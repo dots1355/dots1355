@@ -2,6 +2,7 @@
 import * as THREE from 'three';
 import { rand } from './core/rng.js';
 import { mergeGeometries } from '../lib/jsm/utils/BufferGeometryUtils.js';
+import { rigidSkin, releaseSkin } from './gfx/skin.js';
 
 // 名字沿用 lambert,实际已升级为 PBR 标准材质
 // 北境写实调:所有过手的颜色饱和度砍半、整体沉一分——把糖果色世界拉回大地色系
@@ -76,6 +77,7 @@ export function disposeEntityGroup(g) {
   if (!g) return;
   g.traverse((o) => {
     if (!o.isMesh) return;
+    if (o.isSkinnedMesh) releaseSkin(o); // 归还骨骼调色板行号
     if (o.geometry && !o.geometry.userData.shared) o.geometry.dispose();
     for (const m of Array.isArray(o.material) ? o.material : [o.material]) if (m && !m.userData.shared) m.dispose();
   });
@@ -180,7 +182,9 @@ function applyHumanProps(g, parts, opts) {
   }
 }
 
-export function makeHumanoid(opts = {}) {
+// 搭好积木层级后合成一个刚体蒙皮网格(gfx/skin.js):每个实体一次绘制
+export function makeHumanoid(opts = {}) { return rigidSkin(buildHumanoid(opts)); }
+function buildHumanoid(opts = {}) {
   const {
     skin = 0xf1c27d, shirt = 0x2f8f4e, pants = 0x4a3320,
   } = opts;
@@ -381,7 +385,9 @@ export function getWeaponModel(name) {
 }
 
 // ---- 马(面朝 +Z)----
-export function makeHorse(color = 0x8b5a2b, saddled = true, opts = {}) {
+// 搭好积木层级后合成一个刚体蒙皮网格(gfx/skin.js):每个实体一次绘制
+export function makeHorse(color = 0x8b5a2b, saddled = true, opts = {}) { return rigidSkin(buildHorse(color, saddled, opts)); }
+function buildHorse(color = 0x8b5a2b, saddled = true, opts = {}) {
   // Blender 写实马:脊柱放样整体身躯,腿为模板克隆挂进原枢轴
   if (HORSE_TPL) {
     const g = new THREE.Group();
@@ -521,7 +527,9 @@ export function makeHorse(color = 0x8b5a2b, saddled = true, opts = {}) {
 }
 
 // ---- 狼(面朝 +Z)----
-export function makeWolf(furHex = 0x5a5a62, eyeHex = 0xff3322, eyeGlow = 0xaa1100) {
+// 搭好积木层级后合成一个刚体蒙皮网格(gfx/skin.js):每个实体一次绘制
+export function makeWolf(furHex = 0x5a5a62, eyeHex = 0xff3322, eyeGlow = 0xaa1100) { return rigidSkin(buildWolf(furHex, eyeHex, eyeGlow)); }
+function buildWolf(furHex = 0x5a5a62, eyeHex = 0xff3322, eyeGlow = 0xaa1100) {
   // Blender 写实狼:耸肩薄腰的兽形放样,双眼替换为发光材质
   if (WOLF_TPL) {
     const g = new THREE.Group();
@@ -594,7 +602,9 @@ export function makeWolf(furHex = 0x5a5a62, eyeHex = 0xff3322, eyeGlow = 0xaa110
 }
 
 // ---- 鸡(面朝 +Z,惹不起的存在)----
-export function makeChicken() {
+// 搭好积木层级后合成一个刚体蒙皮网格(gfx/skin.js):每个实体一次绘制
+export function makeChicken() { return rigidSkin(buildChicken()); }
+function buildChicken() {
   const g = new THREE.Group();
   const parts = { legs: [] };
   const white = lambert(0xf2eee6, { roughness: 0.95 });
@@ -629,7 +639,9 @@ export function makeChicken() {
 }
 
 // ---- 绵羊(面朝 +Z,可以骑,为什么不呢)----
-export function makeSheep() {
+// 搭好积木层级后合成一个刚体蒙皮网格(gfx/skin.js):每个实体一次绘制
+export function makeSheep() { return rigidSkin(buildSheep()); }
+function buildSheep() {
   const g = new THREE.Group();
   const parts = { legs: [] };
   const woolGeo = new THREE.IcosahedronGeometry(0.42, 1);

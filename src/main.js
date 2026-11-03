@@ -24,6 +24,7 @@ import { ctx } from './core/ctx.js';
 import { LIGHT_POOL, lightPool, initLightPool, addLightSource, removeLightSource, updateLightPool, pooledMat, releaseMat } from './gfx/pools.js';
 import { mergeGeometries } from '../lib/jsm/utils/BufferGeometryUtils.js';
 import { renderer, scene, camera, LOWFX, composer, gtao, bloom, gradePass, STYLE_PRESETS, stylePass, smaa, styleKey, applyStyle, cycleStyle } from './gfx/core.js';
+import { updateSkinLOD } from './gfx/skin.js';
 
 // ================= 基础渲染 =================
 initLightPool(scene); // 固定数量的点光池(火把/篝火等光源只登记,由它代为发光)
@@ -4400,10 +4401,11 @@ function setPaused(p) {
 }
 // 画质三档:流畅(集显/老机器)、均衡(默认)、精致(独显:环境光遮蔽 + 高分辨率)
 // 开局后按实测帧时自动降档(每档至少观察 8 秒),玩家手动选过就不再自动改
+// lodNear/lodHide:实体投影/整体隐藏的距离(米)
 const QUALITY = [
-  { key: 'lo', name: '流畅', gtao: false, bloom: false, smaa: false, pr: 0.8, veg: 0.5, shadow: 1024 },
-  { key: 'mid', name: '均衡', gtao: false, bloom: true, smaa: true, pr: 1, veg: 0.65, shadow: 2048 },
-  { key: 'hi', name: '精致', gtao: true, bloom: true, smaa: true, pr: 1.5, veg: 1, shadow: 2048 },
+  { key: 'lo', name: '流畅', gtao: false, bloom: false, smaa: false, pr: 0.8, veg: 0.5, shadow: 1024, lodNear: 20, lodHide: 100 },
+  { key: 'mid', name: '均衡', gtao: false, bloom: true, smaa: true, pr: 1, veg: 0.65, shadow: 2048, lodNear: 40, lodHide: 160 },
+  { key: 'hi', name: '精致', gtao: true, bloom: true, smaa: true, pr: 1.5, veg: 1, shadow: 2048, lodNear: 50, lodHide: 220 },
 ];
 let qualityIdx = LOWFX ? 0 : 1;
 let qualityManual = false;
@@ -4506,12 +4508,20 @@ let promptTargetPos = null;
 // 直接改共享材质会让"砍一刀全城一起闪"。首次受击时把材质克隆为私有
 // (同参数材质共用着色器程序,克隆开销很小),之后闪白/还原都只动自己。
 const flashing = new Set();
+// 只克隆共享材质:已经是私有的(幽灵半透明、金鸡染色……)原样留用,不再"换下来就漏掉";
+// 克隆会连 userData 一起拷,要清掉共享标记,否则实体卸载时这份私有材质不会被释放
 function ownMaterials(e) {
   if (e._ownMats) return;
   e._ownMats = true;
+  const own = (m) => {
+    if (!m || !m.userData.shared) return m;
+    const c = m.clone();
+    delete c.userData.shared;
+    return c;
+  };
   e.group.traverse((o) => {
     if (!o.material) return;
-    o.material = Array.isArray(o.material) ? o.material.map((m) => m.clone()) : o.material.clone();
+    o.material = Array.isArray(o.material) ? o.material.map(own) : own(o.material);
   });
 }
 function setFlash(e, on) {
@@ -4571,8 +4581,9 @@ function hitFX(e, push = 0.55) {
 }
 
 // ================= 实体远近分级(LOD) =================
-// 40m 外:收起眼珠/腰带等细件、关掉投影(阴影 pass 少画几百次);每 12 帧扫一遍,级别变了才改
-const LOD_NEAR = 40;
+// 合并成蒙皮网格的实体(gfx/skin.js,覆盖所有人形/动物,含任务 NPC、导演事件路人):
+// lodNear 内投影,之外不投影,lodHide 外整个不画(距离随画质档)。每 12 帧扫一遍,级别变了才改。
+// 没能合并的实体(兜底)仍走旧规则:近处投影、远处收起眼珠/腰带等细件。
 let lodScan = 0;
 const _lodSeen = new Set();
 function applyEntityLOD(e, lv) {
@@ -4587,15 +4598,17 @@ function applyEntityLOD(e, lv) {
 function updateEntityLOD() {
   if (lodScan-- > 0) return;
   lodScan = 12;
+  const q = QUALITY[qualityIdx];
   const cx = camera.position.x, cz = camera.position.z;
+  updateSkinLOD(cx, cz, q.lodNear, q.lodHide);
   _lodSeen.clear();
   const lists = [villagers, guards, bandits, wolves, horses, namedNPCs, chickens, deers, funnyNPCs, mercs];
   for (const list of lists) {
     for (const e of list) {
-      if (!e || !e.group || _lodSeen.has(e)) continue;
+      if (!e || !e.group || e.group._skin || _lodSeen.has(e)) continue;
       _lodSeen.add(e);
       const d = Math.hypot(e.group.position.x - cx, e.group.position.z - cz);
-      const lv = d < LOD_NEAR ? 0 : d < LOD_NEAR + 6 && e._lod === 0 ? 0 : 1; // 6m 回差,免得边界上来回切
+      const lv = d < q.lodNear ? 0 : d < q.lodNear + 6 && e._lod === 0 ? 0 : 1; // 6m 回差,免得边界上来回切
       if (e._lod !== lv) applyEntityLOD(e, lv);
     }
   }
