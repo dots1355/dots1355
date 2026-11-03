@@ -320,6 +320,29 @@ const BIOME_COL = [
   [lin(0x8f9558), lin(0x7c8550)], // 丘陵:更绿的草坡
 ];
 const ROCK_COL = lin(0x77726a), SNOWCAP = lin(0xf1f5f9);
+// 地图配色(小地图/大地图):按群系权重混合的 sRGB 颜色 + 高度明暗;按 16m 格缓存
+const _mapCache = new Map();
+const _mw = new Float32Array(NB);
+const MAP_RGB = [
+  [0x93, 0x8f, 0x5d], [0x4e, 0x63, 0x3a], [0xd4, 0xb2, 0x78], [0xe4, 0xea, 0xf0],
+  [0x4c, 0x52, 0x38], [0x5a, 0x53, 0x4c], [0x88, 0x83, 0x79], [0x7f, 0x8f, 0x52],
+];
+export function mapColor(x, z) {
+  const ix = Math.floor(x / 16), iz = Math.floor(z / 16);
+  const key = ix * 100003 + iz;
+  let c = _mapCache.get(key);
+  if (c) return c;
+  const cx = ix * 16 + 8, cz = iz * 16 + 8;
+  biomeWeights(cx, cz, _mw);
+  let r = 0, g = 0, b = 0;
+  for (let i = 0; i < NB; i++) { r += MAP_RGB[i][0] * _mw[i]; g += MAP_RGB[i][1] * _mw[i]; b += MAP_RGB[i][2] * _mw[i]; }
+  const h = terrainH(cx, cz);
+  const shade = Math.max(0.72, Math.min(1.22, 1 + h * 0.018)); // 高处亮、低处暗:一眼看出山丘洼地
+  c = `rgb(${Math.min(255, r * shade) | 0},${Math.min(255, g * shade) | 0},${Math.min(255, b * shade) | 0})`;
+  if (_mapCache.size > 60000) _mapCache.clear();
+  _mapCache.set(key, c);
+  return c;
+}
 const _c = new THREE.Color(), _c2 = new THREE.Color();
 function groundColor(x, z, ny, h, out) {
   const w = biomeWeights(x, z, _wc);

@@ -132,6 +132,81 @@ const TESTS = {
     if (!r.dead) throw new Error('贴脸一刀没砍死 1 血的盗贼');
     if (r.killsDelta < 1) throw new Error('近战击杀没有计入连杀/击杀数');
   },
+  // 出招时序:伤害在判定帧(刀落下)才结算;按住蓄力→松手重击 ≥3 倍;轻击打断敌人起手
+  async combatTiming(page) {
+    await boot(page);
+    const r = await page.evaluate(() => {
+      const g = window.__gtm;
+      const b = g.bandits.find((x) => !x.dead && !x.boss);
+      if (!b) return { skip: true };
+      const place = () => { g.player.pos.set(b.pos.x, 0, b.pos.z - 1.4); g.player.yaw = 0; g.player.sta = 100; g.player.attackT = 0; };
+      place();
+      b.hp = 20; b.armorT = 0;
+      g.tryAttack();
+      g.step(1);
+      const afterPress = b.hp;
+      g.step(40);
+      const afterLight = b.hp;
+      // 蓄力重击
+      place();
+      b.hp = 20; b.armorT = 0; b.hitStunT = 0; b.stunT = 0;
+      g.player.chainN = 0; g.player.chainT = 0;
+      g.attackDown();
+      g.step(75); // 1.25 秒:满蓄
+      const charging = g.player.charging;
+      g.attackUp();
+      g.step(60);
+      const heavyDmg = 20 - b.hp;
+      // 打断:敌人起手中挨一刀,起手作废
+      place();
+      b.hp = 20; b.armorT = 0; b.hitStunT = 0; b.stunT = 0;
+      b.windupT = 0.6;
+      g.tryAttack();
+      g.step(30);
+      return { afterPress, afterLight, charging, heavyDmg, windup: b.windupT, hitStun: b.hitStunT };
+    });
+    if (r.skip) return;
+    if (r.afterPress !== 20) throw new Error('按下当帧就扣了血(应在判定帧)');
+    if (r.afterLight >= 20) throw new Error('轻击没有命中');
+    if (!r.charging) throw new Error('按住没有进入蓄力');
+    if (r.heavyDmg < 3) throw new Error(`满蓄重击伤害太低:${r.heavyDmg}`);
+    if (r.windup > 0) throw new Error('轻击没有打断敌人的起手');
+  },
+  // 序章教学:锁定 → 翻滚 → 格挡 → 出刀 → 魔光弹 → 清场;做到才进下一步,结束回满血并送马
+  async prologue(page) {
+    await boot(page, { start: false });
+    await page.click('#title');
+    await page.waitForTimeout(800);
+    const r = await page.evaluate(() => {
+      const g = window.__gtm, P = g.prologue, log = [];
+      if (!P.on) return { err: '新档没有进入序章' };
+      const until = (fn, max = 900) => { for (let i = 0; i < max && !fn(); i++) g.step(1); return fn(); };
+      until(() => P.step >= 1, 200); log.push(P.step);
+      g.toggleLock();
+      until(() => P.step >= 2, 30); log.push(P.step);
+      const w0 = P.wolves[0];
+      if (!until(() => w0.lunging > 0 || w0.biteT > 0, 900)) return { err: '第一只狼迟迟不出手', log };
+      g.doRoll();
+      until(() => P.step >= 3, 60); log.push(P.step);
+      g.player.blocking = true; g.player.blockStart = performance.now() - 5000;
+      until(() => P.step >= 4, 1200); log.push(P.step);
+      g.player.blocking = false;
+      g.killWolf(w0);
+      until(() => P.step >= 5, 30); log.push(P.step);
+      g.player.castT = 0; g.player.mp = 6;
+      g.castSpell();
+      until(() => P.step >= 6, 30); log.push(P.step);
+      for (const w of P.wolves) if (!w.dead) g.killWolf(w);
+      until(() => P.step >= 7, 30); log.push(P.step);
+      until(() => !P.on, 400);
+      return { on: P.on, log, hp: g.player.hp, maxHp: g.player.maxHp, horse: !!g.player.horse };
+    });
+    if (r.err) throw new Error(r.err + ' ' + JSON.stringify(r.log || []));
+    if (r.on) throw new Error(`序章没有走完:${JSON.stringify(r.log)}`);
+    if (r.log.join(',') !== '1,2,3,4,5,6,7') throw new Error(`步骤不对:${r.log}`);
+    if (r.hp !== r.maxHp) throw new Error('序章结束没有回满血');
+    if (!r.horse) throw new Error('序章结束没有送马');
+  },
   // 生命上限只有一个来源:护甲 + 湖神 + 屠龙
   async maxhp(page) {
     await boot(page);
@@ -178,7 +253,7 @@ const TESTS = {
     if (r.coins !== 123) throw new Error(`读档金币不对:${r.coins}`);
     if (r.maxHp !== 12) throw new Error(`皮甲读档后生命上限应为 12,实际 ${r.maxHp}`);
     if (r.blocked) throw new Error('正常存档不该被锁');
-    if (r.v !== 2) throw new Error('存档缺版本号');
+    if (!(r.v >= 3)) throw new Error('存档缺版本号');
     // 坏档:不读、不覆盖、留备份
     await page.evaluate(() => localStorage.setItem('gth-save-v1', '{坏掉的存档'));
     await page.reload();

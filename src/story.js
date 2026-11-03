@@ -89,9 +89,9 @@ export const NPCS = {
 // 主线任务链
 export const MISSIONS = [
   {
-    title: '① 金币税', type: 'coins', goal: 8, reward: 20,
-    desc: '为领主收集 8 枚金币',
-    brief: '埃隆:国库空了,路边的金币也是税源。替我捡 8 枚回来。',
+    title: '① 金币税', type: 'coins', goal: 5, reward: 20,
+    desc: '为领主收集 5 枚金币(地上闪光的小金币堆,走近自动吸入)',
+    brief: '埃隆:国库空了,路边的金币也是税源。替我捡 5 枚回来——顺便熟悉熟悉王都。',
   },
   {
     title: '② 皇家快递', type: 'deliver', time: 60, reward: 30,
@@ -99,14 +99,14 @@ export const MISSIONS = [
     brief: '埃隆:这包文件要立刻送到磨坊主手里。骑马去,别耽搁!',
   },
   {
-    title: '③ 农场竞速', type: 'race', time: 75, reward: 40,
-    desc: '75 秒内按顺序穿过农田赛道的 6 个金环',
-    brief: '埃隆:领主想看看你的骑术。南门外的农田赛道,金环为记!',
-  },
-  {
-    title: '④ 剿灭盗贼', type: 'bandits', goal: 3, reward: 50,
+    title: '③ 剿灭盗贼', type: 'bandits', goal: 3, reward: 50,
     desc: '击败幽暗森林盗贼营地的 3 名盗贼',
     brief: '埃隆:黑石兄弟会在西边森林扎了营。去,给他们点颜色。',
+  },
+  {
+    title: '④ 农场竞速', type: 'race', time: 75, reward: 40,
+    desc: '75 秒内按顺序穿过农田赛道的 6 个金环',
+    brief: '埃隆:领主想看看你的骑术。南门外的农田赛道,金环为记!',
   },
   {
     title: '⑤ 迷途的白马', type: 'losthorse', reward: 40,

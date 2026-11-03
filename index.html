@@ -164,6 +164,40 @@
   .dmgnum { position: absolute; font-size: 20px; font-weight: bold; color: #ffe08a;
     text-shadow: 0 2px 4px #000, 0 0 3px #000; pointer-events: none; transform: translate(-50%, -50%); }
   .dmgnum.crit { font-size: 26px; color: #ff6a4a; }
+  #tutor { position: absolute; left: 50%; bottom: 112px; transform: translateX(-50%); display: none;
+    max-width: min(640px, 92vw); padding: 10px 18px 10px 12px; border-radius: 10px; pointer-events: none;
+    background: rgba(14, 11, 8, 0.82); border: 1px solid rgba(232, 196, 110, 0.75);
+    box-shadow: 0 6px 22px rgba(0, 0, 0, 0.5); color: #f1e6cf; font-size: 17px; line-height: 1.45; }
+  #tutor .tk { display: inline-block; min-width: 34px; margin-right: 10px; padding: 2px 9px; border-radius: 6px;
+    background: #e8c46e; color: #1d150b; font-weight: bold; text-align: center; vertical-align: 1px; }
+  #tutor .tt { font-weight: bold; }
+  #tutor .ts { margin-top: 3px; font-size: 13.5px; color: #cdbf9f; padding-left: 2px; }
+  #reward { position: absolute; left: 50%; top: 18%; transform: translate(-50%, -12px); opacity: 0; display: none;
+    min-width: 300px; max-width: min(520px, 90vw); padding: 14px 22px 16px; text-align: center; pointer-events: none;
+    background: linear-gradient(180deg, rgba(30, 22, 12, 0.92), rgba(16, 12, 8, 0.92));
+    border: 1px solid rgba(232, 196, 110, 0.8); border-radius: 12px; color: #f1e6cf;
+    box-shadow: 0 10px 34px rgba(0, 0, 0, 0.55); transition: opacity 0.35s, transform 0.35s; }
+  #reward.show { opacity: 1; transform: translate(-50%, 0); }
+  #bigmap { position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+    background: rgba(8, 6, 4, 0.72); z-index: 30; }
+  #bigmap .bm-box { padding: 12px 14px 10px; border-radius: 12px; background: rgba(24, 18, 12, 0.94);
+    border: 1px solid rgba(232, 196, 110, 0.7); box-shadow: 0 12px 40px rgba(0, 0, 0, 0.6); }
+  #bigmap .bm-title { color: #e8c46e; font-size: 18px; letter-spacing: 4px; margin-bottom: 8px; }
+  #bigmap .bm-title span { float: right; font-size: 12px; letter-spacing: 1px; color: #a99a7c; }
+  #bigmap canvas { display: block; width: min(72vh, 86vw); height: min(72vh, 86vw); border-radius: 6px; }
+  #bigmap .bm-legend { margin-top: 8px; font-size: 13px; color: #cdbf9f; }
+  #reward .rw-h { font-size: 13px; letter-spacing: 6px; color: #e8c46e; }
+  #reward .rw-t { margin-top: 4px; font-size: 22px; font-weight: bold; }
+  #reward .rw-b { margin-top: 8px; font-size: 18px; color: #ffd75e; }
+  #reward .rw-n { margin-top: 10px; font-size: 14px; color: #cdbf9f; line-height: 1.5; white-space: pre-line; }
+  .ab-slot.hint { animation: abpulse 0.9s ease-in-out infinite; border-color: #ffd75e !important; }
+  @keyframes abpulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(255, 215, 94, 0.0); } 50% { box-shadow: 0 0 14px 3px rgba(255, 215, 94, 0.75); } }
+  .dmgnum.callout { font-size: 19px; letter-spacing: 1px; white-space: nowrap; padding: 2px 10px; border-radius: 6px;
+    background: rgba(12, 10, 8, 0.55); text-shadow: 0 1px 2px #000; }
+  .dmgnum.callout.gold { color: #ffd75e; }
+  .dmgnum.callout.red { color: #ff7a6a; }
+  .dmgnum.callout.blue { color: #9fd4ff; }
+  .dmgnum.callout.dim { color: #c9c2b4; font-size: 15px; }
   #combo { position: absolute; top: 15%; left: 50%; transform: translateX(-50%);
     font-size: 30px; font-weight: bold; color: #ffd83d; letter-spacing: 4px; opacity: 0;
     text-shadow: 0 3px 8px #000; transition: opacity 0.3s, transform 0.2s; pointer-events: none; }
@@ -213,8 +247,11 @@
     <canvas id="minimap" width="200" height="200"></canvas>
     <div id="prompt"></div>
     <div id="toast"></div>
-    <div id="actionbar"></div>
-    <div id="keyhint"><b>H</b> 操作说明 · <b>K</b> 切换画风 · <b>J</b> 手账 · <b>Esc</b> 菜单</div>
+    <div id="tutor"></div>
+    <div id="bigmap"><div class="bm-box"><div class="bm-title">王国全图 <span>M 关闭</span></div><canvas id="bigmap-c" width="720" height="720"></canvas><div class="bm-legend"><b style="color:#ffd75e">▲</b> 你　<b style="color:#ffd75e">●</b> 任务目标　<b style="color:#ffd83d">!</b> 管家埃隆　<b style="color:#5588dd">●</b> 卫兵　<b style="color:#e03030">●</b> 盗贼</div></div></div>
+    <div id="reward"><div class="rw-h"></div><div class="rw-t"></div><div class="rw-b"></div><div class="rw-n"></div></div>
+  <div id="actionbar"></div>
+    <div id="keyhint"><b>H</b> 操作说明 · <b>M</b> 地图 · <b>J</b> 手账 · <b>B</b> 唤马 · <b>K</b> 画风 · <b>Esc</b> 菜单</div>
     <div id="controls-hint" class="hud-text">
       <h3>操 作 说 明</h3>
       <div class="cols">
@@ -227,10 +264,10 @@
         </div>
         <div>
           <h4>⚔️ 近战(骑砍式)</h4>
-          <span class="k">F</span>/<span class="k">左键</span>横斩 · <span class="k">W</span>+攻 突刺 · <span class="k">S</span>+攻 下劈(破防)<br>
-          按住 <span class="k">F</span> 蓄力重击 · 连按三下=连斩<br>
-          <span class="k">右键</span>按住格挡 · 出手瞬间举盾=<b>弹反</b> → 还击 ×2.5<br>
-          打踉跄的敌人 = <b>处决 ×5</b> · <span class="k">Tab</span> 锁定目标
+          轻点 <span class="k">F</span>/<span class="k">左键</span>横斩 · <span class="k">W</span>+攻 突刺 · <span class="k">S</span>+攻 下劈(慢而重)<br>
+          按住 <span class="k">F</span> 蓄力,松手重击(2~3.5 倍,破防)· 连点三下=连斩<br>
+          <span class="k">右键</span>举盾(只护正面)· 红圈刚亮时举盾=<b>弹反</b> → 还击 ×2.5<br>
+          敌人起手时砍中能<b>打断</b> · 打踉跄的敌人=<b>处决 ×5</b> · 背后下手 ×1.5 · <span class="k">Tab</span> 锁定
         </div>
         <div>
           <h4>✨ 魔法与技能</h4>
@@ -246,8 +283,8 @@
         </div>
         <div>
           <h4>🗺️ 其他</h4>
-          <span class="k">J</span>旅程手账 · <span class="k">K</span>切换画风 · <span class="k">P</span>拍照<br>
-          <span class="k">M</span>音乐 · <span class="k">G</span>抢劫路人 · <span class="k">Esc</span>暂停菜单
+          <span class="k">M</span>王国地图 · <span class="k">J</span>手账(含任务) · <span class="k">B</span>吹口哨唤马<br>
+          <span class="k">K</span>切换画风 · <span class="k">P</span>拍照 · <span class="k">G</span>抢劫路人 · <span class="k">Esc</span>菜单
         </div>
       </div>
       <div class="foot">再按 H 关闭</div>
