@@ -96,6 +96,30 @@ const TESTS = {
     if (r.during.b !== r.before) throw new Error('旁人跟着闪白了(共享材质被改)');
     if (r.after === 0xffffff || r.left !== 0) throw new Error('闪白没有还原');
   },
+  // 远近分级与玩法可见性互不覆盖:远处的实体整个不画,走回来又出现;
+  // 玩法自己藏起来的(死了收尸、隐身),走远再回来也不会被分级翻出来
+  async lodVisibility(page) {
+    await boot(page);
+    const r = await page.evaluate(() => {
+      const g = window.__gtm;
+      const v = g.villagers.find((x) => x.group && x.group._skin);
+      if (!v) return { skip: true };
+      const vx = v.pos.x, vz = v.pos.z;
+      const at = (x, z) => { g.player.pos.set(x, 0, z); g.step(40); return v.group.visible; };
+      const near0 = at(vx + 3, vz + 3);
+      const far = at(vx + 420, vz);
+      const near1 = at(vx + 3, vz + 3);
+      v.group.visible = false;
+      const far2 = at(vx + 420, vz);
+      const near2 = at(vx + 3, vz + 3);
+      v.group.visible = true;
+      return { near0, far, near1, far2, near2, back: at(vx + 3, vz + 3) };
+    });
+    if (r.skip) return;
+    if (!r.near0 || !r.near1 || !r.back) throw new Error('近处的实体被藏起来了');
+    if (r.far || r.far2) throw new Error('远处的实体没有被分级剔除');
+    if (r.near2) throw new Error('玩法藏起来的实体被远近分级翻出来了');
+  },
   // 龙息等环境伤害:不算玩家罪行,不进玩家连杀
   async envDamage(page) {
     await boot(page);

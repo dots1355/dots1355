@@ -233,6 +233,12 @@ function instParts(name) {
   instTpl.set(name, parts);
   return parts;
 }
+// 预先烘好某种地标的实例化模板(区块生成时一种一步,免得第一次遇到大地标的那一帧烘整只模板);做了事返回 true
+export function warmNatureTemplate(name) {
+  if (instTpl.has(name) || !NATURE[name]) return false;
+  instParts(name);
+  return true;
+}
 function sharedGeo(src) {
   const g = new THREE.BufferGeometry();
   for (const k of Object.keys(src.attributes)) g.setAttribute(k, src.attributes[k]);

@@ -3984,8 +3984,8 @@ function setPaused(p) {
 // 的可见距离;bigFar:树林/岩石实例块的可见距离;viewCap:视距上限(米);shadowBox:阴影正交框半宽;
 // shadowEvery:阴影图每几帧更新一次;wildD:荒野区块加载距离(米)
 const QUALITY = [
-  { key: 'lo', name: '流畅', gtao: false, bloom: false, smaa: false, pr: 0.8, veg: 0.3, shadow: 1024, shadowBox: 36,
-    shadowEvery: 2, lodNear: 14, lodHide: 64, halfD: 14, propFar: 50, bigFar: 160, propShadow: false, viewCap: 250, wildD: 160 },
+  { key: 'lo', name: '流畅', gtao: false, bloom: false, smaa: false, pr: 0.8, veg: 0.3, shadow: 1024, shadowBox: 30,
+    shadowEvery: 2, lodNear: 14, lodHide: 56, halfD: 14, propFar: 40, bigFar: 140, propShadow: false, viewCap: 250, wildD: 160 },
   { key: 'mid', name: '均衡', gtao: false, bloom: true, smaa: true, pr: 1, veg: 0.65, shadow: 2048, shadowBox: 70,
     shadowEvery: 1, lodNear: 40, lodHide: 160, halfD: 30, propFar: 150, bigFar: Infinity, propShadow: true, viewCap: 1600, wildD: 256 },
   { key: 'hi', name: '精致', gtao: true, bloom: true, smaa: true, pr: 1.5, veg: 1, shadow: 2048, shadowBox: 70,
@@ -4016,7 +4016,7 @@ function setQuality(idx, manual = false) {
     sun.shadow.mapSize.set(q.shadow, q.shadow);
     if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; }
   }
-  const sc = sun.shadow.camera; // 框收窄后纹素密度不变(36m/1024 ≈ 70m/2048);sky.js 的纹素对齐按框宽自适应
+  const sc = sun.shadow.camera; // 框收窄后纹素密度不降(30m/1024 比 70m/2048 还密);sky.js 的纹素对齐按框宽自适应
   if (sc.right !== q.shadowBox) {
     sc.left = sc.bottom = -q.shadowBox;
     sc.right = sc.top = q.shadowBox;
@@ -9864,8 +9864,9 @@ ctx.mapView = () => ({ guards, bandits, horses, wanted, warband, beacon, beaconR
   const st = staticBatch(scene, worldTops, { groundH, protect: protect.filter((o) => !winFlames.has(o)), protectMats,
     raycastKeep: new Set(world.occluders) });
   console.info('静态合批', st, `${(performance.now() - t0).toFixed(0)}ms`);
-  // 没并进去的小件(开局就有的碑、牌、蘑菇、火把头……)交给远景剔除(按画质档的 propFar)
-  console.info('小件远景剔除', registerSmallProps(scene.children.filter((o) => !preWorldTops.has(o))));
+  // 没并进去的小件(开局就有的碑、牌、蘑菇、火把头……)交给远景剔除(按画质档的 propFar);
+  // 委托人头顶的"!"是远远找人用的,不剔
+  console.info('小件远景剔除', registerSmallProps(scene.children.filter((o) => !preWorldTops.has(o) && o !== exGroup)));
 }
 // ---- 着色器预热:场景材质 + 特效材质一次编译好,首次出刀/施法/起手预警/下雨不再卡顿 ----
 // 必须对着后处理的离屏目标编译:RenderPass 画进 composer 的渲染目标(不做色调映射、线性输出),

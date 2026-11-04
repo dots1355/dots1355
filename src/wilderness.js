@@ -5,7 +5,7 @@
 import * as THREE from 'three';
 import { lambert, addCircles, removeCircles } from './entities.js';
 import { buildTree, buildPine, buildDeadTree, buildCactus, buildRock, buildBush, natureProp, natureSpec,
-  buildNatureInstances, releaseNatureInstances, NIGHT_GLOW } from './flora.js';
+  buildNatureInstances, releaseNatureInstances, warmNatureTemplate, NIGHT_GLOW } from './flora.js';
 import { dominantBiome, groundH, buildGroundMesh, getGroundMaterial, GRID } from './terrain.js';
 import { plainStandard, vpbrMaterial, bakeVPBRSteps } from './gfx/vpbr.js';
 
@@ -445,9 +445,11 @@ function* chunkJob(cx, cz) {
     bins.get(k).items.push({ geometry: m.geometry, material: m.material, matrix: m.matrixWorld });
     merged.add(m);
   });
+  yield;
   const outs = [];
   for (const b of bins.values()) {
-    const geo = yield* bakeVPBRSteps(b.items, { chunk: 5000 });
+    const geo = yield* bakeVPBRSteps(b.items, { chunk: 3000 });
+    yield;
     geo.computeBoundingSphere();
     const mesh = new THREE.Mesh(geo, vpbrMaterial({ side: b.side }));
     mesh.castShadow = b.cast;
@@ -468,10 +470,14 @@ function* chunkJob(cx, cz) {
     if (!live) g.remove(o);
   }
   for (const m of outs) g.add(m);
+  yield;
+  // 实例化地标:模板第一次用到时要烘一次顶点色几何(之后全场缓存),一种模板单独一步
   let inst = null;
   if (insts.length) {
+    for (const name of new Set(insts.map((p) => p.name))) if (warmNatureTemplate(name)) yield;
     inst = buildNatureInstances(insts);
     g.add(inst);
+    yield;
   }
   // 整块冻结:之后每帧的矩阵更新直接跳过这棵子树
   g.userData.noSnap = true;
@@ -479,7 +485,8 @@ function* chunkJob(cx, cz) {
   g.traverse((o) => { o.matrixAutoUpdate = false; o.matrixWorldAutoUpdate = false; });
   scene.add(g);
   addCircles(colliders, cols);
-  chunks.set(key, { group: g, inst, cols, spawned, key, cx, cz });
+  // props:实例化地标的放置清单 [{ name, x, y, z, yaw, s }](地标不再是组里的克隆网格,地图标注等只读用途读它)
+  chunks.set(key, { group: g, inst, props: insts, cols, spawned, key, cx, cz });
 }
 
 function unloadChunk(key) {
@@ -503,7 +510,7 @@ let lastX = 1e9, lastZ = 1e9;
 let job = null;          // 正在建的区块 { key, it }
 const toLoad = [];       // 待建(近的在前)
 const toUnload = [];     // 待卸
-const BUDGET_MS = 2;
+const BUDGET_MS = 1.2; // 单步最长约 2.7ms(地表网格那一步):一帧的区块活最多 ~4ms
 // 玩家到区块矩形的距离(在块内为 0)
 function chunkDist(cx, cz, px, pz) {
   const x0 = cx * CHUNK, z0 = cz * CHUNK;

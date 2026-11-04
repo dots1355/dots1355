@@ -294,17 +294,37 @@ export function setVegetationSeason(seasonIdx) {
   uniforms.uFrost.value = seasonIdx === 3 ? 0.45 : 0;
 }
 
+// 窗口跟着玩家走:每走 8m 重排一次。新进窗口的格子要现生成(每格上百株,逐株查地形/群系/坡度),
+// 一帧最多花 GEN_MS 毫秒生成,没生成完的下一帧接着来;全部就绪才一次性重填实例缓冲。
+// 传送、骑马疾驰、改画质时不再一帧生成几十格(实测那一帧 6~14ms),草晚一两帧铺满(远处本来就渐隐)
+const GEN_MS = 1.2;
+let want = null; // 待铺的窗口 { x, z, density, cells }
 export function updateVegetation(dt, px, pz, windK = 1) {
   if (!meshes) return;
   uniforms.uTime.value += dt;
   uniforms.uWind.value += (windK - uniforms.uWind.value) * Math.min(1, dt * 0.8);
   uniforms.uCenter.value.set(px, pz);
-  if (Math.hypot(px - lastX, pz - lastZ) < 8) return;
-  lastX = px; lastZ = pz;
+  if (want && (want.density !== density || Math.hypot(px - want.x, pz - want.z) >= 8)) want = null;
+  if (!want) {
+    if (Math.hypot(px - lastX, pz - lastZ) < 8) return;
+    want = { x: px, z: pz, density, cells: windowCells(px, pz) };
+  }
+  const t0 = performance.now();
+  for (const [, cx, cz] of want.cells) {
+    const key = cx * 100003 + cz;
+    if (cellCache.has(key)) continue;
+    if (performance.now() - t0 > GEN_MS) return; // 余下的格子下一帧再生成
+    cellCache.set(key, genCell(cx, cz));
+  }
+  lastX = want.x; lastZ = want.z;
+  fillCells(want.cells);
+  want = null;
+}
+// 由近到远收集窗口里的格子:装不下时丢最远的
+function windowCells(px, pz) {
   const R = uniforms.uRadius.value;
   const pcx = Math.floor(px / CELL), pcz = Math.floor(pz / CELL);
   const rc = Math.ceil(R / CELL) + 1;
-  // 由近到远收集格子:装不下时丢最远的
   const cells = [];
   for (let dz = -rc; dz <= rc; dz++) {
     for (let dx = -rc; dx <= rc; dx++) {
@@ -316,14 +336,17 @@ export function updateVegetation(dt, px, pz, windK = 1) {
     }
   }
   cells.sort((a, b) => a[0] - b[0]);
+  return cells;
+}
+function fillCells(cells) {
   const fill = {};
   for (const t of TYPES) fill[t] = 0;
   const keep = new Set();
   for (const [, cx, cz] of cells) {
     const key = cx * 100003 + cz;
     keep.add(key);
-    let c = cellCache.get(key);
-    if (!c) { c = genCell(cx, cz); cellCache.set(key, c); }
+    const c = cellCache.get(key);
+    if (!c) continue;
     for (const t of TYPES) {
       const src = c[t];
       if (!src.n) continue;
