@@ -8,6 +8,7 @@
 | --- | --- |
 | `src/gfx/core.js` | 渲染器、场景、相机;后处理链(Render → GTAO → Bloom → Output → 调色 → 画风 → SMAA);8 种画风预设 `applyStyle/cycleStyle` |
 | `src/gfx/surface.js` | 表面着色补丁(onBeforeCompile 注入,共享同一程序):世界坐标低频调色破平铺重复;雨天湿润(反照率压暗、粗糙度降低),由 `surfaceUniforms` 驱动 |
+| `src/gfx/water.js` | 统一水体着色器(湖/河/喷泉/沼泽水塘/冰面共用一个程序):按水深变色、菲涅尔反射天空、岸边泡沫、雨天涟漪、浮萍、冰面;极坐标与样条条带水面网格 |
 | `src/gfx/pools.js` | 固定数量的**点光池**(光源只登记,按远近"附身")与**特效材质池**——两者都为了不在游戏中途重编译着色器 |
 | `src/core/ctx.js` | 共享上下文:main.js 启动时登记玩家/世界/碰撞体与少量回调,拆出的系统模块经它访问(带安全缺省值) |
 | `src/systems/camera.js` | 相机:跟随、锁定越肩、防穿墙/穿岩、震屏与速度感视野;共享镜头状态 `cam` |
@@ -16,6 +17,7 @@
 | `src/systems/weather.js` | 天气轮换、雷电、雨/雪线段粒子、地面扬尘 |
 | `src/core/timers.js` | 游戏时钟定时器 `later(sec, fn)`:按游戏 dt 结算,暂停即冻结 |
 | `src/core/rng.js` | 可设种子的 `rand()`;玩法与世界生成的随机都走它,测试可复现 |
+| `src/waterbodies.js` | 水体布局(纯数据 + 解析函数):湖岸噪声轮廓、样条河道、沼泽水塘、冰湖;`waterBasin` 给地形挖盆地(栈桥/木桥下垫土埂),`waterProx` 供岸边配色、禁草与芦苇 |
 | `src/terrain.js` | 群系权重、地形高度 `terrainH`、压平蒙版、`groundH`(与网格三角化逐三角一致)、地表网格与材质、地图配色 |
 | `src/world.js` | 王国手工布局(城墙、建筑、道路、兴趣点、碰撞体、小地图要素);Blender 建筑模板按材质拆件 + 平面投影 UV(`prepParts`),三种民居户型、门口道具、巷道与菜园 |
 | `src/batch.js` | 静态合批:世界里不会动的网格按"材质签名 × 64m 格"合并,剩余静态物冻结矩阵 |

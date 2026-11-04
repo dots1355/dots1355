@@ -8,6 +8,7 @@
 // 把城镇/道路/水域/建筑压平,向外平滑过渡成丘陵。地表网格在 CPU 上一次烘焙
 // (核心 ±512 米一块,荒野每个区块一块),运行时不做任何噪声计算。
 import * as THREE from 'three';
+import { waterBasin, waterProx } from './waterbodies.js';
 
 // ---------------- 整数哈希值噪声 ----------------
 function hash2(ix, iz) {
@@ -144,11 +145,11 @@ export function mountainH(x, z) {
 const _wh = new Float32Array(NB);
 export function terrainH(x, z) {
   const m = maskAt(x, z);
-  if (m <= 0) return 0;
+  if (m <= 0) return -waterBasin(x, z);
   const w = biomeWeights(x, z, _wh);
   let h = 0;
   for (let i = 0; i < NB; i++) if (w[i] > 0.002) h += w[i] * biomeH(i, x, z);
-  return (h + mountainH(x, z)) * m;
+  return (h + mountainH(x, z)) * m - waterBasin(x, z); // 湖/河/水塘挖成盆地(水位 0)
 }
 
 // ---------------- 核心区平整蒙版(距离场) ----------------
@@ -226,6 +227,7 @@ export function buildMasks(world) {
       stampRect(VEG, VN, VS, f.x, f.z, f.w + 0.8, f.h + 0.8, rot, 0);
     } else if (['wall', 'tower', 'keep', 'house', 'stall', 'tent', 'windmill', 'plaza', 'field', 'water'].includes(f.type)) {
       stampRect(zone, MN, MS, f.x, f.z, f.w + 6, f.h + 6, rot, 1);
+      if (f.shape) continue; // 有真实轮廓的水体:下面按岸线精确禁草(岸边留给芦苇)
       const m = f.type === 'water' ? 1.2 : 0.6;
       stampRect(VEG, VN, VS, f.x, f.z, f.w + m, f.h + m, rot, 0);
     }
@@ -243,6 +245,17 @@ export function buildMasks(world) {
   for (const s of FLAT_SPOTS) {
     if (s[0] === 0) stampRect(zone, MN, MS, s[1], s[2], s[3] * 2, s[4] * 2, 0, 1);
     else stampCircle(zone, MN, MS, s[1], s[2], s[3], 1);
+  }
+  for (const f of world.features) { // 水体:岸线以内(含 0.3m 湿边)不长草
+    if (!f.shape) continue;
+    const R = Math.hypot(f.w, f.h) / 2 + 2;
+    const x0 = Math.max(0, Math.floor((f.x - R + MO) / VS)), x1 = Math.min(VN - 1, Math.ceil((f.x + R + MO) / VS));
+    const z0 = Math.max(0, Math.floor((f.z - R + MO) / VS)), z1 = Math.min(VN - 1, Math.ceil((f.z + R + MO) / VS));
+    for (let iz = z0; iz <= z1; iz++) {
+      for (let ix = x0; ix <= x1; ix++) {
+        if (waterProx((ix + 0.5) * VS - MO, (iz + 0.5) * VS - MO) > -0.3) VEG[iz * VN + ix] = 0;
+      }
+    }
   }
   stampCircle(VEG, VN, VS, 0, 5, 13.5, 0);                 // 喷泉广场
   stampRect(VEG, VN, VS, 352, -280, 96, 96, 0, 0);         // 地窖迷宫
@@ -386,10 +399,17 @@ function groundColor(x, z, ny, h, out) {
     out.lerp(ROCK_COL, smooth(6, 26, mh) * 0.55);
     out.lerp(SNOWCAP, smooth(36, 58, mh) * (1 - steep * 0.55));
   }
+  // 水边:水下是泥滩(越深越暗),岸上两三米是潮湿的深色泥土
+  const wp = waterProx(x, z);
+  if (wp > -3.5) {
+    if (h < 0) out.lerp(MUD_COL, Math.min(1, 0.55 + -h * 0.5));
+    else out.lerp(BANK_COL, smooth(-3.5, 0.2, wp) * 0.55);
+  }
   const k = 0.9 + fine * 0.2;
   out.r *= k; out.g *= k; out.b *= k;
   return out;
 }
+const MUD_COL = lin(0x3d3a2c), BANK_COL = lin(0x5a5338);
 const _wc = new Float32Array(NB);
 
 // ---------------- 地表材质(共享) ----------------

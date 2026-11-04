@@ -35,6 +35,7 @@ function buildBigBase() {
     }
     if (f.type === 'tree' || f.type === 'dome') continue;
     g.fillStyle = MM_COLS[f.type] || '#888';
+    if (drawShaped(g, f, (x, z) => [(x + BIG_R) * k, (z + BIG_R) * k], k)) continue;
     g.fillRect(mx - (f.w * k) / 2, mz - (f.h * k) / 2, Math.max(1.5, f.w * k), Math.max(1.5, f.h * k));
   }
   g.font = 'bold 13px sans-serif';
@@ -103,11 +104,29 @@ export function toggleBigMap(force) {
 // ================= 小地图 =================
 export const MM_COLS = {
   wall: '#9d9486', tower: '#8d8476', keep: '#7d7466', house: '#a3703f',
-  tree: '#295c33', water: '#3f8fc4', field: '#9a7444', plaza: '#cdb891',
+  tree: '#295c33', water: '#4f7f96', field: '#9a7444', plaza: '#cdb891',
   stall: '#c05a3a', windmill: '#e8dcc0', tent: '#5d4a33',
   sand: '#d9c48f', snow: '#e8edf2', swamp: '#44523a', ash: '#57524c',
   bone: '#e8e4da', dome: '#3f7a45', cactus: '#3f8a4f',
 };
+// 有真实轮廓(湖/塘/冰湖)的画多边形,带朝向的(河段)画旋转矩形;返回是否已画
+function drawShaped(g, f, toXY, k) {
+  if (f.poly) {
+    g.beginPath();
+    f.poly.forEach(([x, z], i) => { const [px, pz] = toXY(x, z); if (i) g.lineTo(px, pz); else g.moveTo(px, pz); });
+    g.closePath();
+    g.fill();
+    return true;
+  }
+  if (f.type === 'water' && f.rot) {
+    const [mx, mz] = toXY(f.x, f.z);
+    g.save(); g.translate(mx, mz); g.rotate(-f.rot);
+    g.fillRect((-f.w / 2) * k, (-f.h / 2) * k, Math.max(1.5, f.w * k), f.h * k + 0.6);
+    g.restore();
+    return true;
+  }
+  return false;
+}
 export function drawMinimap() {
   const V = ctx.mapView();
   const S = 200, range = 240, k = S / range;
@@ -143,6 +162,7 @@ export function drawMinimap() {
       continue;
     }
     mm.fillStyle = MM_COLS[f.type] || '#888';
+    if (drawShaped(mm, f, toMap, k)) continue;
     mm.fillRect(mx - (f.w * k) / 2, mz - (f.h * k) / 2, Math.max(2, f.w * k), Math.max(2, f.h * k));
   }
   // 马

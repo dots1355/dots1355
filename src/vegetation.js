@@ -5,6 +5,7 @@
 // 避开道路/建筑/水面(terrain.vegAllowed)与陡坡;顶点着色器做风吹摆动与远处渐隐。
 import * as THREE from 'three';
 import { groundH, groundNormalY, biomeWeights, vegAllowed, BIOME } from './terrain.js';
+import { waterProx } from './waterbodies.js';
 
 const CELL = 16;
 
@@ -258,7 +259,9 @@ function genCell(cx, cz) {
     let r = rng(), b = 0;
     for (; b < 7; b++) { r -= w[b]; if (r <= 0) break; }
     const rec = RECIPE[b] || RECIPE[BIOME.plains];
-    const type = pickWeighted(rng, rec.mix);
+    let type = pickWeighted(rng, rec.mix);
+    const wp = waterProx(x, z); // 水边:芦苇成片(湖岸/河岸/塘边),越靠水越密
+    if (wp > -3.2 && b !== BIOME.snow && b !== BIOME.desert && rng() < 0.85 - (wp < -1.6 ? 0.35 : 0)) type = 'reed';
     const ny = groundNormalY(x, z);
     if (type !== 'pebble' && ny < 0.82) continue; // 陡坡不长草
     const y = groundH(x, z);

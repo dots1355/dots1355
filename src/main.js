@@ -6448,7 +6448,7 @@ function tryInteract(probe = false) {
   }
   if (dist2(player.pos.x, player.pos.z, BOAT_ISLE.x, BOAT_ISLE.z) < 6) {
     if (probe) return P('按 E 划船回栈桥', BOAT_ISLE.x, BOAT_ISLE.z, 1.2);
-    rowTo({ x: -98, z: 83 });
+    rowTo({ x: -99.4, z: 83 }); // 落在栈桥桥面上(桥面宽 2.2m,两侧是水)
     return;
   }
   if (dist2(player.pos.x, player.pos.z, -100, 100.5) < 5) {
@@ -9744,13 +9744,13 @@ function tick(dt, now) {
   }
   player._lastRX = player.pos.x;
   player._lastRZ = player.pos.z;
-  // 深水规则:银月湖面不可徒步——栈桥走廊(|x+100|<2.2 且 z<92)与湖心岛(距岛心<6.8)除外。
+  // 深水规则:银月湖面不可徒步——栈桥走廊(|x+100|<1.3 即桥面宽,且 z<92)与湖心岛(距岛心<6.8)除外。
   // 每帧检查,步幅远小于缓冲带宽,冲刺也蹚不过去;上岛只能靠小船。
   {
     const ldx = player.pos.x + 100, ldz = player.pos.z - 100;
     const lakeD = Math.hypot(ldx, ldz);
     if (lakeD < 28.5 && lakeD > 6.8 &&
-        !(Math.abs(ldx) < 2.2 && player.pos.z < 92)) {
+        !(Math.abs(ldx) < 1.3 && player.pos.z < 92)) {
       const push = 28.5 / (lakeD || 1);
       player.pos.x = -100 + ldx * push;
       player.pos.z = 100 + ldz * push;

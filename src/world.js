@@ -6,6 +6,8 @@ import { lambert } from './entities.js';
 import { makeTextures } from './textures.js';
 import { worldTint } from './gfx/surface.js';
 import { buildCropMesh } from './vegetation.js';
+import { waterMesh, polarWaterGeo, riverWaterGeo } from './gfx/water.js';
+import { LAKE, lakeR, RIVER, POOLS, poolR, ICE, iceR, outline, riverNear, waterBasin } from './waterbodies.js';
 import { mergeGeometries } from '../lib/jsm/utils/BufferGeometryUtils.js';
 
 export function buildWorld(scene) {
@@ -64,6 +66,7 @@ export function buildWorld(scene) {
     m.rotation.x = -Math.PI / 2;
     m.rotation.z = -Math.atan2(dx, dz);
     m.position.set((x1 + x2) / 2, 0.02, (z1 + z2) / 2);
+    if (waterBasin(m.position.x, m.position.z) > 0.02) m.userData.noSnap = true; // 涉水的路段:贴水面,不沉到河床
     m.receiveShadow = true;
     scene.add(m);
     feat('road', (x1 + x2) / 2, (z1 + z2) / 2, w, len, Math.atan2(dx, dz));
@@ -226,24 +229,33 @@ export function buildWorld(scene) {
   scene.add(flag);
 
   // ---- 喷泉广场 ----
-  const fBase = new THREE.Mesh(new THREE.CylinderGeometry(3, 3.2, 0.6, 12), lambert(0xb7b2a6));
-  fBase.position.set(0, 0.3, 5);
-  fBase.castShadow = true;
+  // 两层石砌水池:外池有池沿与池底(水面低于池沿),中柱托着小水盘,水帘落回外池
+  const fountainStone = texMat(TX.stone, 2.2, 0.5, { color: 0xd4cec2, roughness: 0.9 });
+  const lathe = (pts, seg = 28) => new THREE.LatheGeometry(pts.map(([r, y]) => new THREE.Vector2(r, y)), seg);
+  const fBase = new THREE.Mesh(lathe([[0.01, 0.22], [2.58, 0.22], [2.62, 0.62], [2.78, 0.7], [3.08, 0.7], [3.22, 0.6], [3.28, 0.05], [3.1, 0]]), fountainStone);
+  fBase.position.set(0, 0, 5);
+  fBase.castShadow = fBase.receiveShadow = true;
   scene.add(fBase);
-  const fountainWater = new THREE.MeshStandardMaterial({
-    color: 0x3f9fd8, roughness: 0.08, metalness: 0,
-    normalMap: TX.waterNormal, normalScale: new THREE.Vector2(0.4, 0.4),
-  });
-  waterMats.push(fountainWater);
-  const water = new THREE.Mesh(new THREE.CylinderGeometry(2.5, 2.5, 0.15, 16), fountainWater);
-  water.position.set(0, 0.62, 5);
-  scene.add(water);
-  const col = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.45, 1.6, 8), lambert(0xb7b2a6));
-  col.position.set(0, 1.2, 5);
+  const col = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.42, 1.5, 12), fountainStone);
+  col.position.set(0, 0.95, 5);
+  col.castShadow = true;
   scene.add(col);
-  const orb = new THREE.Mesh(new THREE.SphereGeometry(0.4, 8, 6), lambert(0x4aa6d8));
-  orb.position.set(0, 2.1, 5);
+  const bowl = new THREE.Mesh(lathe([[0.01, 1.42], [0.82, 1.45], [0.95, 1.62], [1.02, 1.62], [0.96, 1.52], [0.4, 1.3], [0.3, 1.25]], 20), fountainStone);
+  bowl.position.set(0, 0, 5);
+  bowl.castShadow = true;
+  scene.add(bowl);
+  const orb = new THREE.Mesh(new THREE.SphereGeometry(0.22, 12, 8), lambert(0xc8c2b4));
+  orb.position.set(0, 1.95, 5);
   scene.add(orb);
+  const spout = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.09, 0.4, 8), fountainStone);
+  spout.position.set(0, 1.7, 5);
+  scene.add(spout);
+  scene.add(waterMesh(polarWaterGeo(0, 5, () => 2.6, { margin: 0, rings: 3, segs: 32, y: 0.55 }), 'fountain', { depth: 0.33, normalTex: TX.waterNormal }));
+  scene.add(waterMesh(polarWaterGeo(0, 5, () => 0.84, { margin: 0, rings: 2, segs: 20, y: 1.55 }), 'fountain', { depth: 0.12 }));
+  { // 水帘:小水盘边沿落回外池的一圈薄水
+    const curtain = new THREE.CylinderGeometry(0.98, 1.22, 1.0, 24, 1, true).translate(0, 1.07, 5);
+    scene.add(waterMesh(curtain, 'fountain', { depth: 0.25 }));
+  }
   circle(0, 5, 3.4);
   feat('plaza', 0, 5, 7, 7);
 
@@ -478,7 +490,8 @@ export function buildWorld(scene) {
     if (Math.hypot(x + 100, z - 100) < 40) continue;             // 避开湖
     if (Math.hypot(x + 130, z + 60) < 14) continue;              // 避开营地
     if (Math.hypot(x + 170, z + 90) < 22) continue;              // 避开要塞
-    if (Math.abs(x + 95) < 7 && z < 72) continue;                // 避开河道
+    const rv = riverNear(x, z);
+    if (rv && rv.d < rv.hw + 3) continue;                          // 避开河道
     if (x > -78 && z > -60 && z < 60) continue;                  // 避开城墙口
     tree(x, z, rand() < 0.55);
   }
@@ -496,22 +509,8 @@ export function buildWorld(scene) {
   // 城内景观树
   for (const [x, z] of [[-8, 30], [8, 30], [-45, 45], [45, -45], [-20, -40]]) tree(x, z, false);
 
-  // ---- 湖泊 ----
-  const sand = new THREE.Mesh(new THREE.CircleGeometry(33, 24), lambert(0xd9c98f));
-  sand.rotation.x = -Math.PI / 2;
-  sand.position.set(-100, 0.02, 100);
-  scene.add(sand);
-  const lakeNormal = TX.waterNormal.clone();
-  lakeNormal.needsUpdate = true;
-  const lakeMat = new THREE.MeshStandardMaterial({
-    color: 0x2f7fb8, roughness: 0.06, metalness: 0,
-    normalMap: lakeNormal, normalScale: new THREE.Vector2(0.5, 0.5),
-  });
-  waterMats.push(lakeMat);
-  const lake = new THREE.Mesh(new THREE.CircleGeometry(30, 32), lakeMat);
-  lake.rotation.x = -Math.PI / 2;
-  lake.position.set(-100, 0.04, 100);
-  scene.add(lake);
+  // ---- 银月湖:噪声岸线(29~32.5m)、地形挖成盆地、统一水着色(浅滩透底、深处暗青、岸边泡沫) ----
+  scene.add(waterMesh(polarWaterGeo(LAKE.x, LAKE.z, lakeR, { r0: 4.5, rings: 24, segs: 112 }), 'lake', { depthFn: waterBasin, normalTex: TX.waterNormal }));
   // 湖水碰撞:一圈小圆(中心留空),朝栈桥方向开口——栈桥能走到头,
   // 开口再用三枚"浅滩塞"堵住,徒步下不了水,上岛只能靠小船
   for (let i = 0; i < 18; i++) {
@@ -522,12 +521,12 @@ export function buildWorld(scene) {
     circle(-100 + Math.cos(a) * 26, 100 + Math.sin(a) * 26, 6);
   }
   // 深水不可徒步由 main.js 的规则级判定兜底(几何环只挡 NPC/野兽)
-  feat('water', -100, 100, 60, 60);
+  features.push({ type: 'water', x: LAKE.x, z: LAKE.z, w: 66, h: 66, rot: 0, shape: true, poly: outline(LAKE.x, LAKE.z, lakeR) });
 
   // ---- 湖心岛:沉没神殿的尖顶 ----
   let islandAltarMat = null;
   {
-    const isle = new THREE.Mesh(new THREE.CircleGeometry(5.5, 18), lambert(0xb9ad8f, { roughness: 0.95 }));
+    const isle = new THREE.Mesh(new THREE.CircleGeometry(5.5, 18), lambert(0x8f8770, { roughness: 0.95 }));
     isle.rotation.x = -Math.PI / 2;
     isle.position.set(-100, 0.07, 100);
     isle.receiveShadow = true;
@@ -567,7 +566,8 @@ export function buildWorld(scene) {
     const seat = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.08, 0.4), lambert(0x9a7a4f));
     seat.position.y = 0.4;
     b.add(seat);
-    b.position.set(x, 0, z);
+    b.position.set(x, -0.14, z); // 浮在水面(水位 0),不贴湖底
+    b.userData.noSnap = true;
     b.rotation.y = rot;
     scene.add(b);
   }
@@ -700,7 +700,7 @@ export function buildWorld(scene) {
   }
   chest(0, -50);        // 城堡后
   chest(-135, -48, 140); // 盗贼营地旁
-  chest(-78, 82, 90);   // 湖边
+  chest(-75.6, 80, 90); // 湖边(岸上)
   chest(30, 96);        // 农田
   chest(56, 15, 180);   // 马厩
   chest(-66, 50, 45);   // 城墙角
@@ -795,7 +795,7 @@ export function buildWorld(scene) {
   function fence(x1, z1, x2, z2) {
     const dx = x2 - x1, dz = z2 - z1;
     const len = Math.hypot(dx, dz);
-    const n = Math.floor(len / 2.2);
+    const n = Math.max(1, Math.floor(len / 2.2)); // 短篱笆也至少两根桩(len<2.2 时 0/0 会出 NaN)
     for (let i = 0; i <= n; i++) {
       const t = i / n;
       const p = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.09, 1.1, 5), woodMat);
@@ -918,15 +918,21 @@ export function buildWorld(scene) {
 
   // ---- 银月河(自湖泊向北)与木桥 ----
   {
-    const riverMat = lakeMat; // 与湖共用材质(法线动画同步)
-    const river = new THREE.Mesh(new THREE.PlaneGeometry(7, 300), riverMat);
-    river.rotation.x = -Math.PI / 2;
-    river.position.set(-95, 0.035, -78); // z 从 72 到 -228
-    scene.add(river);
-    feat('water', -95, -78, 7, 300);
-    // 河岸碰撞(桥处留口 z -40..-28)
-    box(-95, 22, 7, 100);    // z 72..-28
-    box(-95, -134, 7, 188);  // z -40..-228
+    // 弯曲样条河道(waterbodies.RIVER):水面条带只铺到湖岸,入湖口由湖面接上
+    const inLake = (q) => Math.hypot(q.x - LAKE.x, q.z - LAKE.z) < lakeR(Math.atan2(q.z - LAKE.z, q.x - LAKE.x)) - 0.5;
+    const rpts = RIVER.filter((q) => !inLake(q));
+    scene.add(waterMesh(riverWaterGeo(rpts), 'river', { depthFn: waterBasin, normalTex: TX.waterNormal }));
+    for (let i = 0; i < rpts.length - 1; i += 3) { // 地图/压平/禁草:分段旋转矩形
+      const a = rpts[i], b = rpts[Math.min(rpts.length - 1, i + 3)];
+      const len = Math.hypot(b.x - a.x, b.z - a.z);
+      features.push({ type: 'water', x: (a.x + b.x) / 2, z: (a.z + b.z) / 2, w: Math.max(a.w, b.w), h: len + 0.6,
+        rot: Math.atan2(b.x - a.x, b.z - a.z), shape: true });
+    }
+    // 河岸碰撞:沿中线一串圆(桥处 z -41..-27 留口)
+    for (const q of RIVER) {
+      if (q.z > -41 && q.z < -27) continue;
+      circle(q.x, q.z, q.w / 2 - 0.5);
+    }
     // 木桥(位于去营地的野径上)
     const bridge = new THREE.Group();
     const deck = new THREE.Mesh(new THREE.BoxGeometry(12, 0.18, 5), woodMat);
@@ -944,6 +950,7 @@ export function buildWorld(scene) {
       }
     }
     bridge.position.set(-95, 0, -34);
+    bridge.userData.noSnap = true; // 桥面在水位之上(桥下土埂与桥面齐平),不跟着河床
     scene.add(bridge);
     feat('road', -95, -34, 12, 5);
   }
@@ -958,29 +965,24 @@ export function buildWorld(scene) {
     // 栈桥伸入湖中
     const pier = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.15, 15), woodMat);
     pier.position.set(-100, 0.3, 78);
+    pier.userData.noSnap = true; // 桥面在水位之上,不跟着湖底
     pier.castShadow = true;
     scene.add(pier);
-    for (const pz of [72, 77, 82]) {
+    for (const pz of [71, 74.5, 78, 81.5, 85]) {
       for (const s of [-1, 1]) {
-        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.1, 1.2, 5), woodMat);
-        post.position.set(-100 + s, 0.1, pz);
+        const post = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.12, 1.9, 6), woodMat);
+        post.position.set(-100 + s * 1.05, -0.4 + (pz === 85 ? 0.35 : 0), pz);
+        post.userData.noSnap = true;
         scene.add(post);
       }
     }
     // 小船
     const boat = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.5, 3.2), woodMat);
-    boat.position.set(-94, 0.25, 86);
+    boat.position.set(-94, 0.08, 86);
+    boat.userData.noSnap = true;
     boat.rotation.y = 0.5;
     scene.add(boat);
-    // 芦苇
-    for (let i = 0; i < 24; i++) {
-      const a = rand() * Math.PI * 2;
-      const rr = 31 + rand() * 3.5;
-      const reed = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.05, 1.4 + rand(), 4),
-        lambert(0x7a9a4a, { roughness: 1 }));
-      reed.position.set(-100 + Math.cos(a) * rr, 0.7, 100 + Math.sin(a) * rr);
-      scene.add(reed);
-    }
+    // 芦苇沿岸生长:交给 vegetation(按 waterbodies 的岸线成片长,不再是一圈棍子)
     feat('house', -100, 78, 3, 15);
   }
 
@@ -1225,13 +1227,11 @@ export function buildWorld(scene) {
 
   // ---- 雾语沼泽(西南) ----
   zoneDisc(-290, 240, 78, 0x4a5a3e, 'swamp');
-  for (const [px, pz, pr] of [[-310, 225, 12], [-275, 255, 10], [-295, 270, 9], [-265, 225, 8]]) {
-    const pool = new THREE.Mesh(new THREE.CircleGeometry(pr, 14), lambert(0x2a3a30, { roughness: 0.2 }));
-    pool.rotation.x = -Math.PI / 2;
-    pool.position.set(px, 0.03, pz);
-    scene.add(pool);
-    circle(px, pz, pr - 1);
-    feat('water', px, pz, pr * 2, pr * 2);
+  for (const pl of POOLS) { // 不规则轮廓的浅泥塘:浮萍成片,岸边芦苇由 vegetation 长
+    const R = (a) => poolR(pl, a);
+    scene.add(waterMesh(polarWaterGeo(pl.x, pl.z, R, { rings: 10, segs: 56 }), 'swamp', { depthFn: waterBasin, normalTex: TX.waterNormal }));
+    circle(pl.x, pl.z, pl.r * 0.72);
+    features.push({ type: 'water', x: pl.x, z: pl.z, w: pl.r * 2.5, h: pl.r * 2.5, rot: 0, shape: true, poly: outline(pl.x, pl.z, R, 32) });
   }
   for (let i = 0; i < 12; i++) {
     const a = rand() * 6.28, rr = 12 + rand() * 62;
@@ -1342,12 +1342,8 @@ export function buildWorld(scene) {
     feat('tree', sx, sz, 1.5, 1.5);
   }
   {
-    const ice = new THREE.Mesh(new THREE.CircleGeometry(11, 16),
-      lambert(0xcfe6f2, { roughness: 0.1, metalness: 0.1 }));
-    ice.rotation.x = -Math.PI / 2;
-    ice.position.set(-248, 0.03, -138);
-    scene.add(ice);
-    feat('water', -248, -138, 22, 22);
+    scene.add(waterMesh(polarWaterGeo(ICE.x, ICE.z, iceR, { margin: 0, rings: 8, segs: 48, y: 0.035 }), 'ice', { depth: 0.6, normalTex: TX.waterNormal }));
+    features.push({ type: 'water', x: ICE.x, z: ICE.z, w: 26, h: 26, rot: 0, poly: outline(ICE.x, ICE.z, iceR, 32) });
   }
   chest(-268, -160, 20);
   coinLine(-215, -95, -255, -140, 9);
