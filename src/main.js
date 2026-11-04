@@ -12,7 +12,7 @@ import { setTreeModel, setBuildingModel, setRockGeos, setNatureModels, hasNature
 import { MODELS_B64 } from './models-data.js';
 import { buildMasks, buildCoreGround, getGroundMaterial, groundH, maskAt, vegAllowed, dominantBiome, biomeWeights } from './terrain.js';
 import { initVegetation, updateVegetation, setVegetationSeason, setVegetationDensity } from './vegetation.js';
-import { staticBatch } from './batch.js';
+import { staticBatch, registerSmallProps, updatePropLOD } from './batch.js';
 import { later, updateTimers, pendingTimers, simNow } from './core/timers.js';
 import { hitStop, slowMo, scaleDt } from './core/timefx.js';
 import { rand, seed as seedRng } from './core/rng.js';
@@ -4273,6 +4273,7 @@ function updateEntityLOD() {
   const cx = camera.position.x, cz = camera.position.z;
   updateSkinLOD(cx, cz, q.lodNear, q.lodHide);
   updateNatureLOD(cx, cz, q.propFar, q.propShadow);
+  updatePropLOD(cx, cz, q.propFar);
   _lodSeen.clear();
   const lists = [villagers, guards, bandits, wolves, horses, namedNPCs, chickens, deers, funnyNPCs, mercs];
   for (const list of lists) {
@@ -9862,6 +9863,8 @@ ctx.mapView = () => ({ guards, bandits, horses, wanted, warband, beacon, beaconR
   const st = staticBatch(scene, worldTops, { groundH, protect: protect.filter((o) => !winFlames.has(o)), protectMats,
     raycastKeep: new Set(world.occluders) });
   console.info('静态合批', st, `${(performance.now() - t0).toFixed(0)}ms`);
+  // 没并进去的小件(开局就有的碑、牌、蘑菇、火把头……)交给远景剔除(按画质档的 propFar)
+  console.info('小件远景剔除', registerSmallProps(scene.children.filter((o) => !preWorldTops.has(o))));
 }
 // ---- 着色器预热:场景材质 + 特效材质一次编译好,首次出刀/施法/起手预警/下雨不再卡顿 ----
 // 必须对着后处理的离屏目标编译:RenderPass 画进 composer 的渲染目标(不做色调映射、线性输出),

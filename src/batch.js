@@ -1,6 +1,7 @@
 // 静态合批:建好的世界里,大多数网格此后再也不会动(城墙、民房、栅栏、树、石头……)。
-// 每个网格一次绘制调用,几千个就把 CPU 提交压垮了。这里把它们按"材质签名 × 64m 格"
-// 合并成少量大网格:观感不变,绘制次数降一个数量级,64m 格仍能被视锥剔除。
+// 每个网格一次绘制调用,几千个就把 CPU 提交压垮了。这里把它们按"材质签名 × 128m 格"
+// 合并成少量大网格:观感不变,绘制次数降一个数量级,128m 格仍能被视锥剔除
+// (实测比 64m 格少 10~15% 绘制,多画的屏外三角不到 4%)。
 //
 // 约定:
 // - 只处理调用方给出的顶层对象(buildWorld 新加进场景的那批);
@@ -8,7 +9,8 @@
 //   相机遮挡射线要用的墙体等;protectMats 里的材质按身份分组,不与别的材质归并;
 //   受保护对象内部"跟着它一起动"的静态子件(风车的四片叶、宝箱的箱体、一朵云的几团)就地合成一个子网格;
 // - 颜色不进签名:颜色烘进顶点色。无贴图的朴素标准材质连粗糙度/金属度也进顶点(gfx/vpbr.js),
-//   同一格同一面向的全并成一个;带贴图的按"贴图 + 参数(不含颜色)"归并;
+//   同一格同一面向的全并成一个;带贴图的按"图源 + 参数(不含颜色)"归并,贴图的平铺/偏移(repeat/offset)
+//   烘进顶点 UV——每段路、每面墙各 clone 一份设 repeat 的材质(texMat)也能并成一个;
 // - 透明材质、实例化/蒙皮网格、带子节点的网格不合并;
 // - 逻辑 y 是离地高度:合并时把每个顶层对象的地面高度直接烘进顶点(合并结果不再贴地)。
 import * as THREE from 'three';
@@ -19,20 +21,33 @@ import { NIGHT_GLOW } from './flora.js';
 const TEX_SLOTS = ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'aoMap', 'emissiveMap', 'alphaMap', 'bumpMap'];
 const q = (x) => Math.round(x * 20) / 20; // 粗糙度/金属度按 0.05 归档,近似值合一
 
-// 贴图按"图源 + 采样参数"认:同一张图各自 clone 出来设 repeat 的材质(texMat)也能归并
+// 贴图按"图源 + 采样参数"认(不含 UV 变换:它烘进顶点 UV)
 function texSig(t) {
   if (!t) return '-';
-  return [t.source ? t.source.uuid : t.uuid, t.repeat.x, t.repeat.y, t.offset.x, t.offset.y, t.rotation, t.center.x, t.center.y,
-    t.wrapS, t.wrapT, t.magFilter, t.minFilter, t.anisotropy, t.flipY, t.colorSpace, t.channel].join(':');
+  return [t.source ? t.source.uuid : t.uuid, t.wrapS, t.wrapT, t.magFilter, t.minFilter, t.anisotropy, t.flipY, t.colorSpace].join(':');
+}
+// 材质里各贴图槽共用的那一个 UV 变换(都走第 0 套 UV、变换一致);不一致返回 null(不烘,按身份归组)
+function sharedUvXform(m) {
+  let ref = null;
+  for (const k of TEX_SLOTS) {
+    const t = m[k];
+    if (!t) continue;
+    if (t.channel !== 0 || !t.matrixAutoUpdate) return null;
+    if (!ref) ref = t;
+    else if (!ref.repeat.equals(t.repeat) || !ref.offset.equals(t.offset) || ref.rotation !== t.rotation || !ref.center.equals(t.center)) return null;
+  }
+  return ref;
 }
 // 签名不含颜色(颜色进顶点色);无贴图朴素材质整类合一
 function matSig(m, protectMats) {
   if (protectMats.has(m)) return 'id:' + m.uuid;
   if (plainStandard(m, { allowFlat: true, allowEmissive: false })) return `vpbr|${m.side}|${m.userData.wettable ? 1 : 0}`;
+  if (needsUV(m) && !sharedUvXform(m)) return 'id:' + m.uuid;
   const c = (x) => (x ? x.getHexString() : '-');
   const parts = [m.type, c(m.emissive), m.emissiveIntensity, q(m.roughness ?? 0), q(m.metalness ?? 0),
     m.side, m.vertexColors, m.flatShading, m.opacity, m.alphaTest, m.fog, m.envMapIntensity,
-    m.depthWrite, m.depthTest, m.polygonOffset, m.wireframe, !!m.userData.wettable, m.userData.baseRough];
+    m.depthWrite, m.depthTest, m.polygonOffset, m.wireframe, !!m.userData.wettable, m.userData.baseRough,
+    m.normalScale ? m.normalScale.x + ',' + m.normalScale.y : '-', m.bumpScale, m.aoMapIntensity];
   for (const k of TEX_SLOTS) parts.push(texSig(m[k]));
   return parts.join('|');
 }
@@ -50,8 +65,9 @@ function eligible(m, blocked) {
 }
 
 // 把一份几何体整理成统一的属性集(position/normal[/uv][/color]),非索引的补顺序索引;
-// tint 给了就把材质颜色乘进顶点色(多种颜色并成一个白色材质时用)
-function normalizeGeo(src, matrix, keepUV, keepColor, tint) {
+// tint 给了就把材质颜色乘进顶点色(多种颜色并成一个白色材质时用);uvT 给了就把贴图的 UV 变换烘进 UV;
+// 镜像变换(行列式 < 0)翻转绕序——原网格靠渲染器按物体翻正面,合并后只能靠三角形自己
+function normalizeGeo(src, matrix, keepUV, keepColor, tint, uvT = null) {
   const g = new THREE.BufferGeometry();
   const pos = src.attributes.position;
   if (!pos) return null;
@@ -69,6 +85,14 @@ function normalizeGeo(src, matrix, keepUV, keepColor, tint) {
     const uv = src.attributes.uv;
     const U = new Float32Array(n * 2);
     if (uv) for (let i = 0; i < n; i++) { U[i * 2] = uv.getX(i); U[i * 2 + 1] = uv.getY(i); }
+    if (uvT) {
+      const e = uvT.elements;
+      for (let i = 0; i < n; i++) {
+        const u = U[i * 2], v = U[i * 2 + 1];
+        U[i * 2] = e[0] * u + e[3] * v + e[6];
+        U[i * 2 + 1] = e[1] * u + e[4] * v + e[7];
+      }
+    }
     g.setAttribute('uv', new THREE.BufferAttribute(U, 2));
   }
   if (keepColor) {
@@ -82,6 +106,7 @@ function normalizeGeo(src, matrix, keepUV, keepColor, tint) {
   const I = new Uint32Array(idx ? idx.count : n);
   if (idx) for (let i = 0; i < idx.count; i++) I[i] = idx.getX(i);
   else for (let i = 0; i < n; i++) I[i] = i;
+  if (matrix.determinant() < 0) for (let k = 0; k + 2 < I.length; k += 3) { const t = I[k + 1]; I[k + 1] = I[k + 2]; I[k + 2] = t; }
   g.setIndex(new THREE.BufferAttribute(I, 1));
   if (!nor) g.computeVertexNormals();
   g.applyMatrix4(matrix);
@@ -95,9 +120,12 @@ function mergeGroup(sig, list, canonOf) {
     const geo = bakeVPBR(list.map((it) => ({ geometry: it.m.geometry, material: it.m.material, matrix: it.matrix })));
     return new THREE.Mesh(geo, vpbrMaterial({ side: first.side, wettable: !!first.userData.wettable }));
   }
-  // 带贴图/特殊参数的:同一个材质对象就照旧用它;不同颜色的多份材质并成一份白色顶点色材质
+  // 带贴图/特殊参数的:同一个材质对象就照旧用它;不同颜色的多份材质并成一份白色顶点色材质。
+  // 带贴图的:各自的 UV 变换烘进顶点,规范材质的贴图变换归零(同一图源,显存里还是同一张纹理)
   const mats = new Set(list.map((it) => it.m.material));
-  const multi = mats.size > 1 && !sig.startsWith('id:');
+  const ident = sig.startsWith('id:');
+  const uvBake = !ident && needsUV(first);
+  const multi = !ident && (mats.size > 1 || uvBake);
   let mat = first;
   if (multi) {
     mat = canonOf.get(sig);
@@ -105,13 +133,25 @@ function mergeGroup(sig, list, canonOf) {
       mat = first.clone();
       mat.color.set(0xffffff);
       mat.vertexColors = true;
+      for (const k of TEX_SLOTS) {
+        if (!mat[k]) continue;
+        const t = mat[k].clone();
+        t.repeat.set(1, 1);
+        t.offset.set(0, 0);
+        t.rotation = 0;
+        t.center.set(0, 0);
+        t.updateMatrix();
+        mat[k] = t;
+      }
       canonOf.set(sig, mat);
     }
   }
   const keepUV = needsUV(first), keepColor = multi || !!first.vertexColors;
   const geos = [];
   for (const it of list) {
-    const g = normalizeGeo(it.m.geometry, it.matrix, keepUV, keepColor, multi ? it.m.material : null);
+    let uvT = null;
+    if (uvBake) { uvT = sharedUvXform(it.m.material); uvT.updateMatrix(); uvT = uvT.matrix; }
+    const g = normalizeGeo(it.m.geometry, it.matrix, keepUV, keepColor, multi ? it.m.material : null, uvT);
     if (g) geos.push(g);
   }
   if (geos.length < 2) { for (const g of geos) g.dispose(); return null; }
@@ -157,7 +197,7 @@ function localMerge(P, blockedSelfs, protectMats, canonOf) {
   return merged;
 }
 
-export function staticBatch(scene, tops, { groundH, protect = [], protectMats = new Set(), raycastKeep = new Set(), cell = 64 }) {
+export function staticBatch(scene, tops, { groundH, protect = [], protectMats = new Set(), raycastKeep = new Set(), cell = 128 }) {
   for (const m of NIGHT_GLOW) protectMats.add(m); // 路灯/神龛的玻璃按昼夜调亮度:必须保持原材质
   const blocked = new Set();
   const protSelf = new Set();
@@ -235,4 +275,40 @@ export function staticBatch(scene, tops, { groundH, protect = [], protectMats = 
     frozen++;
   }
   return { candidates, merged, local, outMeshes, emptied, frozen, materials: canonOf.size };
+}
+
+// ---- 小件道具远景剔除 ----
+// 开局时就在场景里、又没被合批的小东西(铭文碑、路牌、蘑菇、火把头、宝箱……,包围球半径 < 3m):
+// 离相机 far 米外整件不画。用 layers 而不是 visible——玩法代码会自己改 visible(采走、打开、隐藏),
+// 两边互不覆盖;玩法代码从不碰 layers。位置每次扫描现读,之后被挪动的道具也按新位置判断。
+const smallProps = []; // { o, r, meshes, hidden }
+const _sb = new THREE.Box3(), _ss = new THREE.Sphere();
+export function registerSmallProps(objs, maxR = 3) {
+  for (const o of objs) {
+    if (!o || !o.isObject3D || o.isLight || o.isPoints || o.isLine || o.isInstancedMesh || o.userData.batched) continue;
+    const meshes = [];
+    let skip = false;
+    o.traverse((d) => {
+      if (d.isSkinnedMesh || d.isLight || d.isPoints || d.isLine || d.isInstancedMesh) skip = true;
+      else if (d.isMesh) meshes.push(d);
+    });
+    if (skip || !meshes.length) continue;
+    o.updateMatrixWorld(true);
+    _sb.setFromObject(o);
+    if (_sb.isEmpty()) continue;
+    _sb.getBoundingSphere(_ss);
+    if (_ss.radius > maxR) continue;
+    // 包围球心相对物体原点的偏移(有的分组放在原点、子件摆在别处)
+    smallProps.push({ o, r: _ss.radius, dx: _ss.center.x - o.position.x, dz: _ss.center.z - o.position.z, meshes, hidden: false });
+  }
+  return smallProps.length;
+}
+export function updatePropLOD(cx, cz, far) {
+  for (const p of smallProps) {
+    const pos = p.o.position;
+    const hide = Math.hypot(pos.x + p.dx - cx, pos.z + p.dz - cz) - p.r > far;
+    if (hide === p.hidden) continue;
+    p.hidden = hide;
+    for (const m of p.meshes) m.layers.mask = hide ? 0 : 1;
+  }
 }

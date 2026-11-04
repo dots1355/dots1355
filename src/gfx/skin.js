@@ -17,6 +17,7 @@
 // - 卸载走 disposeEntityGroup → releaseSkin;漏掉释放的实体被 GC 后,行号与几何体由 WeakRef/FinalizationRegistry 回收。
 import * as THREE from 'three';
 import { VertexPBRMaterial, RigidDepthMaterial, plainStandard, bakeVPBR } from './vpbr.js';
+import { renderer } from './core.js';
 
 const SLOT_BONES = 12;          // 每个实体最多 12 根骨(人形 9 根)
 const ROW = SLOT_BONES * 4;     // 调色板纹理一行 = 一个实体(一根骨 4 个 RGBA 纹素)
@@ -196,6 +197,16 @@ export function rigidSkin(model) {
   const entry = { root, mesh, bones, chains, slot, held, lod: 0 };
   slots[slot] = new WeakRef(entry);
   root._skin = entry;
+  // 根节点的 visible = 玩法设的可见性 && 远近分级。玩法代码只写不读 group.visible(死亡/隐身/重生),
+  // 渲染器读到的是合成后的值:远处(lod 2)整棵子树在主 pass 与阴影 pass 的遍历里直接剪掉,
+  // 中距(lod 1,本来就不投影)在阴影 pass 里也剪掉——每个实体十来个节点,几十个实体就是上千次递归
+  let gameVis = root.visible;
+  Object.defineProperty(root, 'visible', {
+    configurable: true,
+    enumerable: true,
+    get() { return gameVis && entry.lod !== 2 && !(shadowPass && entry.lod === 1); },
+    set(v) { gameVis = v; },
+  });
   mesh._skin = entry;
   if (finalizer) finalizer.register(root, held, held);
   return model;
@@ -212,17 +223,27 @@ export function releaseSkin(mesh) {
 }
 
 // ---- 远近分级:0 近(投影)/ 1 中(不投影)/ 2 远(整体不画) ----
-// 用 layers 隐藏而不是 visible:玩法代码自己会改 visible(死狼、隐身闪烁),两边互不干扰
+// 远处隐藏走根节点 visible 的访问器(见 rigidSkin):玩法代码写的可见性(死狼、隐身闪烁)与分级互不覆盖
+// 阴影 pass 期间为 true(包住渲染器的 shadowMap.render):中距实体在阴影遍历里整棵剪掉
+let shadowPass = false;
+{
+  const sm = renderer.shadowMap, render = sm.render;
+  sm.render = function (...args) {
+    shadowPass = true;
+    try { return render.apply(this, args); } finally { shadowPass = false; }
+  };
+}
+// 远近分级:lod 由根节点的 visible 访问器读取(远处整棵不画);这里只管投影开关与矩阵更新
 function applySkinLOD(e, lv) {
   e.lod = lv;
+  // 远到不画的实体连矩阵也不算:整棵子树(根 + 十来个骨骼节点 + 挂件)跳过每帧的 updateMatrixWorld。
+  // 只对挂在场景顶层的实体这么做;重新进入视距时根节点会带着子节点一起重算
+  if (!e.root.parent || e.root.parent.isScene) e.root.matrixWorldAutoUpdate = lv !== 2;
   e.root.traverse((o) => {
     if (!o.isMesh) return;
     const u = o.userData;
     if (u.cast0 === undefined) u.cast0 = o.castShadow;
     o.castShadow = lv === 0 && u.cast0;
-    if (lv === 2) {
-      if (u.lm0 === undefined) { u.lm0 = o.layers.mask; o.layers.mask = 0; }
-    } else if (u.lm0 !== undefined) { o.layers.mask = u.lm0; delete u.lm0; }
   });
 }
 export function updateSkinLOD(cx, cz, shadowD, hideD) {
