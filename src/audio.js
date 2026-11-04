@@ -186,22 +186,47 @@ const COMBAT_MELODY = [
 const COMBAT_BASS = [110, 110, 104, 110, 87, 98, 110, 104];
 let combatMode = false, siegeMode = false;
 export function setCombatMusic(on, siege = false) { combatMode = !!on; siegeMode = !!siege; }
+// 背景音乐的声部:常驻振荡器 + 增益包络。每个音符不再新建/连接/销毁一组音频节点
+// (建节点在主线程上并不便宜,配乐每秒要奏十来个音);同一声部里后一个音接管前一个音的尾巴
+const voices = new Map();
+function note(key, type, freq, dur, vol, when = 0, slide = 0) {
+  if (!ctx || freq <= 0) return;
+  let v = voices.get(key);
+  if (!v) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    g.gain.value = 0;
+    o.connect(g).connect(ctx.destination);
+    o.start();
+    v = { o, g };
+    voices.set(key, v);
+  }
+  if (v.o.type !== type) v.o.type = type; // 平时/战斗切换时换音色
+  const t = ctx.currentTime + when;
+  const f = v.o.frequency, gn = v.g.gain;
+  // 截住上一个音还没走完的包络(停在当前值,不回跳),再起新音
+  if (f.cancelAndHoldAtTime) { f.cancelAndHoldAtTime(t); gn.cancelAndHoldAtTime(t); } else { f.cancelScheduledValues(t); gn.cancelScheduledValues(t); }
+  f.setValueAtTime(freq, t);
+  if (slide) f.exponentialRampToValueAtTime(Math.max(30, freq + slide), t + dur);
+  gn.setValueAtTime(vol, t);
+  gn.exponentialRampToValueAtTime(0.001, t + dur);
+  gn.setValueAtTime(0, t + dur + 0.02);
+}
 let step = 0;
 function musicTick() {
   if (combatMode) {
     const m = COMBAT_MELODY[step % COMBAT_MELODY.length];
-    if (m) tone(m, 0.12, 'square', 0.04);
-    if (step % 2 === 0) tone(COMBAT_BASS[Math.floor(step / 2) % COMBAT_BASS.length], 0.2, 'sawtooth', 0.055);
-    if (step % 4 === 2) tone(70, 0.08, 'sine', 0.1, 0, -30); // 心跳般的低鼓
-    if (siegeMode && step % 8 === 0) { tone(55, 0.22, 'sine', 0.16, 0, -12); tone(110, 0.1, 'triangle', 0.07, 0.02, -40); } // 攻城战鼓:一记闷雷压阵
+    if (m) note('lead', 'square', m, 0.12, 0.04);
+    if (step % 2 === 0) note('bass', 'sawtooth', COMBAT_BASS[Math.floor(step / 2) % COMBAT_BASS.length], 0.2, 0.055);
+    if (step % 4 === 2) note('drum', 'sine', 70, 0.08, 0.1, 0, -30); // 心跳般的低鼓
+    if (siegeMode && step % 8 === 0) { note('war', 'sine', 55, 0.22, 0.16, 0, -12); note('war2', 'triangle', 110, 0.1, 0.07, 0.02, -40); } // 攻城战鼓:一记闷雷压阵
     step++;
     return;
   }
   const m = MELODY[step % MELODY.length];
-  if (m) tone(m, 0.16, 'triangle', 0.05);
+  if (m) note('lead', 'triangle', m, 0.16, 0.05);
   if (step % 4 === 0) {
     const b = BASS[Math.floor(step / 4) % BASS.length];
-    tone(b, 0.4, 'sine', 0.07);
+    note('bass', 'sine', b, 0.4, 0.07);
   }
   step++;
 }

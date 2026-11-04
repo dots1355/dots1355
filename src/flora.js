@@ -242,6 +242,7 @@ function sharedGeo(src) {
   return g;
 }
 const smallInst = new Set(); // 小件(灌木/树桩/木箱……)的实例块:远了整块不画
+const bigInst = new Set();   // 其余(树、岩石、地标)的实例块:只有流畅档才按视距收
 export function buildNatureInstances(list) {
   const groups = new Map();
   for (const p of list) {
@@ -275,7 +276,7 @@ export function buildNatureInstances(list) {
       im.customDepthMaterial = INSTANCED_DEPTH;
       im.frustumCulled = true;
       im.matrixAutoUpdate = false;
-      if (small) smallInst.add(im);
+      (small ? smallInst : bigInst).add(im);
       root.add(im);
     }
   }
@@ -287,6 +288,7 @@ export function releaseNatureInstances(root) {
   for (const im of root.children) {
     if (!im.isInstancedMesh) continue;
     smallInst.delete(im);
+    bigInst.delete(im);
     const g = im.geometry;
     for (const k of Object.keys(g.attributes)) g.deleteAttribute(k);
     g.setIndex(null);
@@ -302,15 +304,21 @@ export function natureSpec(name, rng, scale = 1, fixedYaw = null) {
   const yaw = fixedYaw ?? rng() * Math.PI * 2;
   return { s, yaw, y: -spec.sink * s, cols: specCols(spec, s, yaw) };
 }
-// 小件远景剔除:离相机 far 米外的小件实例块整块不画(用 layers,不占用 visible);每隔几帧调一次。
+// 实例块远景剔除(用 layers,不占用 visible;每隔几帧调一次):离相机 far 米外的小件块整块不画,
+// bigFar 米外的大件块(树林、岩石)也不画(只有流畅档给有限值,配合它拉近的雾);
 // shadows=false(流畅档)时小件一律不投影:阴影 pass 只画树、岩石等大件
-export function updateNatureLOD(cx, cz, far, shadows = true) {
+export function updateNatureLOD(cx, cz, far, shadows = true, bigFar = Infinity) {
   for (const im of smallInst) {
     const s = im.boundingSphere;
     if (!s) continue;
     const d = Math.hypot(s.center.x - cx, s.center.z - cz) - s.radius;
     im.layers.mask = d > far ? 0 : 1;
     im.castShadow = shadows;
+  }
+  for (const im of bigInst) {
+    const s = im.boundingSphere;
+    if (!s) continue;
+    im.layers.mask = Math.hypot(s.center.x - cx, s.center.z - cz) - s.radius > bigFar ? 0 : 1;
   }
 }
 // 返回 { group, cols:[{dx,dz,r}] };cols 是相对放置点的碰撞圆(已含缩放与朝向)

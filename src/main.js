@@ -3980,15 +3980,16 @@ function setPaused(p) {
 // 画质三档:流畅(集显/老机器)、均衡(默认)、精致(独显:环境光遮蔽 + 高分辨率)
 // 流畅档省的不只是 GPU:视距上限(雾收近、远裁剪面随之收)、实体更早停投影/更早隐藏、小件地标更早剔除
 // 且不投影、阴影框收窄并隔帧更新、荒野只装 3×3 块、草更稀——CPU 每帧要遍历/提交的东西一起变少。
-// lodNear/lodHide:实体投影/整体隐藏的距离(米);propFar:小件地标(灌木/树桩/木箱…)实例块的可见距离;
-// viewCap:视距上限(米);shadowBox:阴影正交框半宽;shadowEvery:阴影图每几帧更新一次;wildD:荒野区块加载距离(米)
+// lodNear/lodHide:实体投影/整体隐藏的距离(米);halfD:实体隔帧更新的距离;propFar:小件(灌木/树桩/木箱、碑、牌…)
+// 的可见距离;bigFar:树林/岩石实例块的可见距离;viewCap:视距上限(米);shadowBox:阴影正交框半宽;
+// shadowEvery:阴影图每几帧更新一次;wildD:荒野区块加载距离(米)
 const QUALITY = [
-  { key: 'lo', name: '流畅', gtao: false, bloom: false, smaa: false, pr: 0.8, veg: 0.35, shadow: 1024, shadowBox: 36,
-    shadowEvery: 2, lodNear: 16, lodHide: 80, propFar: 70, propShadow: false, viewCap: 250, wildD: 160 },
+  { key: 'lo', name: '流畅', gtao: false, bloom: false, smaa: false, pr: 0.8, veg: 0.3, shadow: 1024, shadowBox: 36,
+    shadowEvery: 2, lodNear: 14, lodHide: 64, halfD: 14, propFar: 50, bigFar: 160, propShadow: false, viewCap: 250, wildD: 160 },
   { key: 'mid', name: '均衡', gtao: false, bloom: true, smaa: true, pr: 1, veg: 0.65, shadow: 2048, shadowBox: 70,
-    shadowEvery: 1, lodNear: 40, lodHide: 160, propFar: 150, propShadow: true, viewCap: 1600, wildD: 256 },
+    shadowEvery: 1, lodNear: 40, lodHide: 160, halfD: 30, propFar: 150, bigFar: Infinity, propShadow: true, viewCap: 1600, wildD: 256 },
   { key: 'hi', name: '精致', gtao: true, bloom: true, smaa: true, pr: 1.5, veg: 1, shadow: 2048, shadowBox: 70,
-    shadowEvery: 1, lodNear: 50, lodHide: 220, propFar: 220, propShadow: true, viewCap: 1600, wildD: 256 },
+    shadowEvery: 1, lodNear: 50, lodHide: 220, halfD: 40, propFar: 220, bigFar: Infinity, propShadow: true, viewCap: 1600, wildD: 256 },
 ];
 let qualityIdx = LOWFX ? 0 : 1;
 let qualityManual = false;
@@ -4271,8 +4272,8 @@ function updateEntityLOD() {
   lodScan = 12;
   const q = QUALITY[qualityIdx];
   const cx = camera.position.x, cz = camera.position.z;
-  updateSkinLOD(cx, cz, q.lodNear, q.lodHide);
-  updateNatureLOD(cx, cz, q.propFar, q.propShadow);
+  updateSkinLOD(cx, cz, q.lodNear, q.lodHide, q.halfD);
+  updateNatureLOD(cx, cz, q.propFar, q.propShadow, q.bigFar);
   updatePropLOD(cx, cz, q.propFar);
   _lodSeen.clear();
   const lists = [villagers, guards, bandits, wolves, horses, namedNPCs, chickens, deers, funnyNPCs, mercs];

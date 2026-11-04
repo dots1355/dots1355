@@ -54,10 +54,14 @@ function allocSlot() {
   }
   return s;
 }
-// 渲染器每帧(遇到第一个通过剔除的蒙皮网格时)调用一次:把各实体动画节点的世界矩阵写进调色板
+// 渲染器每帧(遇到第一个通过剔除的蒙皮网格时)调用一次:把各实体动画节点的世界矩阵写进调色板。
+// 中距(不投影)且足够远(均衡档 30m)的实体隔帧更新矩阵与调色板(按行号奇偶错开):远处小人 30Hz 摆动看不出来,
+// 矩阵递归与拷贝却省一半。跳过的那一帧整棵子树停在上一帧的姿态,蒙皮网格自身矩阵也一起停,画出来是一致的
+let paletteFrame = 0;
 function updatePalette() {
   const P = palette;
   if (!P) return;
+  paletteFrame++;
   for (let s = 0, n = slots.length; s < n; s++) {
     const ref = slots[s];
     if (ref === null) continue;
@@ -65,6 +69,9 @@ function updatePalette() {
     if (e === undefined) { slots[s] = null; freeSlots.push(s); continue; } // 实体已被回收(没走 dispose)
     const mesh = e.mesh;
     if (!mesh.visible || mesh.layers.mask === 0 || !e.root.visible || e.root.parent === null) continue; // 这帧不画
+    const fresh = e.upd; // 这一帧它的矩阵更新过没有(上一帧在这里定的)
+    if (e.top) { e.upd = !e.half || ((s + paletteFrame) & 1) === 0; e.root.matrixWorldAutoUpdate = e.upd; }
+    if (!fresh) continue;
     const bones = e.bones, chains = e.chains;
     let off = s * ROW * 4;
     for (let b = 0; b < bones.length; b++, off += 16) {
@@ -101,9 +108,37 @@ function mergeable(o, root) {
 const _rootInv = new THREE.Matrix4(), _box = new THREE.Box3();
 
 // model = { group, parts }:就地改造并返回;没得可并(或骨太多)时原样返回
+// 实体根节点:visible 是定义在原型上的访问器 = 玩法设的可见性 && 远近分级。玩法代码只写不读 group.visible
+// (死亡/隐身/重生),渲染器读到的是合成后的值:远处(lod 2)整棵子树在主 pass 与阴影 pass 的遍历里直接剪掉,
+// 中距(lod 1,本来就不投影)在阴影 pass 里也剪掉——每个实体十来个节点,几十个实体就是上千次递归。
+// 必须放在原型上:在实例上重定义 visible 会把对象打回字典模式,three 每帧遍历时它的所有属性访问都变慢
+class EntityGroup extends THREE.Group {
+  get visible() {
+    const e = this._skin;
+    return this._gameVis && (!e || (e.lod !== 2 && !(shadowPass && e.lod === 1)));
+  }
+  set visible(v) { this._gameVis = v; }
+}
+// 把搭好的普通 Group 根换成 EntityGroup(子节点、变换、userData 原样接过去)
+function adoptRoot(model) {
+  const old = model.group;
+  if (!old.isGroup || old instanceof EntityGroup || old.parent) return old;
+  const root = new EntityGroup();
+  root.copy(old, false);
+  root.userData = old.userData;
+  while (old.children.length) root.add(old.children[0]);
+  const parts = model.parts || {};
+  for (const k of Object.keys(parts)) {
+    const v = parts[k];
+    if (v === old) parts[k] = root;
+    else if (Array.isArray(v)) for (let i = 0; i < v.length; i++) if (v[i] === old) v[i] = root;
+  }
+  model.group = root;
+  return root;
+}
 export function rigidSkin(model) {
-  const root = model && model.group;
-  if (!root) return model;
+  if (!model || !model.group) return model;
+  const root = adoptRoot(model);
   const parts = model.parts || {};
   root.updateMatrixWorld(true);
   // 1) 动画节点 = 根 + parts 里引用的、属于本实体的 Object3D
@@ -194,19 +229,9 @@ export function rigidSkin(model) {
   mesh.bindMatrix.elements[15] = slot * SLOT_BONES;
   const chains = bones.map((b) => { const ch = []; for (let p = b; p && p !== root; p = p.parent) ch.push(p); return ch; });
   const held = { geometry: geo, released: false };
-  const entry = { root, mesh, bones, chains, slot, held, lod: 0 };
+  const entry = { root, mesh, bones, chains, slot, held, lod: 0, upd: true, half: false, top: false };
   slots[slot] = new WeakRef(entry);
   root._skin = entry;
-  // 根节点的 visible = 玩法设的可见性 && 远近分级。玩法代码只写不读 group.visible(死亡/隐身/重生),
-  // 渲染器读到的是合成后的值:远处(lod 2)整棵子树在主 pass 与阴影 pass 的遍历里直接剪掉,
-  // 中距(lod 1,本来就不投影)在阴影 pass 里也剪掉——每个实体十来个节点,几十个实体就是上千次递归
-  let gameVis = root.visible;
-  Object.defineProperty(root, 'visible', {
-    configurable: true,
-    enumerable: true,
-    get() { return gameVis && entry.lod !== 2 && !(shadowPass && entry.lod === 1); },
-    set(v) { gameVis = v; },
-  });
   mesh._skin = entry;
   if (finalizer) finalizer.register(root, held, held);
   return model;
@@ -223,7 +248,7 @@ export function releaseSkin(mesh) {
 }
 
 // ---- 远近分级:0 近(投影)/ 1 中(不投影)/ 2 远(整体不画) ----
-// 远处隐藏走根节点 visible 的访问器(见 rigidSkin):玩法代码写的可见性(死狼、隐身闪烁)与分级互不覆盖
+// 远处隐藏走根节点 visible 的访问器(见 EntityGroup):玩法代码写的可见性(死狼、隐身闪烁)与分级互不覆盖
 // 阴影 pass 期间为 true(包住渲染器的 shadowMap.render):中距实体在阴影遍历里整棵剪掉
 let shadowPass = false;
 {
@@ -238,7 +263,7 @@ function applySkinLOD(e, lv) {
   e.lod = lv;
   // 远到不画的实体连矩阵也不算:整棵子树(根 + 十来个骨骼节点 + 挂件)跳过每帧的 updateMatrixWorld。
   // 只对挂在场景顶层的实体这么做;重新进入视距时根节点会带着子节点一起重算
-  if (!e.root.parent || e.root.parent.isScene) e.root.matrixWorldAutoUpdate = lv !== 2;
+  if (e.top) { e.root.matrixWorldAutoUpdate = lv !== 2; e.upd = lv !== 2; }
   e.root.traverse((o) => {
     if (!o.isMesh) return;
     const u = o.userData;
@@ -246,7 +271,8 @@ function applySkinLOD(e, lv) {
     o.castShadow = lv === 0 && u.cast0;
   });
 }
-export function updateSkinLOD(cx, cz, shadowD, hideD) {
+// halfD:这个距离外的中距实体隔帧更新矩阵(流畅档给得更近)
+export function updateSkinLOD(cx, cz, shadowD, hideD, halfD = 30) {
   for (let s = 0, n = slots.length; s < n; s++) {
     const ref = slots[s];
     const e = ref && ref.deref();
@@ -255,11 +281,16 @@ export function updateSkinLOD(cx, cz, shadowD, hideD) {
     // 只跑模拟不渲染的那几帧(加载、测试步进)里它还停在旧位置,传送后会被误判成"远处"藏掉
     const r = e.root;
     let x, z;
-    if (!r.parent || r.parent.isScene) { x = r.position.x; z = r.position.z; } else { const m = r.matrixWorld.elements; x = m[12]; z = m[14]; }
+    const top = !r.parent || r.parent.isScene;
+    if (top) { x = r.position.x; z = r.position.z; } else { const m = r.matrixWorld.elements; x = m[12]; z = m[14]; }
+    if (!top && e.top) { r.matrixWorldAutoUpdate = true; e.upd = true; } // 被挂到别处了(上马、被抱起):恢复逐帧更新
+    e.top = top;
     const d = Math.hypot(x - cx, z - cz);
     // 回差:近 6m、远 10m,免得边界上来回切
     const lv = d < shadowD + (e.lod === 0 ? 6 : 0) ? 0 : d < hideD + (e.lod <= 1 ? 10 : 0) ? 1 : 2;
     if (lv !== e.lod) applySkinLOD(e, lv);
+    e.half = lv === 1 && d > halfD;
+    if (!e.half && e.top && lv !== 2 && !e.upd) { r.matrixWorldAutoUpdate = true; e.upd = true; }
   }
 }
 export function skinStats() {
