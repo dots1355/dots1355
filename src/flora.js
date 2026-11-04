@@ -302,13 +302,15 @@ export function natureSpec(name, rng, scale = 1, fixedYaw = null) {
   const yaw = fixedYaw ?? rng() * Math.PI * 2;
   return { s, yaw, y: -spec.sink * s, cols: specCols(spec, s, yaw) };
 }
-// 小件远景剔除:离相机 far 米外的小件实例块整块不画(用 layers,不占用 visible);每隔几帧调一次
-export function updateNatureLOD(cx, cz, far) {
+// 小件远景剔除:离相机 far 米外的小件实例块整块不画(用 layers,不占用 visible);每隔几帧调一次。
+// shadows=false(流畅档)时小件一律不投影:阴影 pass 只画树、岩石等大件
+export function updateNatureLOD(cx, cz, far, shadows = true) {
   for (const im of smallInst) {
     const s = im.boundingSphere;
     if (!s) continue;
     const d = Math.hypot(s.center.x - cx, s.center.z - cz) - s.radius;
     im.layers.mask = d > far ? 0 : 1;
+    im.castShadow = shadows;
   }
 }
 // 返回 { group, cols:[{dx,dz,r}] };cols 是相对放置点的碰撞圆(已含缩放与朝向)

@@ -5,7 +5,7 @@ import { makeHumanoid, makeHorse, makeWolf, makeChicken, makeSheep, resolveColli
 import { INTRO, REGIONS, GUARD_LINES, NPCS, MISSIONS, VILLAGERS, DIALOGS, TIME_GREETINGS, LORE } from './story.js';
 import { initAudio, sfx, startMusic, toggleMusic, weatherAudio, setAmbience, setCombatMusic } from './audio.js';
 import { preloadAIAssets, generateRemoteAITextures } from './textures.js';
-import { initWilderness, updateWilderness, wildRegionName, CORE, LANDMARKS, BIG_PROP } from './wilderness.js';
+import { initWilderness, updateWilderness, wildRegionName, CORE, LANDMARKS, BIG_PROP, setWildViewDistance } from './wilderness.js';
 import * as BANKS from './dialogue-banks.js';
 import { GLTFLoader } from '../lib/jsm/loaders/GLTFLoader.js';
 import { setTreeModel, setBuildingModel, setRockGeos, setNatureModels, hasNature, buildNatureInstances, NATURE_SPEC, specCols, registerNatureTemplate } from './flora.js';
@@ -836,7 +836,7 @@ function payMercs() { // 每日饷钱:发不出就散伙
     player.coins -= wage;
     toast(`💰 发放佣兵饷钱 ${wage} 金币(${mercs.map((m) => m.name).join('、')})`, 3);
   } else {
-    for (const m of mercs) scene.remove(m.group);
+    for (const m of mercs) retireEntity(m);
     toast(`💸 发不出饷钱,佣兵${mercs.map((m) => m.name).join('、')}卷铺盖走了。`, 4);
     mercs.length = 0;
   }
@@ -1430,7 +1430,7 @@ function updateChickens(dt) {
       toast('鸡群消气了……这次就算了。', 2.5);
       for (let i = chickens.length - 1; i >= 0; i--) {
         // eventKeep 的鸡(金鸡/越狱鸡)由各自事件的 end() 负责回收,这里不动
-        if (chickens[i].extra && !chickens[i].eventKeep && chickens[i] !== player.carrying) { scene.remove(chickens[i].group); chickens.splice(i, 1); }
+        if (chickens[i].extra && !chickens[i].eventKeep && chickens[i] !== player.carrying) retireEntity(chickens[i], chickens);
         else chickens[i].state = chickens[i] === player.carrying ? 'carried' : 'idle';
       }
     }
@@ -2274,17 +2274,12 @@ function updateFishing(dt) {
 // ================= 街头随机事件(GTA 式) =================
 const streetEvent = { type: null, t: 0, villager: null, bandit: null, horse: null, cooldown: 130 };
 function endStreetEvent() {
-  if (streetEvent.bandit && !streetEvent.bandit.dead) {
-    scene.remove(streetEvent.bandit.group);
-    const i = bandits.indexOf(streetEvent.bandit);
-    if (i >= 0) bandits.splice(i, 1);
-  }
+  if (streetEvent.bandit && !streetEvent.bandit.dead) retireEntity(streetEvent.bandit, bandits);
   if (streetEvent.horse) {
     streetEvent.horse.runaway = false;
     // 事件的马不留档:骑着就归你,否则撤走,免得满地图攒野马
     if (streetEvent.horse !== player.mounted) {
-      const hi = horses.indexOf(streetEvent.horse);
-      if (hi >= 0) { scene.remove(streetEvent.horse.group); horses.splice(hi, 1); }
+      if (horses.includes(streetEvent.horse)) retireEntity(streetEvent.horse, horses);
     }
   }
   streetEvent.type = null;
@@ -2695,10 +2690,8 @@ function endArena(msg) {
   const reached = arenaRT.wave;
   arenaRT.active = false;
   for (const f of arenaRT.foes) {
-    scene.remove(f.group);
-    let idx = bandits.indexOf(f);
-    if (idx >= 0) bandits.splice(idx, 1);
-    idx = wolves.indexOf(f);
+    retireEntity(f, bandits);
+    const idx = wolves.indexOf(f);
     if (idx >= 0) wolves.splice(idx, 1);
   }
   arenaRT.foes = [];
@@ -2750,6 +2743,7 @@ function makeWanderer(style, x, z) {
   return n;
 }
 
+const meteorCraters = []; // 陨石事件留下的坑(只留最近两个)
 const DIRECTOR_EVENTS = [
   {
     key: 'wolfRaid', w: 10,
@@ -2779,10 +2773,7 @@ const DIRECTOR_EVENTS = [
         end() { // 事件狼不留后患:活的散场,死的收尸,谁也别在村口安家
           for (const w of pack) {
             w.raidTarget = null;
-            scene.remove(w.group);
-            const i = wolves.indexOf(w);
-            if (i >= 0) wolves.splice(i, 1);
-            if (lockFoe === w) { setLockFoe(null); lockMark.visible = false; }
+            retireEntity(w, wolves);
           }
         },
       };
@@ -2812,7 +2803,7 @@ const DIRECTOR_EVENTS = [
         },
         end() {
           for (const b of thugs) {
-            if (!b.dead) { scene.remove(b.group); const i = bandits.indexOf(b); if (i >= 0) bandits.splice(i, 1); }
+            if (!b.dead) retireEntity(b, bandits);
           }
         },
       };
@@ -2840,9 +2831,7 @@ const DIRECTOR_EVENTS = [
         end() {
           if (!d.dead) {
             toast('🤺 卡洛收剑离去:「下次再切磋。」', 3);
-            scene.remove(d.group);
-            const i = bandits.indexOf(d);
-            if (i >= 0) bandits.splice(i, 1);
+            retireEntity(d, bandits);
           }
         },
       };
@@ -2874,7 +2863,7 @@ const DIRECTOR_EVENTS = [
         },
         end() {
           for (const b of rowdies) {
-            if (!b.dead) { scene.remove(b.group); const i = bandits.indexOf(b); if (i >= 0) bandits.splice(i, 1); }
+            if (!b.dead) retireEntity(b, bandits);
           }
         },
       };
@@ -2904,7 +2893,7 @@ const DIRECTOR_EVENTS = [
           }
         },
         end() {
-          if (!c.dead) { scene.remove(c.group); const i = bandits.indexOf(c); if (i >= 0) bandits.splice(i, 1); }
+          if (!c.dead) retireEntity(c, bandits);
         },
       };
     },
@@ -2954,7 +2943,14 @@ const DIRECTOR_EVENTS = [
             glow.intensity = Math.max(0, glow.intensity - dt2 * 15);
           }
         },
-        end() { scene.remove(ball); removeLightSource(glow); },
+        end() {
+          retireProp(ball);
+          removeLightSource(glow);
+          if (this.crater) { // 陨坑留在原地,但只留最近两个(每个都是独立的几何/材质)
+            meteorCraters.push(this.crater);
+            while (meteorCraters.length > 2) retireProp(meteorCraters.shift());
+          }
+        },
       };
     },
   },
@@ -2976,7 +2972,7 @@ const DIRECTOR_EVENTS = [
         },
         end() {
           spawnDust(m.pos.x, 0.5, m.pos.z, 8, 0.8, 1.5);
-          scene.remove(m.group);
+          retireEntity(m);
           if (director.mystic === m) director.mystic = null;
         },
       };
@@ -3015,7 +3011,7 @@ const DIRECTOR_EVENTS = [
             this.t = 0;
           }
         },
-        end() { scene.remove(g.group); },
+        end() { retireEntity(g); }, // 半透明是克隆的私有材质,随实体一起释放
       };
     },
   },
@@ -3054,8 +3050,7 @@ const DIRECTOR_EVENTS = [
           }
         },
         end() {
-          const i = chickens.indexOf(c);
-          if (i >= 0) { scene.remove(c.group); chickens.splice(i, 1); }
+          if (chickens.includes(c)) retireEntity(c, chickens); // 金色是克隆的私有材质
         },
       };
     },
@@ -3983,21 +3978,29 @@ function setPaused(p) {
   }
 }
 // 画质三档:流畅(集显/老机器)、均衡(默认)、精致(独显:环境光遮蔽 + 高分辨率)
-// 开局后按实测帧时自动降档(每档至少观察 8 秒),玩家手动选过就不再自动改
-// lodNear/lodHide:实体投影/整体隐藏的距离(米);propFar:小件地标(灌木/树桩/木箱…)实例块的可见距离
+// 流畅档省的不只是 GPU:视距上限(雾收近、远裁剪面随之收)、实体更早停投影/更早隐藏、小件地标更早剔除
+// 且不投影、阴影框收窄并隔帧更新、荒野只装 3×3 块、草更稀——CPU 每帧要遍历/提交的东西一起变少。
+// lodNear/lodHide:实体投影/整体隐藏的距离(米);propFar:小件地标(灌木/树桩/木箱…)实例块的可见距离;
+// viewCap:视距上限(米);shadowBox:阴影正交框半宽;shadowEvery:阴影图每几帧更新一次;wildD:荒野区块加载距离(米)
 const QUALITY = [
-  { key: 'lo', name: '流畅', gtao: false, bloom: false, smaa: false, pr: 0.8, veg: 0.5, shadow: 1024, lodNear: 20, lodHide: 100, propFar: 90 },
-  { key: 'mid', name: '均衡', gtao: false, bloom: true, smaa: true, pr: 1, veg: 0.65, shadow: 2048, lodNear: 40, lodHide: 160, propFar: 150 },
-  { key: 'hi', name: '精致', gtao: true, bloom: true, smaa: true, pr: 1.5, veg: 1, shadow: 2048, lodNear: 50, lodHide: 220, propFar: 220 },
+  { key: 'lo', name: '流畅', gtao: false, bloom: false, smaa: false, pr: 0.8, veg: 0.35, shadow: 1024, shadowBox: 36,
+    shadowEvery: 2, lodNear: 16, lodHide: 80, propFar: 70, propShadow: false, viewCap: 250, wildD: 160 },
+  { key: 'mid', name: '均衡', gtao: false, bloom: true, smaa: true, pr: 1, veg: 0.65, shadow: 2048, shadowBox: 70,
+    shadowEvery: 1, lodNear: 40, lodHide: 160, propFar: 150, propShadow: true, viewCap: 1600, wildD: 256 },
+  { key: 'hi', name: '精致', gtao: true, bloom: true, smaa: true, pr: 1.5, veg: 1, shadow: 2048, shadowBox: 70,
+    shadowEvery: 1, lodNear: 50, lodHide: 220, propFar: 220, propShadow: true, viewCap: 1600, wildD: 256 },
 ];
 let qualityIdx = LOWFX ? 0 : 1;
 let qualityManual = false;
+let dynRes = 1; // 最低档仍然卡时的动态分辨率(0.6~1)
+let shadowTick = 0;
 function setQuality(idx, manual = false) {
   qualityIdx = Math.max(0, Math.min(QUALITY.length - 1, idx));
   if (manual) qualityManual = true;
   const q = QUALITY[qualityIdx];
   fxHigh = q.smaa;
   setVegetationDensity(q.veg);
+  setWildViewDistance(q.wildD);
   gtao.enabled = q.gtao;
   bloom.enabled = q.bloom;
   smaa.enabled = q.smaa && STYLE_PRESETS[styleKey].mode !== 4; // 像素风不要抗锯齿糊掉方块
@@ -4012,38 +4015,86 @@ function setQuality(idx, manual = false) {
     sun.shadow.mapSize.set(q.shadow, q.shadow);
     if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; }
   }
+  const sc = sun.shadow.camera; // 框收窄后纹素密度不变(36m/1024 ≈ 70m/2048);sky.js 的纹素对齐按框宽自适应
+  if (sc.right !== q.shadowBox) {
+    sc.left = sc.bottom = -q.shadowBox;
+    sc.right = sc.top = q.shadowBox;
+    sc.updateProjectionMatrix();
+  }
+  sun.shadow.autoUpdate = q.shadowEvery <= 1;
+  sun.shadow.needsUpdate = true;
   document.getElementById('btn-quality').textContent = `画质:${q.name}`;
-  try { localStorage.setItem('gth-fx', q.key + (qualityManual ? '!' : '')); } catch { /* 忽略 */ }
+  try {
+    // 只有手选的档永久记住;自动档只当下次开局的起点,记 24 小时
+    if (qualityManual) localStorage.setItem('gth-fx', q.key + '!');
+    else localStorage.setItem('gth-fx-auto', JSON.stringify({ i: qualityIdx, r: dynRes, t: Date.now() }));
+  } catch { /* 忽略 */ }
 }
-let dynRes = 1; // 最低档仍然卡时的动态分辨率(0.6~1)
 try {
   const sv = localStorage.getItem('gth-fx') || '';
   const k = QUALITY.findIndex((q) => sv.startsWith(q.key));
-  if (sv === 'hi' && !sv.endsWith('!')) setQuality(1); // 旧版默认"精致"的存档设置回落到均衡,由自动档决定
-  else if (k >= 0) { qualityManual = sv.endsWith('!'); setQuality(k); }
-  else setQuality(qualityIdx);
-} catch { setQuality(qualityIdx); }
-// 自动降档:游戏进行中每 8 秒看一次平均帧时;连续偏慢就降一档,最低档再慢就降渲染分辨率
-const perfWin = { t: 0, n: 0, sum: 0, cool: 6 };
-function autoQuality(frameDt) {
-  if (qualityManual || !started || paused || document.hidden) return;
-  if (frameDt > 0.25) return; // 切后台/加载卡顿的长帧不计
-  perfWin.cool -= frameDt;
-  if (perfWin.cool > 0) return;
-  perfWin.t += frameDt; perfWin.n++; perfWin.sum += frameDt;
-  if (perfWin.t < 8) return;
-  const avg = perfWin.sum / perfWin.n;
-  perfWin.t = perfWin.n = perfWin.sum = 0;
-  if (avg > 1 / 26) {
-    if (qualityIdx > 0) {
-      setQuality(qualityIdx - 1);
-      toast(`⚙️ 画质已自动调为「${QUALITY[qualityIdx].name}」(暂停菜单可手动改)`, 3);
-    } else if (dynRes > 0.6) {
-      dynRes = Math.max(0.6, dynRes - 0.15);
-      setQuality(0);
-    }
-    perfWin.cool = 4;
+  if (k >= 0 && sv.endsWith('!')) { qualityManual = true; setQuality(k); }
+  else {
+    if (sv) localStorage.removeItem('gth-fx'); // 旧版把自动降的档也永久写在这里:作废,交给自动档重新判断
+    const a = JSON.parse(localStorage.getItem('gth-fx-auto') || 'null');
+    if (a && Date.now() - a.t < 864e5 && a.i >= 0 && a.i <= qualityIdx) {
+      dynRes = Math.max(0.6, Math.min(1, +a.r || 1));
+      setQuality(a.i);
+    } else setQuality(qualityIdx);
   }
+} catch { setQuality(qualityIdx); }
+// ---- 自动画质 ----
+// 每个观察窗(≥4 秒且 ≥12 帧,或满 10 秒)取帧间隔的 p90。超长帧也算(单帧按 1 秒封顶),
+// 跑不动的机器(每帧几百毫秒)照样能降下来;切后台回来的那一帧、暂停与看地图期间不计。
+//  - p90 > 36ms(慢于 ~28fps 的帧超过一成):降一档;已是最低档就降渲染分辨率(1 → 0.85 → 0.7 → 0.6)
+//  - p90 < 21ms:先把分辨率一级级升回去(每个好窗口一级),再连续 upNeed 个好窗口升一档(自动最多升到默认档"均衡";精致只能手选)
+//  - 迟滞:刚升档的 15 秒内门槛收紧到 26ms(升上去掉到 30fps 就退回),退回一次 upNeed 翻倍(2 → 4 → … → 16)
+const AUTO_TOP = LOWFX ? 0 : 1;
+const PW_CAP = 900;
+const pwBuf = new Float32Array(PW_CAP);
+const perfWin = { n: 0, t: 0, cool: 6, good: 0, upNeed: 2, upAt: -1e9, clock: 0 };
+function autoNote() { toast(`⚙️ 画质已自动调为「${QUALITY[qualityIdx].name}」(暂停菜单可手动改)`, 3); }
+function autoQuality(frameDt) {
+  const q = QUALITY[qualityIdx];
+  // 每帧都要落实的档位细节(主循环在模拟之后、渲染之前调用):视距上限、阴影隔帧更新
+  if (scene.fog && scene.fog.far > q.viewCap - 30) { // 雾每帧由天色重设;这里只往近收,幂等
+    scene.fog.far = q.viewCap - 30;
+    scene.fog.near = Math.min(scene.fog.near, scene.fog.far * 0.45);
+  }
+  if (q.shadowEvery > 1) sun.shadow.needsUpdate = ++shadowTick % q.shadowEvery === 0;
+  // 自动升降档
+  if (qualityManual || !started || paused || mapState.open || document.hidden) return;
+  if (frameDt > 2) { perfWin.n = 0; perfWin.t = 0; return; } // 切后台回来:这一帧不算,窗口重开
+  perfWin.clock += frameDt;
+  if (perfWin.cool > 0) { perfWin.cool -= frameDt; return; }
+  if (perfWin.n < PW_CAP) pwBuf[perfWin.n++] = Math.min(1, frameDt);
+  perfWin.t += frameDt;
+  if (!((perfWin.t >= 4 && perfWin.n >= 12) || perfWin.t >= 10)) return;
+  const n = perfWin.n;
+  const p90 = pwBuf.subarray(0, n).sort()[Math.min(n - 1, Math.floor(n * 0.9))];
+  perfWin.n = 0;
+  perfWin.t = 0;
+  const justUp = perfWin.clock - perfWin.upAt < 15;
+  if (p90 > (justUp ? 0.026 : 0.036)) {
+    perfWin.good = 0;
+    if (justUp) perfWin.upNeed = Math.min(16, perfWin.upNeed * 2);
+    perfWin.upAt = -1e9;
+    if (qualityIdx > 0) { setQuality(qualityIdx - 1); autoNote(); }
+    else if (dynRes > 0.6) { dynRes = Math.max(0.6, +(dynRes - 0.15).toFixed(2)); setQuality(0); }
+    else return;
+    perfWin.cool = 3;
+  } else if (p90 < 0.021) {
+    perfWin.good++;
+    // 分辨率一个好窗口就往回升一级(升错了代价小);升档要连续 upNeed 个好窗口
+    const tierUp = dynRes >= 1 && qualityIdx < AUTO_TOP && perfWin.good >= perfWin.upNeed;
+    if (dynRes < 1) dynRes = Math.min(1, +(dynRes + 0.15).toFixed(2));
+    else if (!tierUp) return;
+    perfWin.good = 0;
+    setQuality(qualityIdx + (tierUp ? 1 : 0));
+    if (tierUp) autoNote();
+    perfWin.upAt = perfWin.clock;
+    perfWin.cool = 3;
+  } else perfWin.good = 0;
 }
 document.getElementById('btn-resume').onclick = () => {
   setPaused(false);
@@ -4146,6 +4197,24 @@ function updateFlashes(dt) {
     if (!(e._popT > 0) && !(e._flashT > 0)) flashing.delete(e);
   }
 }
+// 实体退场的统一出口:移出场景、释放它独占的几何/材质(合并网格、闪白私有材质;共享的不动)、
+// 退出闪白与锁定、从所属名单摘掉。只 scene.remove 不释放,显存会随事件/增援/竞技场一轮轮慢慢涨
+function retireEntity(e, list = null) {
+  if (!e) return;
+  if (list) { const i = list.indexOf(e); if (i >= 0) list.splice(i, 1); }
+  if (e.group) {
+    if (e.group.parent) e.group.parent.remove(e.group);
+    disposeEntityGroup(e.group);
+  }
+  flashing.delete(e);
+  if (lockFoe === e) setLockFoe(null);
+}
+// 实体之外的一次性道具(棺材、陨石……):自己的几何/材质一并释放
+function retireProp(o) {
+  if (!o) return;
+  if (o.parent) o.parent.remove(o);
+  disposeEntityGroup(o);
+}
 function hitFX(e, push = 0.55) {
   hitStop(0.035);
   spawnDust(e.pos.x, 1.0, e.pos.z, 3, 0.45, 1.4); // 命中扬尘:刀刀有反馈
@@ -4203,7 +4272,7 @@ function updateEntityLOD() {
   const q = QUALITY[qualityIdx];
   const cx = camera.position.x, cz = camera.position.z;
   updateSkinLOD(cx, cz, q.lodNear, q.lodHide);
-  updateNatureLOD(cx, cz, q.propFar);
+  updateNatureLOD(cx, cz, q.propFar, q.propShadow);
   _lodSeen.clear();
   const lists = [villagers, guards, bandits, wolves, horses, namedNPCs, chickens, deers, funnyNPCs, mercs];
   for (const list of lists) {
@@ -5480,7 +5549,7 @@ function crime(n, msg) {
 function clearWanted() {
   wanted = 0;
   for (let i = guards.length - 1; i >= 0; i--) {
-    if (guards[i].extra) { scene.remove(guards[i].group); guards.splice(i, 1); }
+    if (guards[i].extra) retireEntity(guards[i], guards); // 增援卫兵撤走:头盔/佩剑等独占资源一并释放
     else guards[i].state = 'patrol';
   }
 }
@@ -6209,18 +6278,12 @@ function clearRaceRings() {
 function dismissMinions() {
   // Boss 一倒,狂暴亲卫作鸟兽散(免得留下两个不被剔除的常驻敌人)
   for (let i = bandits.length - 1; i >= 0; i--) {
-    if (bandits[i].minion) {
-      scene.remove(bandits[i].group);
-      bandits.splice(i, 1);
-    }
+    if (bandits[i].minion) retireEntity(bandits[i], bandits);
   }
 }
 function removeEscortBandits() {
   for (let i = bandits.length - 1; i >= 0; i--) {
-    if (bandits[i].escort) {
-      scene.remove(bandits[i].group);
-      bandits.splice(i, 1);
-    }
+    if (bandits[i].escort) retireEntity(bandits[i], bandits);
   }
 }
 
@@ -6228,7 +6291,7 @@ function failMission(msg) {
   quest.active = false;
   if (player.parcel) { player.group.remove(player.parcel); player.parcel = null; }
   clearRaceRings();
-  if (questRT.merchant) { scene.remove(questRT.merchant.group); questRT.merchant = null; }
+  if (questRT.merchant) { retireEntity(questRT.merchant); questRT.merchant = null; }
   removeEscortBandits(); // 伏兵随任务失败一并撤走,否则重接任务时旧伏兵会追杀新商人
   toast(msg, 3.5);
 }
@@ -6337,7 +6400,7 @@ function completeMission() {
   dropQuestToasts(); // 上一单的过期提示作废
   if (player.parcel) { player.group.remove(player.parcel); player.parcel = null; }
   clearRaceRings();
-  if (questRT.merchant) { scene.remove(questRT.merchant.group); questRT.merchant = null; }
+  if (questRT.merchant) { retireEntity(questRT.merchant); questRT.merchant = null; }
   removeEscortBandits();
   saveGame();
   if (quest.idx >= missions.length) {
@@ -8724,7 +8787,7 @@ function updateQuestTarget(dt) {
         sfx.wanted();
       }
       if (mc.wp >= world.escortRoute.length) {
-        scene.remove(mc.group);
+        retireEntity(mc);
         questRT.merchant = null;
         completeMission();
         return;
@@ -9090,7 +9153,7 @@ DIRECTOR_EVENTS.push({
           dropCoins(cow.pos, 5);
           toast('🐄 牛心满意足地走了。蹄印里……踩着几枚金币?!', 4);
         }
-        scene.remove(cow.group);
+        retireEntity(cow);
         director.cow = null;
       },
     };
@@ -9126,8 +9189,7 @@ DIRECTOR_EVENTS.push({
           const boy = villagers[13];
           if (boy && dist2(player.pos.x, player.pos.z, boy.pos.x, boy.pos.z) < 9) {
             player.carrying = null;
-            const i = chickens.indexOf(c);
-            if (i >= 0) { scene.remove(c.group); chickens.splice(i, 1); }
+            if (chickens.includes(c)) retireEntity(c, chickens);
             player.coins += 3;
             sfx.coin();
             toast('🐔 小马接过鸡塞给你 3 金币:「多谢!今晚的烤鸡有着落了——哦,它好像听懂了。」', 4.5);
@@ -9136,10 +9198,7 @@ DIRECTOR_EVENTS.push({
         } else if (c.state !== 'carried' && c.timer < 0.5) { c.state = 'flee'; c.timer = 2; }
       },
       end() {
-        if (player.carrying !== c) {
-          const i = chickens.indexOf(c);
-          if (i >= 0) { scene.remove(c.group); chickens.splice(i, 1); }
-        }
+        if (player.carrying !== c && chickens.includes(c)) retireEntity(c, chickens);
       },
     };
     return h;
@@ -9155,7 +9214,7 @@ DIRECTOR_EVENTS.push({
     return {
       t: 40,
       update() {},
-      end() { scene.remove(g.group); director.thief = null; },
+      end() { retireEntity(g); director.thief = null; },
     };
   },
 });
@@ -9196,8 +9255,8 @@ DIRECTOR_EVENTS.push({
         }
       },
       end() {
-        scene.remove(groom.group);
-        scene.remove(bride.group);
+        retireEntity(groom);
+        retireEntity(bride);
       },
     };
     return h;
@@ -9243,8 +9302,8 @@ DIRECTOR_EVENTS.push({
         if (arrived) this.t = Math.min(this.t, 0.01);
       },
       end() {
-        for (const n of bearers) scene.remove(n.group);
-        scene.remove(coffin);
+        for (const n of bearers) retireEntity(n);
+        retireProp(coffin);
       },
     };
     return h;
@@ -9344,7 +9403,7 @@ DIRECTOR_EVENTS.push({
       },
       end() {
         for (const b of raiders) {
-          if (!b.dead) { scene.remove(b.group); const i = bandits.indexOf(b); if (i >= 0) bandits.splice(i, 1); }
+          if (!b.dead) retireEntity(b, bandits);
         }
       },
     };
@@ -9804,12 +9863,20 @@ ctx.mapView = () => ({ guards, bandits, horses, wanted, warband, beacon, beaconR
     raycastKeep: new Set(world.occluders) });
   console.info('静态合批', st, `${(performance.now() - t0).toFixed(0)}ms`);
 }
-// ---- 着色器预热:场景材质 + 特效材质一次编译好,首次出刀/施法/起手预警不再卡顿 ----
+// ---- 着色器预热:场景材质 + 特效材质一次编译好,首次出刀/施法/起手预警/下雨不再卡顿 ----
+// 必须对着后处理的离屏目标编译:RenderPass 画进 composer 的渲染目标(不做色调映射、线性输出),
+// 对着屏幕编译出来的是另一套程序变体——白编一遍,首帧和首次挥刀/下雨时还得再编。
+// 场景里藏着的东西(雨线、按需显示的部件)compile 也会照顾到;拖尾用真实的弧形几何挂进来一起编。
 {
-  const tmp = [trailMat, magBurstMat, dangerMat].map((m) => new THREE.Mesh(magBurstGeo, m));
+  const ring = new THREE.Mesh(new THREE.RingGeometry(0.5, 1, 18, 1, 0, 2.1), trailMat);
+  const tmp = [ring, ...[magBurstMat, dangerMat].map((m) => new THREE.Mesh(magBurstGeo, m))];
   for (const t of tmp) { t.position.set(0, -60, 0); t.userData.noSnap = true; scene.add(t); }
+  const rt0 = renderer.getRenderTarget();
+  renderer.setRenderTarget(composer.readBuffer);
   try { renderer.compile(scene, camera); } catch (e) { console.warn('预热失败', e); }
+  renderer.setRenderTarget(rt0);
   for (const t of tmp) scene.remove(t);
+  ring.geometry.dispose();
 }
 requestAnimationFrame(loop);
 

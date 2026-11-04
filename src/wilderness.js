@@ -10,11 +10,13 @@ import { dominantBiome, groundH, buildGroundMesh, getGroundMaterial, GRID } from
 import { plainStandard, vpbrMaterial, bakeVPBRSteps } from './gfx/vpbr.js';
 
 export const CHUNK = 128;
-export let VIEW_R = 2;            // 加载半径(区块数);画质"流畅"档收到 1
-export function setWildViewRadius(r) {
-  if (r === VIEW_R) return;
-  VIEW_R = r;
-  lastPcx = lastPcz = 1e9; // 下一帧重排装卸清单
+// 加载距离(米):区块离玩家最近的一点在这个距离内就装,再远出 64m 才卸(回差)。
+// 按距离而不是按方块窗口:保证四面都至少装到这么远,区块数却比 5×5 窗口少约两成。画质"流畅"档收到 160m
+let LOAD_D = 256;
+export function setWildViewDistance(m) {
+  if (m === LOAD_D) return;
+  LOAD_D = m;
+  lastX = lastZ = 1e9; // 下一帧重排装卸清单
 }
 export const CORE = 470;          // 核心手工区域半径(此范围内不生成)
 export const WORLD_LIMIT = 500000; // 世界半径 → 总幅面 1000000×1000000
@@ -496,33 +498,37 @@ function unloadChunk(key) {
 }
 
 // 每帧调用:围绕玩家维护区块窗口。生成按时间预算分帧推进(近的先建),卸载每帧至多一块;
-// 玩家没跨区块边界且窗口已齐时直接空转,零分配零扫描
-let lastPcx = 1e9, lastPcz = 1e9;
+// 玩家没走出 24m 且窗口已齐时直接空转,零分配零扫描
+let lastX = 1e9, lastZ = 1e9;
 let job = null;          // 正在建的区块 { key, it }
 const toLoad = [];       // 待建(近的在前)
 const toUnload = [];     // 待卸
 const BUDGET_MS = 2;
-function wanted(cx, cz, pcx, pcz) {
-  if (Math.abs(cx - pcx) > VIEW_R || Math.abs(cz - pcz) > VIEW_R) return false;
+// 玩家到区块矩形的距离(在块内为 0)
+function chunkDist(cx, cz, px, pz) {
+  const x0 = cx * CHUNK, z0 = cz * CHUNK;
+  const dx = Math.max(x0 - px, 0, px - x0 - CHUNK), dz = Math.max(z0 - pz, 0, pz - z0 - CHUNK);
+  return Math.sqrt(dx * dx + dz * dz);
+}
+function wanted(cx, cz, px, pz) {
+  if (chunkDist(cx, cz, px, pz) > LOAD_D) return false;
   const centerX = cx * CHUNK + CHUNK / 2, centerZ = cz * CHUNK + CHUNK / 2;
   if (Math.abs(centerX) < CORE && Math.abs(centerZ) < CORE) return false; // 核心手工区不生成
   return Math.abs(centerX) <= WORLD_LIMIT && Math.abs(centerZ) <= WORLD_LIMIT; // 世界边界外不生成
 }
 export function updateWilderness(px, pz) {
-  const pcx = Math.floor(px / CHUNK), pcz = Math.floor(pz / CHUNK);
-  if (pcx !== lastPcx || pcz !== lastPcz) {
-    lastPcx = pcx;
-    lastPcz = pcz;
+  if (Math.abs(px - lastX) > 24 || Math.abs(pz - lastZ) > 24) {
+    lastX = px;
+    lastZ = pz;
     toUnload.length = 0;
-    for (const c of chunks.values()) {
-      if (Math.abs(c.cx - pcx) > VIEW_R + 1 || Math.abs(c.cz - pcz) > VIEW_R + 1) toUnload.push(c.key);
-    }
+    for (const c of chunks.values()) if (chunkDist(c.cx, c.cz, px, pz) > LOAD_D + 64) toUnload.push(c.key);
     toLoad.length = 0;
-    for (let dz = -VIEW_R; dz <= VIEW_R; dz++) {
-      for (let dx = -VIEW_R; dx <= VIEW_R; dx++) {
+    const pcx = Math.floor(px / CHUNK), pcz = Math.floor(pz / CHUNK), R = Math.ceil(LOAD_D / CHUNK);
+    for (let dz = -R; dz <= R; dz++) {
+      for (let dx = -R; dx <= R; dx++) {
         const cx = pcx + dx, cz = pcz + dz;
-        if (!wanted(cx, cz, pcx, pcz) || chunks.has(`${cx},${cz}`)) continue;
-        toLoad.push({ cx, cz, d: dx * dx + dz * dz });
+        if (!wanted(cx, cz, px, pz) || chunks.has(`${cx},${cz}`) || (job && job.key === `${cx},${cz}`)) continue;
+        toLoad.push({ cx, cz, d: chunkDist(cx, cz, px, pz) });
       }
     }
     toLoad.sort((a, b) => a.d - b.d);
@@ -535,10 +541,13 @@ export function updateWilderness(px, pz) {
       const next = toLoad.shift();
       if (!next) break;
       const key = `${next.cx},${next.cz}`;
-      if (chunks.has(key) || !wanted(next.cx, next.cz, lastPcx, lastPcz)) continue;
+      if (chunks.has(key) || !wanted(next.cx, next.cz, lastX, lastZ)) continue;
       job = { key, it: chunkJob(next.cx, next.cz) };
     }
-    if (job.it.next().done) job = null;
+    if (job.it.next().done) {
+      job = null;
+      if (!toLoad.length) lastX = 1e9; // 一轮建完:按玩家现在的位置再核一遍(建的时候人可能已经走远)
+    }
   }
 }
 // 诊断/测试:已装区块数、在建与排队情况

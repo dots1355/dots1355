@@ -6,7 +6,22 @@ import { groundH } from '../terrain.js';
 let scene = null;
 // 点光池:场景里永远只有 LIGHT_POOL 盏点光(外加提灯)。火把、篝火、地窖烛台、陨石等光源
 // 只登记不入场,每隔几帧挑离玩家最近的几处"附身"上去。灯的数量恒定 → 开灯/进地窖/天黑
-// 都不会触发全场着色器重编译;白天光源全灭时片元着色器也只多算这几盏。
+// 都不会触发全场着色器重编译。
+// 灭着的灯(强度 0 → 颜色 uniform 为 0)在片元着色器里整盏跳过:条件只依赖 uniform,
+// 整个 draw 走同一分支,白天(光源全灭)每个片元就省掉 5 盏点光的衰减与 BRDF。
+// 不改程序数、不改程序键,补丁在任何着色器编译之前生效(模块加载期)。
+{
+  const SC = THREE.ShaderChunk;
+  const head = '\t\tpointLight = pointLights[ i ];\n\t\tgetPointLightInfo( pointLight, geometryPosition, directLight );\n';
+  const tail = '\t\tRE_Direct( directLight, geometryPosition, geometryNormal, geometryViewDir, geometryClearcoatNormal, material, reflectedLight );\n\t}\n\t#pragma unroll_loop_end\n#endif\n#if ( NUM_SPOT_LIGHTS > 0 )';
+  const src = SC.lights_fragment_begin;
+  if (src.includes(head) && src.includes(tail)) {
+    SC.lights_fragment_begin = src
+      .replace(head, '\t\tpointLight = pointLights[ i ];\n\t\tif ( pointLight.color.r + pointLight.color.g + pointLight.color.b > 0.0 ) {\n' +
+        '\t\tgetPointLightInfo( pointLight, geometryPosition, directLight );\n')
+      .replace(tail, tail.replace('reflectedLight );\n\t}', 'reflectedLight );\n\t\t}\n\t}'));
+  }
+}
 export const LIGHT_POOL = 4;
 export const lightPool = [];
 export function initLightPool(s) {

@@ -230,8 +230,12 @@ export function updateSkinLOD(cx, cz, shadowD, hideD) {
     const ref = slots[s];
     const e = ref && ref.deref();
     if (!e) continue;
-    const m = e.root.matrixWorld.elements;
-    const d = Math.hypot(m[12] - cx, m[14] - cz);
+    // 挂在场景顶层的实体直接用 position(玩法每帧都写它):matrixWorld 要等渲染才更新,
+    // 只跑模拟不渲染的那几帧(加载、测试步进)里它还停在旧位置,传送后会被误判成"远处"藏掉
+    const r = e.root;
+    let x, z;
+    if (!r.parent || r.parent.isScene) { x = r.position.x; z = r.position.z; } else { const m = r.matrixWorld.elements; x = m[12]; z = m[14]; }
+    const d = Math.hypot(x - cx, z - cz);
     // 回差:近 6m、远 10m,免得边界上来回切
     const lv = d < shadowD + (e.lod === 0 ? 6 : 0) ? 0 : d < hideD + (e.lod <= 1 ? 10 : 0) ? 1 : 2;
     if (lv !== e.lod) applySkinLOD(e, lv);
