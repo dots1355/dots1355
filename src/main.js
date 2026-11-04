@@ -9874,7 +9874,10 @@ ctx.mapView = () => ({ guards, bandits, horses, wanted, warband, beacon, beaconR
 // 场景里藏着的东西(雨线、按需显示的部件)compile 也会照顾到;拖尾用真实的弧形几何挂进来一起编。
 {
   const ring = new THREE.Mesh(new THREE.RingGeometry(0.5, 1, 18, 1, 0, 2.1), trailMat);
-  const tmp = [ring, ...[magBurstMat, dangerMat].map((m) => new THREE.Mesh(magBurstGeo, m))];
+  // 法弹/火球的不透明内核是每发新建、命中即销毁的 MeshBasicMaterial:场上没有别的同类材质时,
+  // 程序跟着最后一个用户一起被释放,下一发又得重编。预热编一份且永不 dispose,程序就一直在缓存里
+  const boltCore = new THREE.MeshBasicMaterial({ color: 0xffa040 });
+  const tmp = [ring, ...[magBurstMat, dangerMat, boltCore].map((m) => new THREE.Mesh(magBurstGeo, m))];
   for (const t of tmp) { t.position.set(0, -60, 0); t.userData.noSnap = true; scene.add(t); }
   const rt0 = renderer.getRenderTarget();
   renderer.setRenderTarget(composer.readBuffer);
