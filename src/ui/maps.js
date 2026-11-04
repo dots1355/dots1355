@@ -49,12 +49,12 @@ function terrainCanvas(cx, cz) {
     for (let i = 0; i < m; i++) {
       const at = (di, dj) => H[(j + 1 + dj) * (m + 2) + i + 1 + di];
       const gx = (at(1, 0) - at(-1, 0)) / 20, gz = (at(0, 1) - at(0, -1)) / 20;
-      const nl = Math.hypot(gx * 2.2, 1, gz * 2.2);
-      const d = ((-gx * 2.2) * L[0] + L[1] - (gz * 2.2) * L[2]) / (nl * ll) - L[1] / ll; // 相对平地的明暗
+      const nl = Math.hypot(gx * 1.6, 1, gz * 1.6);
+      const d = ((-gx * 1.6) * L[0] + L[1] - (gz * 1.6) * L[2]) / (nl * ll) - L[1] / ll; // 相对平地的明暗
       const o = (j * m + i) * 4;
-      const v = d > 0 ? 255 : 0;
-      img.data[o] = v; img.data[o + 1] = v * 0.97; img.data[o + 2] = v * 0.9;
-      img.data[o + 3] = Math.min(150, Math.abs(d) * (d > 0 ? 320 : 420));
+      const v = d > 0 ? 255 : 30; // 背光面压成暖褐而不是纯黑,陡峭的雪山不至于糊成黑斑
+      img.data[o] = v; img.data[o + 1] = v * 0.94; img.data[o + 2] = v * 0.86;
+      img.data[o + 3] = Math.min(105, Math.abs(d) * (d > 0 ? 280 : 300));
     }
   }
   sg.putImageData(img, 0, 0);
@@ -75,6 +75,21 @@ function terrainCanvas(cx, cz) {
   g.globalAlpha = 1;
   biomeEdges(g, cx - BIG_R, cz - BIG_R, cx + BIG_R, cz + BIG_R, 24,
     (x, z) => [(x - cx + BIG_R) * k, (z - cz + BIG_R) * k], 'rgba(40,26,12,0.28)');
+  // 4) 高山画成羊皮纸地图的山峰符号:亮面留白、背光面描褐,山越高符号越大(错行排开,不成棋盘)
+  for (let j = 0; j * 30 < BIG_R * 2; j++) {
+    for (let i = 0; i * 34 < BIG_R * 2; i++) {
+      const wx = cx - BIG_R + i * 34 + (j % 2) * 17 + 8, wz = cz - BIG_R + j * 30 + 8;
+      const h = H[(Math.round((wz - cz + BIG_R) / 10) + 1) * (m + 2) + Math.round((wx - cx + BIG_R) / 10) + 1];
+      if (!(h > 24)) continue;
+      const px = (wx - cx + BIG_R) * k, pz = (wz - cz + BIG_R) * k, sz = Math.min(15, 5 + (h - 24) * 0.16);
+      g.beginPath(); g.moveTo(px - sz, pz + sz * 0.55); g.lineTo(px, pz - sz * 0.75); g.lineTo(px + sz, pz + sz * 0.55); g.closePath();
+      g.fillStyle = 'rgba(238,232,218,0.9)'; g.fill();
+      g.beginPath(); g.moveTo(px, pz - sz * 0.75); g.lineTo(px + sz, pz + sz * 0.55); g.lineTo(px + sz * 0.15, pz + sz * 0.55); g.closePath();
+      g.fillStyle = 'rgba(110,92,72,0.75)'; g.fill();
+      g.beginPath(); g.moveTo(px - sz, pz + sz * 0.55); g.lineTo(px, pz - sz * 0.75); g.lineTo(px + sz, pz + sz * 0.55);
+      g.strokeStyle = 'rgba(60,44,30,0.85)'; g.lineWidth = 1.2; g.stroke();
+    }
+  }
   terrCache.set(key, c);
   return c;
 }
