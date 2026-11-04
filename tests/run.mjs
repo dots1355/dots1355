@@ -132,6 +132,32 @@ const TESTS = {
     if (!r.dead) throw new Error('贴脸一刀没砍死 1 血的盗贼');
     if (r.killsDelta < 1) throw new Error('近战击杀没有计入连杀/击杀数');
   },
+  // 符文立石:刀落下的判定帧才劈中(起手不算),劈中后熄灭并撒出金币;背对着砍不中
+  async runestone(page) {
+    await boot(page);
+    const r = await page.evaluate(() => {
+      const g = window.__gtm;
+      for (const gd of g.guards) gd.pos.x += 400; // 别让攻击磁吸转向卫兵
+      const [a, b] = g.world.qBlocks;
+      g.player.pos.set(a.x, 0, a.z + 1.6);
+      g.player.yaw = 0; // 背对立石
+      g.tryAttack();
+      g.step(60);
+      const back = a.used;
+      g.player.pos.set(b.x, 0, b.z + 1.6);
+      g.player.yaw = Math.PI; // 面朝立石
+      const coins0 = g.player.coins;
+      g.tryAttack();
+      const early = b.used;
+      g.step(60);
+      g.step(120); // 走过去捡不到也没关系:金币要么已被吸走,要么散在地上
+      return { back, early, hit: b.used, glow: b.mat.emissiveIntensity, coins: g.player.coins - coins0 };
+    });
+    if (r.back) throw new Error('背对立石也劈中了');
+    if (r.early) throw new Error('起手就判定劈中(应在刀落下的判定帧)');
+    if (!r.hit) throw new Error('面朝立石挥刀没有劈中');
+    if (r.glow !== 0) throw new Error('劈中后符文没有熄灭');
+  },
   // 出招时序:伤害在判定帧(刀落下)才结算;按住蓄力→松手重击 ≥3 倍;轻击打断敌人起手
   async combatTiming(page) {
     await boot(page);

@@ -159,6 +159,7 @@ const _UP = new THREE.Vector3(0, 1, 0);
 const _topC = new THREE.Color();
 const _horC = new THREE.Color();
 const _flashC = new THREE.Color(0xc8d4ff);
+const C_MOON = new THREE.Color(0x8899cc);
 // 北境天空:压掉糖果蓝,换成高纬度的灰蓝与雾白(天际的天从来不艳)
 const C_DAY_TOP = new THREE.Color(0x5d86b8), C_DAY_HOR = new THREE.Color(0xd0dbe2);
 const C_DUSK_TOP = new THREE.Color(0x3b3a63), C_DUSK_HOR = new THREE.Color(0xe08348);
@@ -223,8 +224,15 @@ export function updateDayNight(dt) {
   sun.color.copy(C_SUN_DUSK).lerp(C_SUN_DAY, Math.min(1, Math.max(0, (elev - 0.05) * 2.4)));
   moon.position.set(-sx, Math.max(30, -sy), -sz);
   moon.intensity = 0.55 * night; // 月色提亮:夜里也看得清路
+  moon.color.copy(C_MOON);
+  if (weather.flash > 0.01 && dgnDim === 1) { // 闪电:借月光这盏定向灯,从闪电那边把整片地打亮一下
+    const f = weather.flash;
+    moon.position.copy(weather.boltDir).multiplyScalar(200);
+    moon.intensity = moon.intensity * (1 - f) + f * 4.2;
+    moon.color.lerp(_flashC, f);
+  }
   hemi.intensity = (0.22 + 0.28 * day) * (1 - 0.3 * weather.rain) * dgnDim * (0.6 + 0.4 * atmo[9])
-    + weather.flash * 3.4 * dgnDim; // 闪电:整片天光一下照亮(不只是网页遮罩一闪)
+    + weather.flash * 2.2 * dgnDim; // 闪电:整片天光一下照亮(不只是网页遮罩一闪)
   envIntensity = (0.1 + 0.25 * day) * rainDim * (ctx.inDungeon() ? 0.25 : 1);
   // 随身提灯:入夜自动点起一圈暖光(地窖里已有火把,不重复)
   lantern.intensity = night * 1.2 * (ctx.inDungeon() ? 0 : 1);

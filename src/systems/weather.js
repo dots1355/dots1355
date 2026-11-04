@@ -21,7 +21,9 @@ export const WEATHER_DEF = {
 };
 export const weather = { state: 'clear', timer: 60, rain: 0, targetRain: 0, cover: 0.05, targetCover: 0.05, boltT: 4,
   wet: 0,    // 地面湿润度:下雨时慢慢变湿,雨停后更慢地晾干
-  flash: 0, flash2: 0 }; // 闪电亮度(sky.js 用它真正照亮场景,迅速衰减;flash2 是回闪)
+  flash: 0,  // 闪电亮度 0..1(sky.js 用它真正照亮场景:天光、定向闪光、天穹与雾)
+  flashT: 9, // 距这道闪电过去的秒数(驱动明灭的包络)
+  boltDir: new THREE.Vector3(0, 1, 0) }; // 闪电所在方向(定向闪光从那边打过来)
 
 export function setWeather(s) {
   const def = WEATHER_DEF[s];
@@ -38,16 +40,23 @@ export function setWeather(s) {
 function lightning() {
   const el = document.getElementById('lightning');
   el.style.transition = 'none';
-  el.style.opacity = 0.3; // 网页遮罩只留一点眩光,真正的亮来自场景灯光(weather.flash → sky.js)
+  el.style.opacity = 0.22; // 网页遮罩只留一点眩光,真正的亮来自场景灯光(weather.flash → sky.js)
   requestAnimationFrame(() => {
     el.style.transition = 'opacity 0.3s';
     el.style.opacity = 0;
   });
-  weather.flash = 1;
-  weather.flash2 = 0.35 + rand() * 0.25; // 回闪
+  weather.flashT = 0;
   showBolt();
   cam.shake = Math.max(cam.shake, 0.3);
   setTimeout(() => weatherAudio.thunder(), 400 + rand() * 1200);
+}
+// 闪电明灭:主闪 0.1 秒最亮 → 暗一下 → 回闪 → 0.6 秒内熄灭(不是一帧白屏)
+function flashEnvelope(t) {
+  if (t > 0.75) return 0;
+  const main = Math.exp(-t * 9);
+  const re = t > 0.16 ? Math.exp(-(t - 0.16) * 10) * 0.75 : 0;
+  const flick = t < 0.12 ? 0.75 + 0.25 * Math.sin(t * 160) : 1;
+  return Math.min(1, Math.max(main * flick, re));
 }
 
 // 天边的闪电:一条随机折线(朝向镜头的细带,加性混合),亮约 0.2 秒
@@ -59,10 +68,14 @@ boltMesh.userData.noSnap = true;
 boltMesh.visible = false;
 scene.add(boltMesh);
 let boltT = 0;
+const _camDir = new THREE.Vector3();
 function showBolt() {
   const P = [];
-  const a = rand() * Math.PI * 2, dist = 140 + rand() * 80;
+  // 落在镜头前方 ±50° 内的远处:玩家看得见这道闪电,照亮也从那边来
+  camera.getWorldDirection(_camDir);
+  const a = Math.atan2(_camDir.z, _camDir.x) + (rand() - 0.5) * 1.75, dist = 120 + rand() * 70;
   const sx = Math.sin(a), sz = -Math.cos(a); // 与视线大致垂直的横向
+  weather.boltDir.set(Math.cos(a), 0.9, Math.sin(a)).normalize();
   const seg = (x0, y0, z0, x1, y1, z1, w) => {
     const ox = sx * w, oz = sz * w;
     P.push(x0 - ox, y0, z0 - oz, x0 + ox, y0, z0 + oz, x1 + ox, y1, z1 + oz,
@@ -72,8 +85,8 @@ function showBolt() {
   const bot = camera.position.y - 5;
   while (y > bot) {
     const ny = y - (6 + rand() * 9), nx = x + (rand() - 0.5) * 9, nz = z + (rand() - 0.5) * 9;
-    seg(x, y, z, nx, ny, nz, 0.55);
-    if (rand() < 0.3) seg(nx, ny, nz, nx + (rand() - 0.5) * 14, ny - 10 - rand() * 8, nz + (rand() - 0.5) * 14, 0.3); // 分叉
+    seg(x, y, z, nx, ny, nz, 0.6);
+    if (rand() < 0.35) seg(nx, ny, nz, nx + (rand() - 0.5) * 14, ny - 10 - rand() * 8, nz + (rand() - 0.5) * 14, 0.3); // 分叉
     x = nx; y = ny; z = nz;
   }
   boltMesh.geometry.dispose();
@@ -81,7 +94,7 @@ function showBolt() {
   g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
   boltMesh.geometry = g;
   boltMesh.visible = true;
-  boltT = 0.22;
+  boltT = 0.3;
 }
 
 export function updateWeather(dt) {
@@ -107,14 +120,12 @@ export function updateWeather(dt) {
       lightning();
     }
   }
-  // 闪电:主闪 → 一下回闪 → 熄灭
-  if (weather.flash > 0) {
-    weather.flash = Math.max(0, weather.flash - dt * 7);
-    if (weather.flash < 0.05 && weather.flash2) { weather.flash = weather.flash2; weather.flash2 = 0; }
-  }
+  // 闪电:按包络明灭;天边那道闪电随主闪一起熄灭
+  weather.flashT += dt;
+  weather.flash = flashEnvelope(weather.flashT);
   if (boltT > 0) {
     boltT -= dt;
-    boltMat.opacity = Math.max(0, Math.min(1, boltT * 8));
+    boltMat.opacity = Math.max(0, Math.min(1, boltT * 6)) * (0.6 + 0.4 * weather.flash);
     if (boltT <= 0) boltMesh.visible = false;
   }
   // 地面湿润:下雨约 25 秒湿透,雨停约 90 秒晾干(冬天的雪不算湿)
@@ -253,7 +264,7 @@ export function updateRain(dt) {
   rainU.uTime.value = rainTime;
   rainU.uCenter.value.set(camera.position.x, camera.position.y + 4, camera.position.z);
   rainU.uSnow.value = snow ? 1 : 0;
-  rainU.uAlpha.value = (snow ? 0.75 : 0.45) * Math.min(1, k * 1.4) * (1 + weather.flash * 0.6);
+  rainU.uAlpha.value = (snow ? 0.75 : 0.45) * Math.min(1, k * 1.4) * (1 + weather.flash * 1.2); // 闪电时雨丝一亮
   rainU.uColor.value.setHex(snow ? 0xf2f6ff : 0xa9bccd);
   rainU.uWind.value.set(snow ? 1.2 : 3.5, snow ? 0.5 : 1.2);
   // 水花:只在下雨(不下雪)时,玩家周围 14m 内;落在水面上就是一圈涟漪

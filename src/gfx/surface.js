@@ -28,13 +28,16 @@ const VERT_BODY = `
     vSfW = (modelMatrix * sfw).xyz;
   }`;
 
-// 水洼:平地上按世界坐标噪声长出的积水斑(压暗、几乎镜面、法线放平,下雨时有涟漪)
+// 水洼:平地上按世界坐标噪声长出的积水斑(越湿越大),外面一圈颜色更深的湿泥;
+// 水面压暗、偏光滑(不用镜面:环境贴图是室内灯箱,镜面反射会发白),天光反射走菲涅尔(掠射才亮),下雨时有涟漪
 export const PUDDLE_GLSL = `
-  float sfPuddle(vec3 w, vec3 nView) {
+  vec2 sfPuddle(vec3 w, vec3 nView) {
     vec3 upV = normalize((viewMatrix * vec4(0.0, 1.0, 0.0, 0.0)).xyz);
-    float flatK = smoothstep(0.93, 0.985, dot(normalize(nView), upV));
-    float pn = sfNoise(w.xz * 0.16) * 0.7 + sfNoise(w.xz * 0.53 + 3.1) * 0.3;
-    return smoothstep(0.645, 0.7, pn) * flatK * smoothstep(0.3, 0.85, uWet);
+    float flatK = smoothstep(0.94, 0.99, dot(normalize(nView), upV));
+    float pn = sfNoise(w.xz * 0.14) * 0.72 + sfNoise(w.xz * 0.47 + 3.1) * 0.28;
+    float wetK = smoothstep(0.35, 0.9, uWet);
+    float grow = mix(0.77, 0.71, wetK);
+    return vec2(smoothstep(grow, grow + 0.022, pn), smoothstep(grow - 0.08, grow, pn)) * flatK * wetK;
   }
   vec2 sfRipple(vec2 p, float t) {
     vec2 c = floor(p * 1.4);
@@ -45,38 +48,59 @@ export const PUDDLE_GLSL = `
     float ring = sin((d - ph * 0.5) * 50.0) * exp(-abs(d - ph * 0.5) * 16.0) * (1.0 - ph);
     return dv / max(d, 1e-3) * ring;
   }`;
-
-export function worldTint(sh) {
+// 四处注入片段(地表材质与 worldTint 共用,保证同一种水洼):颜色 / 粗糙度 / 法线 / 天光反射
+export const PUDDLE_COLOR = `
+  float sfPud = 0.0;
+  #ifndef FLAT_SHADED
+  {
+    vec2 sfPR = sfPuddle(vSfW, vNormal);
+    sfPud = sfPR.x;
+    diffuseColor.rgb *= 1.0 - 0.16 * sfPR.y;
+    diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * 0.3 + vec3(0.01, 0.013, 0.016), sfPud);
+  }
+  #endif`;
+export const PUDDLE_ROUGH = `
+  roughnessFactor = mix(roughnessFactor, 0.16, sfPud);`;
+export const PUDDLE_NORMAL = `
+  if (sfPud > 0.01) {
+    vec3 upV = normalize((viewMatrix * vec4(0.0, 1.0, 0.0, 0.0)).xyz);
+    vec2 rp = sfRipple(vSfW.xz, uSfTime) * uRainK * 0.35;
+    vec3 rw = normalize((viewMatrix * vec4(rp.x, 0.0, rp.y, 0.0)).xyz + upV);
+    normal = normalize(mix(normal, rw, sfPud));
+  }`;
+export const PUDDLE_EMISSIVE = `
+  if (sfPud > 0.0) {
+    float sfF = 0.02 + 0.98 * pow(1.0 - clamp(dot(normal, normalize(vViewPosition)), 0.0, 1.0), 5.0);
+    totalEmissiveRadiance += uSkyCol * sfF * sfPud * 0.8;
+  }`;
+export const SURFACE_UNIFORMS_GLSL = 'uniform float uWet, uSfTime, uRainK;\nuniform vec3 uSkyCol;';
+export function bindSurfaceUniforms(sh) {
   sh.uniforms.uWet = surfaceUniforms.uWet;
   sh.uniforms.uSfTime = surfaceUniforms.uTime;
   sh.uniforms.uRainK = surfaceUniforms.uRainK;
   sh.uniforms.uSkyCol = surfaceUniforms.uSkyCol;
+}
+
+export function worldTint(sh) {
+  bindSurfaceUniforms(sh);
   sh.vertexShader = sh.vertexShader
     .replace('#include <common>', `#include <common>\n${VERT_DECL}`)
     .replace('#include <project_vertex>', `#include <project_vertex>\n${VERT_BODY}`);
   sh.fragmentShader = sh.fragmentShader
-    .replace('#include <common>', `#include <common>\n${VERT_DECL}\nuniform float uWet, uSfTime, uRainK;\nuniform vec3 uSkyCol;\n${NOISE_GLSL}\n${PUDDLE_GLSL}`)
+    .replace('#include <common>', `#include <common>\n${VERT_DECL}\n${SURFACE_UNIFORMS_GLSL}\n${NOISE_GLSL}\n${PUDDLE_GLSL}`)
     .replace('#include <map_fragment>', `#include <map_fragment>
-      float sfPud = sfPuddle(vSfW, vNormal);
       {
         float sa = sfNoise(vSfW.xz * 0.085 + vSfW.y * 0.06);
         float sb = sfNoise(vSfW.xz * 0.29 + vec2(vSfW.y * 0.23, 17.3));
         diffuseColor.rgb *= (0.86 + 0.2 * sa + 0.1 * (sb - 0.5)) * vec3(1.0 + 0.05 * (sb - 0.5), 1.0, 1.0 - 0.06 * (sb - 0.5));
         diffuseColor.rgb *= 1.0 - 0.26 * uWet;
-        diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * 0.42, sfPud);
-      }`)
+      }
+      ${PUDDLE_COLOR}`)
     .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
       roughnessFactor = mix(roughnessFactor, min(roughnessFactor, 0.32), uWet);
-      roughnessFactor = mix(roughnessFactor, 0.05, sfPud);`)
-    .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
-      if (sfPud > 0.01) {
-        vec3 upV = normalize((viewMatrix * vec4(0.0, 1.0, 0.0, 0.0)).xyz);
-        vec2 rp = sfRipple(vSfW.xz, uSfTime) * uRainK * 0.35;
-        vec3 rw = normalize((viewMatrix * vec4(rp.x, 0.0, rp.y, 0.0)).xyz + upV);
-        normal = normalize(mix(normal, rw, sfPud));
-      }`)
-    .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
-      totalEmissiveRadiance += uSkyCol * pow(1.0 - max(dot(normal, normalize(vViewPosition)), 0.0), 3.0) * sfPud * 0.55;`);
+      ${PUDDLE_ROUGH}`)
+    .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>\n${PUDDLE_NORMAL}`)
+    .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>\n${PUDDLE_EMISSIVE}`);
 }
 
 export function setWetness(wet, rain, dt) {

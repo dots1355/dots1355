@@ -7240,7 +7240,21 @@ function backstabMul(e) {
   const d = Math.hypot(dx, dz) || 1;
   return (Math.sin(e.yaw) * dx + Math.cos(e.yaw) * dz) / d < -0.35 ? 1.5 : 1;
 }
+// 符文立石:刀锋判定帧劈中身前的立石(与砍人同一刀长与扇面),符文碎光化作金币
+function strikeRuneStones(range, arcDot) {
+  const b = world.runeStrike(player.pos.x, player.pos.z, player.yaw, range, arcDot);
+  if (!b) return;
+  magBurst(b.x, b.y, b.z);
+  sfx.block();
+  cam.shake = Math.max(cam.shake, 0.15);
+  for (let i = 0; i < 5; i++) {
+    const a = rand() * 6.28;
+    addPickup('coin', b.x + Math.cos(a) * 1.4, b.z + Math.sin(a) * 1.4, 30);
+  }
+  callout('符文碎光 +5 金币', 'blue', { x: b.x, y: b.y + 1.2, z: b.z });
+}
 function meleeSweep(dmg, range, arcDot, knock, opts = {}) {
+  if (dmg > 0) strikeRuneStones(range, arcDot);
   const fx = Math.sin(player.yaw), fz = Math.cos(player.yaw);
   const maxHits = opts.maxHits ?? 3;
   const heavy = !!opts.heavy;
@@ -8590,21 +8604,6 @@ function updatePlayer(dt) {
     if (wasAirborne && fallSpeed < -4) player.squashT = 0.16; // 落地挤压
     if (wasAirborne && fallSpeed < -10) cam.shake = 0.22;
     if (wasAirborne && fallSpeed < -6) spawnDust(player.pos.x, 0.06, player.pos.z, 6, 0.9, 1.5);
-  }
-
-  // 符文立石:出招时劈中身前的立石(world.runeStrike 轮询出招状态),符文碎光化作金币
-  {
-    const b = world.runeStrike(player);
-    if (b) {
-      magBurst(b.x, b.y, b.z);
-      sfx.block();
-      cam.shake = Math.max(cam.shake, 0.15);
-      for (let i = 0; i < 5; i++) {
-        const a = rand() * 6.28;
-        addPickup('coin', b.x + Math.cos(a) * 1.4, b.z + Math.sin(a) * 1.4, 30);
-      }
-      callout('符文碎光 +5 金币', 'blue', { x: b.x, y: b.y + 1.2, z: b.z });
-    }
   }
 
   resolveCollisions(player.pos, 0.45, colliders);

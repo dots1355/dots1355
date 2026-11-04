@@ -706,56 +706,81 @@ export function buildWorld(scene) {
   chest(-66, 50, 45);   // 城墙角
 
   // ---- 符文立石:落地的古立石,正反两面刻着发光符文(挥刀劈中它,符文碎光化作金币)----
-  // 立石本体是收分、斜顶的粗石柱;正反两面一块刻符文的石面(发光贴图只画刻痕)
+  // 本体是六棱、收分、斜顶的粗糙石板(平直着色 + 顶点色:根部青苔、顶部风化发白),脚下一圈半埋的碎石;
+  // 符文沿正面平面投影:底色贴图只画刻槽(其余纯白,乘顶点色),发光贴图只画刻痕;另有一片深色泥土垫底
   const rune = makeRuneTextures();
-  const runeStone = lambert(0xa09a8e, { roughness: 0.95, flatShading: true }); // 粗粝的整块岩石(不是砖)
   const RUNE_GEO = (() => {
-    const g = new THREE.BoxGeometry(1.0, 2.1, 0.62);
-    const p = g.attributes.position;
+    let sd = 4242;
+    const rr = () => { sd = (sd * 16807) % 2147483647; return sd / 2147483647; };
+    const parts = [];
+    const body = new THREE.CylinderGeometry(0.5, 0.56, 2.15, 6, 4, false, Math.PI / 6).translate(0, 1.075, 0);
+    const p = body.attributes.position;
+    const bump = new Map(); // 同一位置的顶点同样扰动(棱面不裂缝)
     for (let i = 0; i < p.count; i++) {
-      const y = p.getY(i) + 1.05, t = y / 2.1; // 0 底 → 1 顶:上窄下宽,斜顶
-      p.setXYZ(i, p.getX(i) * (1 - t * 0.24), y + p.getX(i) * 0.2 * t, p.getZ(i) * (1 - t * 0.16));
+      const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
+      const key = `${x.toFixed(3)},${y.toFixed(3)},${z.toFixed(3)}`;
+      if (!bump.has(key)) bump.set(key, [(rr() - 0.5) * 0.08, (rr() - 0.5) * 0.06, (rr() - 0.5) * 0.05]);
+      const [jx, jy, jz] = bump.get(key);
+      const t = y / 2.15; // 0 底 → 1 顶:上窄下宽、前后压扁成板、斜顶
+      p.setXYZ(i, x * (1 - t * 0.2) + jx, y + jy + x * 0.26 * t * t, z * 0.62 * (1 - t * 0.12) + jz);
     }
-    const ni = g.toNonIndexed();
-    ni.computeVertexNormals();
-    planarUV(ni);
-    return ni;
+    parts.push(body.toNonIndexed());
+    for (let k = 0; k < 6; k++) { // 脚下半埋的碎石
+      const a = (k / 6) * Math.PI * 2 + rr() * 0.7, r = 0.72 + rr() * 0.3, s = 0.12 + rr() * 0.14;
+      parts.push(new THREE.IcosahedronGeometry(s, 0).scale(1.2, 0.6, 1)
+        .translate(Math.cos(a) * r, s * 0.15, Math.sin(a) * r * 0.8).toNonIndexed());
+    }
+    const g = mergeGeometries(parts.map((q) => { q.deleteAttribute('uv'); q.deleteAttribute('normal'); return q; }));
+    g.computeVertexNormals();
+    const P = g.attributes.position, col = new Float32Array(P.count * 3), uv = new Float32Array(P.count * 2);
+    for (let i = 0; i < P.count; i++) {
+      const x = P.getX(i), y = P.getY(i), n = Math.sin(x * 9.1 + y * 5.3 + P.getZ(i) * 7.7) * 0.5 + 0.5;
+      const moss = Math.max(0, 1 - y / 0.8) * (0.4 + 0.4 * n); // 根部青苔(橄榄绿,不是薄荷绿)
+      const top = Math.max(0, (y - 1.6) / 0.6); // 顶部风化发白
+      const base = (0.5 + 0.1 * n + 0.16 * top) * (1 - 0.22 * moss);
+      const lin = (v) => Math.pow(v, 2.2); // 顶点色按线性空间进着色器:这里按 sRGB 调好再换算
+      col[i * 3] = lin(base * (1 - moss * 0.3)); col[i * 3 + 1] = lin(base * (1 - moss * 0.1)); col[i * 3 + 2] = lin(base * (0.95 - moss * 0.55));
+      uv[i * 2] = x / 0.78 + 0.5; uv[i * 2 + 1] = (y - 0.42) / 1.25; // 正面平面投影:刻痕只落在正反两块大面上
+    }
+    g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    return g;
   })();
-  const RUNE_FACES = (() => { // 正反两面的符文石面(贴着收分后的石面),合成一个网格
-    const faces = [1, -1].map((s) => new THREE.PlaneGeometry(0.6, 1.1)
-      .rotateX(-s * 0.05).rotateY(s < 0 ? Math.PI : 0).translate(0, 1.0, s * 0.285));
-    return mergeGeometries(faces);
-  })();
+  const RUNE_SOIL = new THREE.CircleGeometry(1.3, 14).rotateX(-Math.PI / 2).translate(0, 0.025, 0);
+  const runeSoilMat = new THREE.MeshStandardMaterial({ color: 0x4a4032, roughness: 1, transparent: true, opacity: 0.5,
+    depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1 });
   function qblock(x, z, yaw = 0) {
     const g = new THREE.Group();
-    const body = new THREE.Mesh(RUNE_GEO, runeStone);
+    g.add(new THREE.Mesh(RUNE_SOIL, runeSoilMat));
+    const mat = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, map: rune.map, roughness: 0.95,
+      metalness: 0, emissive: 0x6fd8ff, emissiveMap: rune.glow, emissiveIntensity: 1.1 });
+    mat.userData.wettable = true;
+    mat.userData.baseRough = 0.95;
+    const body = new THREE.Mesh(RUNE_GEO, mat);
     body.castShadow = body.receiveShadow = true;
     g.add(body);
-    const mat = new THREE.MeshStandardMaterial({ color: 0xf2eee6, map: rune.map, emissive: 0x6fd8ff,
-      emissiveMap: rune.glow, emissiveIntensity: 1.1, roughness: 0.9, polygonOffset: true, polygonOffsetFactor: -2 });
-    g.add(new THREE.Mesh(RUNE_FACES, mat));
     g.position.set(x, 0, z);
     g.rotation.set(0, yaw, (((x * 7 + z * 13) % 5) - 2) * 0.015); // 微微歪斜:立了几百年
     scene.add(g);
-    circle(x, z, 0.6);
+    circle(x, z, 0.62);
     feat('tower', x, z, 1.2, 1.2);
     qBlocks.push({ mesh: g, mat, x, z, y: 1.3, used: false, bump: 0 });
   }
   // 都立在路边草地上(不挡大街):广场南、西街、东区、南门外、东路边、西城
   qblock(6, 22, 0.3); qblock(-20, 3.8, 0); qblock(30, 32, -0.5); qblock(3.8, 70, 1.4); qblock(95, 9.6, 0.2); qblock(-60, 20, 1.2);
-  // 出招时(玩家 attackT>0、近战)身前 2.6 米内的立石被劈中:返回那块石头(奖励由主循环发)
-  function runeStrike(p) {
-    if (!(p.attackT > 0) || p.weapon === 'bow') return null;
+  // 劈中判定:由刀锋判定帧调用(main.js 的 meleeSweep,与砍人同一刀长与扇面),劈中第一块亮着的立石就熄灭并返回它
+  function runeStrike(px, pz, yaw, range, arcDot) {
+    const fx = Math.sin(yaw), fz = Math.cos(yaw);
     for (const b of qBlocks) {
       if (b.used) continue;
-      const dx = b.x - p.pos.x, dz = b.z - p.pos.z;
-      const d2 = dx * dx + dz * dz;
-      if (d2 > 2.6 * 2.6) continue;
-      if ((Math.sin(p.yaw) * dx + Math.cos(p.yaw) * dz) < -0.3) continue; // 背对着砍不中
+      const dx = b.x - px, dz = b.z - pz;
+      const d = Math.hypot(dx, dz);
+      if (d > range + 0.55) continue; // 立石本身约半米粗
+      if (d > 0.7 && (dx * fx + dz * fz) / d <= arcDot) continue;
       b.used = true;
       b.bump = 0.45;
-      b.mat.emissiveIntensity = 0; // 符文熄灭,只剩一块旧石头
-      b.mat.color.setHex(0x8a857a);
+      b.mat.emissiveIntensity = 0; // 符文熄灭,只剩一块刻着旧痕的石头
+      b.mat.color.setHex(0xb8b2a6);
       return b;
     }
     return null;
@@ -1580,30 +1605,33 @@ function prepHouseTemplates(root) {
 }
 
 function makeRuneTextures() {
-  // 石面:灰褐噪点 + 磨损边;符文:几笔刻痕(发光贴图只画刻痕,颜色由 emissive 给)
+  // 刻槽贴图:纯白底(乘石头顶点色,不改本色)+ 深色刻槽;发光贴图:黑底 + 刻痕里的光(带一圈柔光)
   const mk = () => { const c = document.createElement('canvas'); c.width = c.height = 128; return c; };
   const base = mk(), glow = mk();
   const g = base.getContext('2d'), e = glow.getContext('2d');
-  g.fillStyle = '#8c877c'; g.fillRect(0, 0, 128, 128);
-  for (let i = 0; i < 900; i++) {
-    const l = 90 + rand() * 70;
-    g.fillStyle = `rgba(${l},${l - 4},${l - 10},0.35)`;
-    g.fillRect(rand() * 128, rand() * 128, 1 + rand() * 3, 1 + rand() * 3);
+  g.fillStyle = '#fff'; g.fillRect(0, 0, 128, 128);
+  for (let i = 0; i < 500; i++) { // 石面细微的麻点
+    const l = 215 + rand() * 40;
+    g.fillStyle = `rgba(${l},${l},${l - 6},0.5)`;
+    g.fillRect(rand() * 128, rand() * 128, 1 + rand() * 2, 1 + rand() * 2);
   }
-  g.strokeStyle = 'rgba(60,56,48,0.45)'; g.lineWidth = 5; g.strokeRect(3, 3, 122, 122); // 刻面的浅框
   e.fillStyle = '#000'; e.fillRect(0, 0, 128, 128);
-  const strokes = [[[64, 22], [64, 106]], [[64, 30], [92, 50]], [[92, 50], [64, 66]], [[64, 66], [94, 104]], [[38, 40], [54, 30]], [[38, 92], [52, 102]]];
-  for (const [w, col] of [[11, 'rgba(40,40,40,0.9)'], [5, '#fff']]) {
-    for (const ctx of [g, e]) {
-      if (ctx === e && w > 6) continue;
-      ctx.strokeStyle = ctx === g ? col : '#fff';
-      ctx.lineWidth = ctx === g ? w : 6;
-      ctx.lineCap = 'round';
-      for (const [[x1, y1], [x2, y2]] of strokes) { ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); }
-    }
-  }
+  const strokes = [[[64, 22], [64, 106]], [[64, 30], [92, 50]], [[92, 50], [64, 66]], [[64, 66], [94, 104]],
+    [[38, 40], [54, 30]], [[38, 92], [52, 102]], [[30, 64], [44, 64]]];
+  const draw = (ctx, w, style, blur = 0) => {
+    ctx.save();
+    ctx.strokeStyle = style; ctx.lineWidth = w; ctx.lineCap = 'round';
+    if (blur) { ctx.shadowColor = style; ctx.shadowBlur = blur; }
+    for (const [[x1, y1], [x2, y2]] of strokes) { ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); }
+    ctx.restore();
+  };
+  draw(g, 10, 'rgba(70,64,56,0.55)'); // 刻槽外沿
+  draw(g, 6, 'rgba(40,36,32,0.9)');   // 刻槽
+  draw(e, 7, 'rgba(255,255,255,0.35)', 8); // 柔光
+  draw(e, 4, '#fff');
   const map = new THREE.CanvasTexture(base);
   map.colorSpace = THREE.SRGBColorSpace;
   const glowT = new THREE.CanvasTexture(glow);
+  glowT.colorSpace = THREE.SRGBColorSpace;
   return { map, glow: glowT };
 }
