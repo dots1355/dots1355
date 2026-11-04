@@ -93,30 +93,110 @@ function humClone(tpl, colors) {
   });
   return c;
 }
+// ---- 头饰几何(全场共享,实体卸载时不释放)----
+const _hatGeo = {};
+const _hatMats = new Map();
+function hatMat(hex, opts = {}) {
+  const key = hex + '|' + (opts.side || 0) + '|' + (opts.roughness || 0);
+  let m = _hatMats.get(key);
+  if (!m) {
+    m = lambert(hex, { roughness: 0.96, ...opts });
+    m.userData.shared = true;
+    _hatMats.set(key, m);
+  }
+  return m;
+}
+const sharedGeo = (g) => { g.userData.shared = true; return g; };
+const HOOD_R = 0.25, HOOD_C = new THREE.Vector3(0, -0.17, 1).normalize(), HOOD_A = 0.9;
+// 兜帽:球壳 + 脸前一个干净的开口(落在开口锥内的顶点沿大圆推到开口边上,三角形退化为零面积)
+// + 脑后顺下来的软尖;开口沿一圈翻边贴着脸,不再浮在头顶
+function hoodGeo() {
+  if (_hatGeo.hood) return _hatGeo.hood;
+  const shell = new THREE.SphereGeometry(HOOD_R, 24, 16, 0, Math.PI * 2, 0, Math.PI * 0.74);
+  const p = shell.attributes.position, v = new THREE.Vector3(), ax = new THREE.Vector3();
+  for (let i = 0; i < p.count; i++) {
+    v.fromBufferAttribute(p, i).normalize();
+    const b = Math.acos(Math.min(1, v.dot(HOOD_C)));
+    if (b < HOOD_A) {
+      ax.crossVectors(HOOD_C, v);
+      if (ax.lengthSq() < 1e-9) ax.set(1, 0, 0);
+      v.copy(HOOD_C).applyAxisAngle(ax.normalize(), HOOD_A);
+    }
+    // 下摆略向外张、脑后略鼓:布料感
+    const flare = 1 + Math.max(0, -v.y) * 0.12 + Math.max(0, -v.z) * 0.06;
+    p.setXYZ(i, v.x * HOOD_R * flare, v.y * HOOD_R * 1.06, v.z * HOOD_R * flare);
+  }
+  shell.computeVertexNormals(); // 先在带索引的球壳上算平滑法线,再展开合并(角色统一光滑着色)
+  const tip = new THREE.ConeGeometry(0.07, 0.26, 8);
+  tip.rotateX(-2.35);
+  tip.translate(0, 0.04, -0.27);
+  const merged = mergeGeometries([shell.toNonIndexed(), tip.toNonIndexed()]);
+  _hatGeo.hood = sharedGeo(merged);
+  return _hatGeo.hood;
+}
+function hoodRimGeo() { // 开口翻边:一圈贴着开口的布卷
+  if (_hatGeo.rim) return _hatGeo.rim;
+  const r = HOOD_R * Math.sin(HOOD_A), d = HOOD_R * Math.cos(HOOD_A);
+  const t = new THREE.TorusGeometry(r * 1.02, 0.014, 6, 28);
+  t.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), HOOD_C));
+  t.translate(HOOD_C.x * d * 1.02, HOOD_C.y * d * 1.06, HOOD_C.z * d * 1.02);
+  _hatGeo.rim = sharedGeo(t);
+  return t;
+}
+function maskGeo() { // 盗贼蒙面:遮住口鼻的一片布(只露眼睛)
+  if (_hatGeo.mask) return _hatGeo.mask;
+  const m = new THREE.SphereGeometry(0.212, 18, 6, Math.PI / 2 - 1.25, 2.5, Math.PI * 0.53, Math.PI * 0.3);
+  m.scale(1.02, 1.05, 1.08);
+  _hatGeo.mask = sharedGeo(m);
+  return m;
+}
+function clothCapGeo() { // 布帽:软塌的圆顶 + 一圈卷边(微微歪向一侧)
+  if (_hatGeo.cap) return _hatGeo.cap;
+  const dome = new THREE.SphereGeometry(0.228, 16, 8, 0, Math.PI * 2, 0, Math.PI * 0.5);
+  dome.scale(1.04, 0.62, 1.1);
+  dome.translate(0, 0.07, -0.01);
+  const band = new THREE.TorusGeometry(0.212, 0.026, 6, 20);
+  band.rotateX(Math.PI / 2);
+  band.translate(0, 0.075, -0.01);
+  const m = mergeGeometries([dome.toNonIndexed(), band.toNonIndexed()]);
+  m.rotateZ(0.12);
+  m.rotateX(-0.1);
+  _hatGeo.cap = sharedGeo(m);
+  return m;
+}
+function strawHatGeo() { // 草帽:圆柱帽冠 + 宽檐(檐边微垂)
+  if (_hatGeo.straw) return _hatGeo.straw;
+  const crown = new THREE.CylinderGeometry(0.15, 0.185, 0.15, 14, 1);
+  crown.translate(0, 0.2, 0);
+  const brim = new THREE.CylinderGeometry(0.42, 0.42, 0.016, 26, 1);
+  const bp = brim.attributes.position;
+  for (let i = 0; i < bp.count; i++) {
+    const r = Math.hypot(bp.getX(i), bp.getZ(i));
+    bp.setY(i, bp.getY(i) + 0.13 - Math.max(0, r - 0.2) * 0.16);
+  }
+  brim.computeVertexNormals();
+  const m = mergeGeometries([crown.toNonIndexed(), brim.toNonIndexed()]);
+  m.rotateX(-0.08);
+  _hatGeo.straw = sharedGeo(m);
+  return m;
+}
+const CAP_COLS = [0x7a5a3a, 0x8a6a40, 0x6a4a42, 0x5a6470, 0x7a7466];
+
 // 帽盔/兜帽/头发/佩剑:两条构建路径共用
 function applyHumanProps(g, parts, opts) {
-  const { hair = 0x3a2a1a, helmet = false, cap = false, hood = false, sword = false, ranger = false } = opts;
+  const { hair = 0x3a2a1a, helmet = false, cap = false, hood = false, sword = false, ranger = false,
+    straw = false, mask = false, shirt = 0x777777 } = opts;
   const head = parts.head;
   if (ranger) {
-    // 游侠兜帽:包住头顶与两颊、脸前敞开,脑后一个软尖;肩上一圈披肩,背后一袭短披风(跑起来会飘)
-    const cloth = lambert(0x6a8a42, { roughness: 0.96 }); // 苔绿(北境调色会压低饱和度)
-    const lining = lambert(0x4a3a28, { roughness: 1 });
-    const hoodM = new THREE.Mesh(
-      new THREE.SphereGeometry(0.245, 16, 10, Math.PI / 2 + 0.62, Math.PI * 2 - 1.24, 0, Math.PI * 0.64), cloth);
-    hoodM.scale.set(1, 1.08, 1.06);
-    hoodM.position.set(0, 0.02, -0.015);
+    // 游侠兜帽:包住头顶与两颊、脸前一个干净的开口(翻边贴着脸),脑后一个软尖;肩上一圈披肩,背后一袭短披风(跑起来会飘)
+    const cloth = lambert(0x6a8a42, { roughness: 0.96, side: THREE.DoubleSide }); // 苔绿(北境调色会压低饱和度)
+    const lining = lambert(0x5c4a34, { roughness: 1 });
+    const hoodM = new THREE.Mesh(hoodGeo(), cloth);
     hoodM.castShadow = true;
     head.add(hoodM);
-    const rim = new THREE.Mesh(new THREE.TorusGeometry(0.2, 0.025, 6, 16, Math.PI * 1.15), lining); // 兜帽前沿翻边
-    rim.rotation.set(0, 0, Math.PI * 0.42);
-    rim.position.set(0, 0.03, 0.115);
-    head.add(rim);
-    const tip = new THREE.Mesh(new THREE.ConeGeometry(0.075, 0.24, 7), cloth);
-    tip.rotation.x = -2.2;
-    tip.position.set(0, 0.06, -0.24);
-    head.add(tip);
-    const mantle = new THREE.Mesh(new THREE.CylinderGeometry(0.17, 0.33, 0.2, 14, 1, true), cloth);
-    mantle.position.set(0, 0.33, 0);
+    head.add(new THREE.Mesh(hoodRimGeo(), lining));
+    const mantle = new THREE.Mesh(new THREE.CylinderGeometry(0.19, 0.33, 0.2, 14, 1, true), cloth);
+    mantle.position.set(0, 0.25, 0); // 披肩顶口落在下巴以下,不遮嘴
     mantle.castShadow = true;
     if (parts.body) parts.body.add(mantle);
     const capeGeo = new THREE.PlaneGeometry(0.6, 0.86, 2, 6);
@@ -146,20 +226,24 @@ function applyHumanProps(g, parts, opts) {
     const spike = new THREE.Mesh(new THREE.ConeGeometry(0.04, 0.16, 6), metal);
     spike.position.y = 0.28;
     head.add(spike);
+  } else if (straw) {
+    head.add(new THREE.Mesh(strawHatGeo(), hatMat(0xc8a46a, { roughness: 1 })));
   } else if (cap) {
-    const c = new THREE.Mesh(new THREE.ConeGeometry(0.23, 0.48, 8), lambert(0x1f7a3d, { roughness: 0.9 }));
-    c.position.set(0, 0.26, -0.05);
-    c.rotation.x = -0.3;
-    head.add(c);
+    const col = CAP_COLS[Math.abs(Math.round(shirt * 0.37)) % CAP_COLS.length]; // 按衣色挑一顶不同颜色的布帽
+    head.add(new THREE.Mesh(clothCapGeo(), hatMat(col)));
   } else if (hood) {
-    const h = new THREE.Mesh(new THREE.ConeGeometry(0.27, 0.42, 8), lambert(0x3b3b46, { roughness: 0.95 }));
-    h.position.y = 0.14;
+    // 斗篷兜帽(盗贼/猎户/守墓人/采药婆):与游侠同款造型,深色粗呢
+    const wool = hatMat(mask ? 0x2c2c32 : 0x4a4436, { side: THREE.DoubleSide });
+    const h = new THREE.Mesh(hoodGeo(), wool);
+    h.castShadow = true;
     head.add(h);
+    head.add(new THREE.Mesh(hoodRimGeo(), hatMat(mask ? 0x1e1e22 : 0x3a3428)));
   } else {
     const h = new THREE.Mesh(new THREE.SphereGeometry(0.215, 10, 7, 0, Math.PI * 2, 0, Math.PI * 0.55), lambert(hair, { roughness: 0.95 }));
     h.position.y = 0.015;
     head.add(h);
   }
+  if (mask) head.add(new THREE.Mesh(maskGeo(), hatMat(0x3a2a28, { side: THREE.DoubleSide }))); // 蒙面
   if (sword) {
     const swordGroup = new THREE.Group();
     const real = getWeaponModel('Sword');

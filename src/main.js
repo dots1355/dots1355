@@ -326,7 +326,8 @@ VILLAGERS.forEach((id, i) => {
   const v = { ...makeHumanoid({
     shirt: villagerColors[i % villagerColors.length], pants: 0x50412e,
     hair: villagerHair[i % villagerHair.length],
-    cap: [2, 6, 7, 13, 15, 17, 19].includes(i),   // 果贩/农夫/农妇/伙计/渔家女/磨坊主/村长:布帽
+    cap: [2, 13, 19].includes(i),                  // 果贩/伙计/村长:布帽
+    straw: [6, 7, 15, 17].includes(i),             // 农夫/农妇/渔家女/磨坊主:草帽
     hood: [8, 18, 21].includes(i),                 // 猎人/守墓人/采药婆:兜帽
   }),
     id, dbKey: `v${i}`, pos: new THREE.Vector3(id.home[0], 0, id.home[1]), yaw: rand() * 6.28,
@@ -339,7 +340,7 @@ VILLAGERS.forEach((id, i) => {
 });
 
 function addBandit(x, z, opts = {}) {
-  const b = { ...makeHumanoid({ shirt: opts.boss ? 0x5a1020 : 0x3b3b46, pants: 0x26262e, hood: true, sword: true }),
+  const b = { ...makeHumanoid({ shirt: opts.boss ? 0x5a1020 : 0x3b3b46, pants: 0x26262e, hood: true, mask: true, sword: true }),
     pos: new THREE.Vector3(x, 0, z), yaw: 0, hp: opts.hp ?? 3, speed: opts.speed ?? 5.8,
     state: 'patrol', home: new THREE.Vector3(x, 0, z), attackCd: 0, stunT: 0, walkT: 0, dead: false,
     boss: !!opts.boss, escort: !!opts.escort, dmg: opts.dmg ?? 2 };
@@ -3583,7 +3584,7 @@ const npcStyles = {
   blacksmith: { shirt: 0x5a4632, pants: 0x33261a, hair: 0x2a1a10 },
   trader: { shirt: 0x2a6a5a, pants: 0x4a3a26, hair: 0x6a4a2a },
   innkeep: { shirt: 0xa04a5a, pants: 0x4a3320, hair: 0x8a3a1a },
-  fisher: { shirt: 0x3a5a7a, pants: 0x33301c, hair: 0xbababa },
+  fisher: { shirt: 0x3a5a7a, pants: 0x33301c, hair: 0xbababa, straw: true },
 };
 const namedNPCs = [];
 const EXTRA_NPCS = {

@@ -4,7 +4,7 @@
 #   Arm  局部原点=肩枢轴,几何向下到 -0.49(手);材质 [shirt, skin]
 #   Torso 局部原点=躯干中心(游戏放 y0.78),含肩部;材质 [shirt]
 #   Belt 腰带;材质 [boots](皮革同色)
-#   Head 局部原点=头心(游戏放 y1.32),含眼鼻耳;材质 [skin, eye]
+#   Head 局部原点=头心(游戏放 y1.32),含眼鼻耳;材质 [skin, eye];EyeL/EyeR 网格里带眉毛与嘴
 # Blender Z 轴为高,export_yup 转 glTF Y-up;Blender -Y 为脸朝向 → glTF +Z
 # 用法: python3 tools/gen-human.py → assets/models/human.glb
 import bpy
@@ -129,15 +129,37 @@ loft('Nose', [
     (-0.045, 0.036, 0.026, -0.20),
     (-0.02, 0.024, 0.02, -0.19),
 ], [skin], lambda li: 0, subdiv=1)
-# 眼:两粒扁球
+# 眼:两粒扁球;同一网格里带上眉毛与半边嘴(都用深色 eye 材质,游戏里合成一次绘制)
 for sx in (-1, 1):
     bm = bmesh.new()
-    ret = bmesh.ops.create_icosphere(bm, subdivisions=1, radius=0.028)
+    ret = bmesh.ops.create_icosphere(bm, subdivisions=1, radius=0.026)
     for v in ret['verts']:
         v.co.y *= 0.5
-        v.co.x += 0.075 * sx
-        v.co.y += -0.175
-        v.co.z += 0.02
+        v.co.x += 0.072 * sx
+        v.co.y += -0.176
+        v.co.z += 0.018
+    # 眉:斜放的扁条(内高外低,带一点怒意的北方人眉眼)
+    ret = bmesh.ops.create_cube(bm, size=1)
+    for v in ret['verts']:
+        v.co.x *= 0.062
+        v.co.y *= 0.016
+        v.co.z *= 0.015
+        x, z = v.co.x, v.co.z
+        v.co.x = x * 0.97 - z * 0.25 * sx
+        v.co.z = z + x * -0.22 * sx
+        v.co.x += 0.072 * sx
+        v.co.y += -0.186
+        v.co.z += 0.062
+    # 嘴:左右各半条,嘴角略下垂
+    ret = bmesh.ops.create_cube(bm, size=1)
+    for v in ret['verts']:
+        v.co.x *= 0.036
+        v.co.y *= 0.012
+        v.co.z *= 0.011
+        v.co.z += -v.co.x * 0.18 * sx
+        v.co.x += 0.018 * sx
+        v.co.y += -0.156
+        v.co.z += -0.106
     mesh = bpy.data.meshes.new('Eye')
     bm.to_mesh(mesh)
     bm.free()
