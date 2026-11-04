@@ -1,12 +1,21 @@
 // 无尽荒野:核心王国(±500)之外的 1000000×1000000 世界由区块程序化生成
 // 128×128 一块,随玩家加载/卸载;同一坐标永远生成同样的内容(坐标哈希做种子)
+// 性能:区块生成是分帧的生成器(每帧限时,近的先建);地标实例化,程序化树石与兴趣点烘成少量顶点色网格
+// (gfx/vpbr.js),整块冻结矩阵;卸载每帧至多一块;碰撞圆增量进出空间网格
 import * as THREE from 'three';
-import { lambert } from './entities.js';
-import { buildTree, buildPine, buildDeadTree, buildCactus, buildRock, buildBush, natureProp } from './flora.js';
-import { dominantBiome, groundH, buildGroundMesh, getGroundMaterial } from './terrain.js';
+import { lambert, addCircles, removeCircles } from './entities.js';
+import { buildTree, buildPine, buildDeadTree, buildCactus, buildRock, buildBush, natureProp, natureSpec,
+  buildNatureInstances, releaseNatureInstances, NIGHT_GLOW } from './flora.js';
+import { dominantBiome, groundH, buildGroundMesh, getGroundMaterial, GRID } from './terrain.js';
+import { plainStandard, vpbrMaterial, bakeVPBRSteps } from './gfx/vpbr.js';
 
 export const CHUNK = 128;
-export const VIEW_R = 2;          // 加载半径(区块数)
+export let VIEW_R = 2;            // 加载半径(区块数);画质"流畅"档收到 1
+export function setWildViewRadius(r) {
+  if (r === VIEW_R) return;
+  VIEW_R = r;
+  lastPcx = lastPcz = 1e9; // 下一帧重排装卸清单
+}
 export const CORE = 470;          // 核心手工区域半径(此范围内不生成)
 export const WORLD_LIMIT = 500000; // 世界半径 → 总幅面 1000000×1000000
 
@@ -74,9 +83,7 @@ function addTree(g, rng, x, z, biome, cols) {
   grp.rotation.y = rng() * 6.28;
   grp.position.set(x, 0, z);
   g.add(grp);
-  const col = { x, z, r: built.r * sc };
-  colliders.circles.push(col);
-  cols.push(col);
+  cols.push({ x, z, r: built.r * sc });
 }
 
 function addRock(g, rng, x, z, cols) {
@@ -84,9 +91,7 @@ function addRock(g, rng, x, z, cols) {
   built.group.position.set(x, 0, z);
   built.group.rotation.y = rng() * 3;
   g.add(built.group);
-  const col = { x, z, r: built.r };
-  colliders.circles.push(col);
-  cols.push(col);
+  cols.push({ x, z, r: built.r });
 }
 
 // ---- 群系地标:每块按群系撒 Blender 地标(期望个数),让每片荒野一眼可辨 ----
@@ -101,9 +106,28 @@ export const LANDMARKS = {
   rock: [['Outcrop1', 0.8], ['Outcrop2', 0.8], ['Spires', 0.4], ['Stump', 0.15]],
 };
 export const BIG_PROP = { Mesa: 1, Outcrop1: 1, Outcrop2: 1, IceRock: 1, Spires: 1 };
-// 放一件地标;avoid(x,z) 返回 true 则跳过。返回是否放成
-export function placeLandmark(parent, rng, name, x, z, cols, colList, yaw = null) {
+// 放一件地标;返回是否放成。insts 给了就只记放置参数交给实例化(随机数消耗与克隆版一致),
+// 否则克隆一份真网格挂到 parent 上(需要单独摆弄的,比如翻倒的货车)
+export function placeLandmark(parent, rng, name, x, z, cols, colList, yaw = null, insts = null) {
   const big = BIG_PROP[name];
+  if (insts) {
+    const sp = natureSpec(name, rng, big ? 0.8 + rng() * 0.5 : 1, yaw);
+    if (!sp) return false;
+    let y = groundH(x, z) + sp.y;
+    if (big) { // 坡地:按足印最低点下沉(宁埋不浮)
+      const rr = Math.max(1, (sp.cols[0] ? sp.cols[0].r : 1));
+      let lo = groundH(x, z);
+      for (let k = 0; k < 4; k++) lo = Math.min(lo, groundH(x + Math.cos(k * 1.57) * rr, z + Math.sin(k * 1.57) * rr));
+      y = lo + sp.y;
+    }
+    insts.push({ name, x, y, z, yaw: sp.yaw, s: sp.s });
+    for (const c of sp.cols) {
+      const col = { x: x + c.dx, z: z + c.dz, r: c.r };
+      if (colList) colList.push(col);
+      if (cols) cols.push(col);
+    }
+    return true;
+  }
   const built = natureProp(name, rng, big ? 0.8 + rng() * 0.5 : 1, yaw);
   if (!built) return false;
   built.group.position.set(x, 0, z);
@@ -118,19 +142,20 @@ export function placeLandmark(parent, rng, name, x, z, cols, colList, yaw = null
   parent.add(built.group);
   for (const c of built.cols) {
     const col = { x: x + c.dx, z: z + c.dz, r: c.r };
-    colList.push(col);
+    if (colList) colList.push(col);
     if (cols) cols.push(col);
   }
   return true;
 }
 
-// ---- 区块生成 ----
-function genChunk(cx, cz) {
+// ---- 区块生成(生成器:每个 yield 是一个可以停下来等下一帧的点) ----
+function* chunkJob(cx, cz) {
   const key = `${cx},${cz}`;
   const seed = hashChunk(cx, cz);
   const rng = makeRng(seed);
   const g = new THREE.Group();
   const cols = [];
+  const insts = []; // 交给实例化的地标放置
   const firstVisit = !seenChunks.has(key);
   seenChunks.add(key);
   // 战利品只在本会话首次生成时掉落;重访只重建景物与生物
@@ -140,8 +165,16 @@ function genChunk(cx, cz) {
   const centerX = baseX + CHUNK / 2, centerZ = baseZ + CHUNK / 2;
   const biome = biomeAt(centerX, centerZ);
 
-  // 地表:按地形烘焙的一块起伏网格(群系配色已在顶点色里)
+  // 地表:按地形烘焙的一块起伏网格(群系配色已在顶点色里)。先分几步把这块的地形高度采进缓存,
+  // 建网格那一步就只剩查表和配色
+  for (let iz = -1, n = CHUNK / GRID + 2; iz < n; iz++) {
+    const z = baseZ + iz * GRID + 0.05;
+    for (let ix = -1; ix < n; ix++) groundH(baseX + ix * GRID + 0.1, z);
+    if (iz % 9 === 8) yield;
+  }
+  yield;
   g.add(buildGroundMesh(baseX, baseZ, CHUNK, getGroundMaterial()));
+  yield;
 
   // 植被密度按群系
   const treeN = biome === 'forest' ? 12 + Math.floor(rng() * 8)
@@ -150,11 +183,13 @@ function genChunk(cx, cz) {
     : 3 + Math.floor(rng() * 3);
   for (let i = 0; i < treeN; i++) {
     addTree(g, rng, baseX + rng() * CHUNK, baseZ + rng() * CHUNK, biome, cols);
+    if (i % 4 === 3) yield;
   }
   const rockN = 1 + Math.floor(rng() * 3);
   for (let i = 0; i < rockN; i++) {
     addRock(g, rng, baseX + rng() * CHUNK, baseZ + rng() * CHUNK, cols);
   }
+  yield;
 
   // 兴趣点(约 45% 区块有事可看,按群系分布)
   const spawned = []; // 交给主系统托管的实体(狼/盗贼/马/羊)
@@ -166,11 +201,10 @@ function genChunk(cx, cz) {
     st.rotation.y = rng() * 3;
     st.castShadow = true;
     g.add(st);
-    const col = { x, z, r: w2 * 0.7 };
-    colliders.circles.push(col);
-    cols.push(col);
+    cols.push({ x, z, r: w2 * 0.7 });
   };
-  const prop = (name, x, z, yaw = null) => placeLandmark(g, rng, name, x, z, cols, colliders.circles, yaw);
+  // 地标默认走实例化;real=true 时克隆真网格(之后还要单独摆弄的)
+  const prop = (name, x, z, yaw = null, real = false) => placeLandmark(g, rng, name, x, z, cols, null, yaw, real ? null : insts);
   const campfire = (x, z) => {
     if (prop('Campfire', x, z)) return;
     for (let i = 0; i < 5; i++) {
@@ -207,18 +241,21 @@ function genChunk(cx, cz) {
     for (let i = 0, n = 2 + Math.floor(rng() * 2); i < n; i++) {
       const w = hooks.spawnWolf(px + (rng() - 0.5) * 8, pz + (rng() - 0.5) * 8, key);
       if (w) spawned.push(w);
+      yield; // 每个生物单独一步:建模加合批不算轻
     }
   } else if (roll < 0.24 && (biome === 'plains' || biome === 'forest')) {
     // 野马群:荒野中可捉的坐骑!
     for (let i = 0, n = 1 + Math.floor(rng() * 2); i < n; i++) {
       const h = hooks.spawnHorse(px + (rng() - 0.5) * 10, pz + (rng() - 0.5) * 10, key);
       if (h) spawned.push(h);
+      yield;
     }
   } else if (roll < 0.29 && biome === 'plains') {
     // 野羊群
     for (let i = 0, n = 2 + Math.floor(rng() * 3); i < n; i++) {
       const s = hooks.spawnSheep(px + (rng() - 0.5) * 10, pz + (rng() - 0.5) * 10, key);
       if (s) spawned.push(s);
+      yield;
     }
   } else if (roll < 0.34 && biome !== 'snow') {
     // 盗贼窝点:黑帐 + 守财匪 + 金币堆
@@ -229,6 +266,7 @@ function genChunk(cx, cz) {
     for (let i = 0, n = 2; i < n; i++) {
       const b = hooks.spawnBandit(px + (rng() - 0.5) * 6, pz + (rng() - 0.5) * 6, key);
       if (b) spawned.push(b);
+      yield;
     }
     for (let i = 0; i < 7; i++) drop(px + (rng() - 0.5) * 4, pz + (rng() - 0.5) * 4);
   } else if (roll < 0.38) {
@@ -251,9 +289,7 @@ function genChunk(cx, cz) {
     t.rotation.z = (rng() - 0.5) * 0.12;
     t.castShadow = true;
     g.add(t);
-    const col = { x: px, z: pz, r: 2.4 };
-    colliders.circles.push(col);
-    cols.push(col);
+    cols.push({ x: px, z: pz, r: 2.4 });
     for (let i = 0; i < 2; i++) {
       const cr = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.8, 0.8), lambert(0x8a6a45, { roughness: 0.9 }));
       cr.position.set(px + 2.6 + i, 0.4, pz + 1.5 - i * 2);
@@ -322,9 +358,7 @@ function genChunk(cx, cz) {
       wall.rotation.z = (rng() - 0.5) * 0.08;
       wall.castShadow = true;
       g.add(wall);
-      const col = { x: wx, z: wz, r: 1.1 };
-      colliders.circles.push(col);
-      cols.push(col);
+      cols.push({ x: wx, z: wz, r: 1.1 });
     }
     if (!chapelProps) {
       const altar = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.9, 0.7), lambert(0xb8b0a2, { roughness: 0.9 }));
@@ -351,7 +385,7 @@ function genChunk(cx, cz) {
     for (let i = 0; i < 5; i++) drop(px + (rng() - 0.5) * 5, pz + (rng() - 0.5) * 5);
   } else if (roll < 0.69 && biome !== 'snow') {
     // 商队残骸:翻倒的货车 + 散落钱箱 + 一个劫道的
-    if (prop('Cart', px, pz)) {
+    if (prop('Cart', px, pz, null, true)) {
       const cart = g.children[g.children.length - 1];
       cart.children[0].rotation.z = 0.5; // 车翻在路边
       cart.children[0].position.y += 0.35;
@@ -373,10 +407,9 @@ function genChunk(cx, cz) {
       cr.rotation.y = rng() * 2;
       g.add(cr);
     }
-    const col = { x: px, z: pz, r: 1.2 };
-    colliders.circles.push(col);
-    cols.push(col);
+    cols.push({ x: px, z: pz, r: 1.2 });
     }
+    yield;
     const b = hooks.spawnBandit(px + 4, pz + 2, key);
     if (b) spawned.push(b);
     for (let i = 0; i < 6; i++) drop(px + (rng() - 0.5) * 4, pz + (rng() - 0.5) * 4);
@@ -388,69 +421,129 @@ function genChunk(cx, cz) {
     for (let i = 0; i < n; i++) {
       const x = baseX + 6 + rng() * (CHUNK - 12), z = baseZ + 6 + rng() * (CHUNK - 12);
       if (Math.hypot(x - px, z - pz) < 14) continue;
-      placeLandmark(g, rng, name, x, z, cols, colliders.circles);
+      placeLandmark(g, rng, name, x, z, cols, null, null, insts);
     }
   }
 
   for (const o of g.children) {
     if (!o.userData.isGround) o.position.y += groundH(o.position.x, o.position.z);
   }
+  yield;
+  // 程序化树石/兴趣点:按(面向 × 投影 × 受影)烘成几块顶点色网格,原件摘掉
+  g.updateMatrixWorld(true);
+  const bins = new Map();
+  const merged = new Set();
+  g.traverse((m) => {
+    if (!m.isMesh || m.userData.isGround || !m.geometry || !m.geometry.attributes.position) return;
+    const mats = Array.isArray(m.material) ? m.material : [m.material];
+    if (!mats.every((mt) => plainStandard(mt, { allowFlat: true }) && !NIGHT_GLOW.includes(mt))) return;
+    for (let p = m; p && p !== g; p = p.parent) if (!p.visible) return;
+    const k = `${mats[0].side}|${m.castShadow ? 1 : 0}${m.receiveShadow ? 1 : 0}`;
+    if (!bins.has(k)) bins.set(k, { side: mats[0].side, cast: m.castShadow, recv: m.receiveShadow, items: [] });
+    bins.get(k).items.push({ geometry: m.geometry, material: m.material, matrix: m.matrixWorld });
+    merged.add(m);
+  });
+  const outs = [];
+  for (const b of bins.values()) {
+    const geo = yield* bakeVPBRSteps(b.items, { chunk: 5000 });
+    geo.computeBoundingSphere();
+    const mesh = new THREE.Mesh(geo, vpbrMaterial({ side: b.side }));
+    mesh.castShadow = b.cast;
+    mesh.receiveShadow = b.recv;
+    outs.push(mesh);
+  }
+  for (const m of merged) {
+    m.parent.remove(m);
+    if (!m.geometry.userData.shared) m.geometry.dispose();
+    for (const mt of Array.isArray(m.material) ? m.material : [m.material]) if (!mt.userData.shared) mt.dispose();
+  }
+  // 掏空的树/石分组摘掉
+  for (let i = g.children.length - 1; i >= 0; i--) {
+    const o = g.children[i];
+    if (o.userData.isGround || o.isMesh) continue;
+    let live = false;
+    o.traverse((d) => { if (d.isMesh || d.isLight || d.isPoints) live = true; });
+    if (!live) g.remove(o);
+  }
+  for (const m of outs) g.add(m);
+  let inst = null;
+  if (insts.length) {
+    inst = buildNatureInstances(insts);
+    g.add(inst);
+  }
+  // 整块冻结:之后每帧的矩阵更新直接跳过这棵子树
   g.userData.noSnap = true;
+  g.updateMatrixWorld(true);
+  g.traverse((o) => { o.matrixAutoUpdate = false; o.matrixWorldAutoUpdate = false; });
   scene.add(g);
-  chunks.set(key, { group: g, cols, spawned, key, cx, cz });
-  colliders.dirty = true; // 通知碰撞网格重建
+  addCircles(colliders, cols);
+  chunks.set(key, { group: g, inst, cols, spawned, key, cx, cz });
 }
 
 function unloadChunk(key) {
   const c = chunks.get(key);
   if (!c) return;
   scene.remove(c.group);
+  if (c.inst) { releaseNatureInstances(c.inst); c.group.remove(c.inst); }
   c.group.traverse((o) => {
     // flora 库的几何/材质全场共享(userData.shared),不能释放;其余独占资源照常释放
     if (o.geometry && !o.geometry.userData.shared) o.geometry.dispose();
     if (o.material && !o.material.userData.shared) o.material.dispose();
   });
-  for (const col of c.cols) {
-    const i = colliders.circles.indexOf(col);
-    if (i >= 0) colliders.circles.splice(i, 1);
-  }
-  colliders.dirty = true;
+  removeCircles(colliders, c.cols);
   hooks.removeChunkEntities(key);
   chunks.delete(key);
 }
 
-// 每帧调用:围绕玩家维护区块窗口(每帧最多生成 1 块)
+// 每帧调用:围绕玩家维护区块窗口。生成按时间预算分帧推进(近的先建),卸载每帧至多一块;
 // 玩家没跨区块边界且窗口已齐时直接空转,零分配零扫描
-let lastPcx = 1e9, lastPcz = 1e9, wildPending = true;
-const _toUnload = [];
+let lastPcx = 1e9, lastPcz = 1e9;
+let job = null;          // 正在建的区块 { key, it }
+const toLoad = [];       // 待建(近的在前)
+const toUnload = [];     // 待卸
+const BUDGET_MS = 2;
+function wanted(cx, cz, pcx, pcz) {
+  if (Math.abs(cx - pcx) > VIEW_R || Math.abs(cz - pcz) > VIEW_R) return false;
+  const centerX = cx * CHUNK + CHUNK / 2, centerZ = cz * CHUNK + CHUNK / 2;
+  if (Math.abs(centerX) < CORE && Math.abs(centerZ) < CORE) return false; // 核心手工区不生成
+  return Math.abs(centerX) <= WORLD_LIMIT && Math.abs(centerZ) <= WORLD_LIMIT; // 世界边界外不生成
+}
 export function updateWilderness(px, pz) {
   const pcx = Math.floor(px / CHUNK), pcz = Math.floor(pz / CHUNK);
   if (pcx !== lastPcx || pcz !== lastPcz) {
     lastPcx = pcx;
     lastPcz = pcz;
-    wildPending = true;
-  }
-  if (!wildPending) return;
-  // 卸载远处
-  _toUnload.length = 0;
-  for (const c of chunks.values()) {
-    if (Math.abs(c.cx - pcx) > VIEW_R + 1 || Math.abs(c.cz - pcz) > VIEW_R + 1) _toUnload.push(c.key);
-  }
-  for (const k of _toUnload) unloadChunk(k);
-  // 加载附近(每帧一块)
-  for (let dz = -VIEW_R; dz <= VIEW_R; dz++) {
-    for (let dx = -VIEW_R; dx <= VIEW_R; dx++) {
-      const cx = pcx + dx, cz = pcz + dz;
-      const centerX = cx * CHUNK + CHUNK / 2, centerZ = cz * CHUNK + CHUNK / 2;
-      // 核心手工区不生成;世界边界外不生成
-      if (Math.abs(centerX) < CORE && Math.abs(centerZ) < CORE) continue;
-      if (Math.abs(centerX) > WORLD_LIMIT || Math.abs(centerZ) > WORLD_LIMIT) continue;
-      const key = `${cx},${cz}`;
-      if (!chunks.has(key)) {
-        genChunk(cx, cz);
-        return; // 每帧最多一块,避免卡顿
+    toUnload.length = 0;
+    for (const c of chunks.values()) {
+      if (Math.abs(c.cx - pcx) > VIEW_R + 1 || Math.abs(c.cz - pcz) > VIEW_R + 1) toUnload.push(c.key);
+    }
+    toLoad.length = 0;
+    for (let dz = -VIEW_R; dz <= VIEW_R; dz++) {
+      for (let dx = -VIEW_R; dx <= VIEW_R; dx++) {
+        const cx = pcx + dx, cz = pcz + dz;
+        if (!wanted(cx, cz, pcx, pcz) || chunks.has(`${cx},${cz}`)) continue;
+        toLoad.push({ cx, cz, d: dx * dx + dz * dz });
       }
     }
+    toLoad.sort((a, b) => a.d - b.d);
   }
-  wildPending = false; // 窗口齐了,下次跨界再扫
+  if (!job && !toLoad.length && !toUnload.length) return;
+  const t0 = performance.now();
+  if (toUnload.length) unloadChunk(toUnload.shift()); // 卸载摊开:每帧至多一块
+  while (performance.now() - t0 < BUDGET_MS) {
+    if (!job) {
+      const next = toLoad.shift();
+      if (!next) break;
+      const key = `${next.cx},${next.cz}`;
+      if (chunks.has(key) || !wanted(next.cx, next.cz, lastPcx, lastPcz)) continue;
+      job = { key, it: chunkJob(next.cx, next.cz) };
+    }
+    if (job.it.next().done) job = null;
+  }
+}
+// 诊断/测试:已装区块数、在建与排队情况
+export function wildStats() {
+  let objects = 0;
+  for (const c of chunks.values()) c.group.traverse(() => { objects++; });
+  return { chunks: chunks.size, building: !!job, queued: toLoad.length, unloading: toUnload.length, objects };
 }

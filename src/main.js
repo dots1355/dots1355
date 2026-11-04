@@ -25,6 +25,7 @@ import { LIGHT_POOL, lightPool, initLightPool, addLightSource, removeLightSource
 import { mergeGeometries } from '../lib/jsm/utils/BufferGeometryUtils.js';
 import { renderer, scene, camera, LOWFX, composer, gtao, bloom, gradePass, STYLE_PRESETS, stylePass, smaa, styleKey, applyStyle, cycleStyle } from './gfx/core.js';
 import { updateSkinLOD } from './gfx/skin.js';
+import { updateNatureLOD } from './flora.js';
 
 // ================= 基础渲染 =================
 initLightPool(scene); // 固定数量的点光池(火把/篝火等光源只登记,由它代为发光)
@@ -4401,11 +4402,11 @@ function setPaused(p) {
 }
 // 画质三档:流畅(集显/老机器)、均衡(默认)、精致(独显:环境光遮蔽 + 高分辨率)
 // 开局后按实测帧时自动降档(每档至少观察 8 秒),玩家手动选过就不再自动改
-// lodNear/lodHide:实体投影/整体隐藏的距离(米)
+// lodNear/lodHide:实体投影/整体隐藏的距离(米);propFar:小件地标(灌木/树桩/木箱…)实例块的可见距离
 const QUALITY = [
-  { key: 'lo', name: '流畅', gtao: false, bloom: false, smaa: false, pr: 0.8, veg: 0.5, shadow: 1024, lodNear: 20, lodHide: 100 },
-  { key: 'mid', name: '均衡', gtao: false, bloom: true, smaa: true, pr: 1, veg: 0.65, shadow: 2048, lodNear: 40, lodHide: 160 },
-  { key: 'hi', name: '精致', gtao: true, bloom: true, smaa: true, pr: 1.5, veg: 1, shadow: 2048, lodNear: 50, lodHide: 220 },
+  { key: 'lo', name: '流畅', gtao: false, bloom: false, smaa: false, pr: 0.8, veg: 0.5, shadow: 1024, lodNear: 20, lodHide: 100, propFar: 90 },
+  { key: 'mid', name: '均衡', gtao: false, bloom: true, smaa: true, pr: 1, veg: 0.65, shadow: 2048, lodNear: 40, lodHide: 160, propFar: 150 },
+  { key: 'hi', name: '精致', gtao: true, bloom: true, smaa: true, pr: 1.5, veg: 1, shadow: 2048, lodNear: 50, lodHide: 220, propFar: 220 },
 ];
 let qualityIdx = LOWFX ? 0 : 1;
 let qualityManual = false;
@@ -4601,6 +4602,7 @@ function updateEntityLOD() {
   const q = QUALITY[qualityIdx];
   const cx = camera.position.x, cz = camera.position.z;
   updateSkinLOD(cx, cz, q.lodNear, q.lodHide);
+  updateNatureLOD(cx, cz, q.propFar);
   _lodSeen.clear();
   const lists = [villagers, guards, bandits, wolves, horses, namedNPCs, chickens, deers, funnyNPCs, mercs];
   for (const list of lists) {
@@ -5675,6 +5677,12 @@ function addPickup(type, x, z, ttl = Infinity, id = -1, chunk = null) {
   if (type === 'coin') {
     mesh = new THREE.Object3D(); // 代理:真正的绘制交给 coinIM
     mesh.userData.yaw = rand() * Math.PI * 2;
+    // 代理只提供 x/z 与可见性:不贴地(地面高度在 updateCoinInstances 里算)、不更新矩阵,
+    // 转动(拾取动画每帧改 rotation.y)也不必同步成四元数
+    mesh.userData.noSnap = true;
+    mesh.matrixAutoUpdate = false;
+    mesh.matrixWorldAutoUpdate = false;
+    mesh.rotation._onChange(() => {});
     coinProxies.add(mesh);
   } else if (type === 'heart') mesh = new THREE.Mesh(heartG, heartMat);
   else if (type === 'crest') mesh = new THREE.Mesh(crestG, crestMat);
@@ -10000,8 +10008,25 @@ ctx.mapView = () => ({ guards, bandits, horses, wanted, warband, beacon, beaconR
   };
   scan(world, 0);
   for (const m of world.waterMats || []) protectMats.add(m);
+  // 夜窗:每户两扇、各一份参数相同的材质,亮度由 sky.js 统一设——并成一份共享材质后窗子就能随房子合批
+  const winFlames = new Set();
+  let winMat = null;
+  const sameWin = (a, b) => a.type === b.type && a.color.equals(b.color) && a.emissive.equals(b.emissive) &&
+    a.roughness === b.roughness && a.metalness === b.metalness && !a.map && !b.map;
+  for (const t of world.torches || []) {
+    if (!t.window || !t.flame || !t.flame.material || !t.flame.material.isMeshStandardMaterial) continue;
+    if (!winMat) winMat = t.flame.material;
+    else if (t.flame.material !== winMat) {
+      if (!sameWin(t.flame.material, winMat)) continue;
+      t.flame.material.dispose();
+      t.flame.material = winMat;
+    }
+    winFlames.add(t.flame);
+  }
+  if (winMat) protectMats.add(winMat);
   const t0 = performance.now();
-  const st = staticBatch(scene, worldTops, { groundH, protect, protectMats, raycastKeep: new Set(world.occluders) });
+  const st = staticBatch(scene, worldTops, { groundH, protect: protect.filter((o) => !winFlames.has(o)), protectMats,
+    raycastKeep: new Set(world.occluders) });
   console.info('静态合批', st, `${(performance.now() - t0).toFixed(0)}ms`);
 }
 // ---- 着色器预热:场景材质 + 特效材质一次编译好,首次出刀/施法/起手预警不再卡顿 ----

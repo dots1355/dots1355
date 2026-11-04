@@ -691,19 +691,57 @@ let _grid = null, _gridSrc = null, _gridLen = -1;
 let _boxGrid = null, _bigBoxes = null, _boxSrc = null, _boxLen = -1;
 const _gk = (gx, gz) => gx * 200003 + gz;
 
+function gridInsert(c) {
+  const x0 = Math.floor((c.x - c.r) / GRID_CELL), x1 = Math.floor((c.x + c.r) / GRID_CELL);
+  const z0 = Math.floor((c.z - c.r) / GRID_CELL), z1 = Math.floor((c.z + c.r) / GRID_CELL);
+  for (let gx = x0; gx <= x1; gx++) {
+    for (let gz = z0; gz <= z1; gz++) {
+      const k = _gk(gx, gz);
+      let cell = _grid.get(k);
+      if (!cell) { cell = []; _grid.set(k, cell); }
+      cell.push(c);
+    }
+  }
+}
+function gridRemove(c) {
+  const x0 = Math.floor((c.x - c.r) / GRID_CELL), x1 = Math.floor((c.x + c.r) / GRID_CELL);
+  const z0 = Math.floor((c.z - c.r) / GRID_CELL), z1 = Math.floor((c.z + c.r) / GRID_CELL);
+  for (let gx = x0; gx <= x1; gx++) {
+    for (let gz = z0; gz <= z1; gz++) {
+      const k = _gk(gx, gz);
+      const cell = _grid.get(k);
+      if (!cell) continue;
+      const i = cell.indexOf(c);
+      if (i >= 0) cell.splice(i, 1);
+      if (!cell.length) _grid.delete(k);
+    }
+  }
+}
 function rebuildCircleGrid(circles) {
   _grid = new Map();
-  for (const c of circles) {
-    const x0 = Math.floor((c.x - c.r) / GRID_CELL), x1 = Math.floor((c.x + c.r) / GRID_CELL);
-    const z0 = Math.floor((c.z - c.r) / GRID_CELL), z1 = Math.floor((c.z + c.r) / GRID_CELL);
-    for (let gx = x0; gx <= x1; gx++) {
-      for (let gz = z0; gz <= z1; gz++) {
-        const k = _gk(gx, gz);
-        let cell = _grid.get(k);
-        if (!cell) { cell = []; _grid.set(k, cell); }
-        cell.push(c);
-      }
-    }
+  for (const c of circles) gridInsert(c);
+}
+// 荒野区块装卸用的增量接口:网格已建好时只改动这一批,不必整表重建(几千个碰撞圆重建一次要好几毫秒)
+const gridLive = (colliders) => _grid && _gridSrc === colliders.circles && _gridLen === colliders.circles.length && !colliders.dirty;
+export function addCircles(colliders, list) {
+  const live = gridLive(colliders);
+  for (const c of list) {
+    colliders.circles.push(c);
+    if (live) gridInsert(c);
+  }
+  if (live) _gridLen = colliders.circles.length;
+}
+export function removeCircles(colliders, list) {
+  if (!list.length) return;
+  const live = gridLive(colliders);
+  const gone = new Set(list);
+  const arr = colliders.circles;
+  let w = 0;
+  for (let r = 0; r < arr.length; r++) if (!gone.has(arr[r])) arr[w++] = arr[r];
+  arr.length = w;
+  if (live) {
+    for (const c of list) gridRemove(c);
+    _gridLen = arr.length;
   }
 }
 function rebuildBoxGrid(boxes) {

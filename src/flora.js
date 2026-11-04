@@ -5,6 +5,7 @@
 //  - 材质按颜色缓存共享,数千棵树只占几十个材质
 import * as THREE from 'three';
 import { nordicColor } from './entities.js';
+import { plainStandard, vpbrMaterial, bakeVPBR, INSTANCED_DEPTH } from './gfx/vpbr.js';
 
 // ---- 可复现随机(素材池用固定种子,形状稳定) ----
 function makeRng(seed) {
@@ -197,10 +198,50 @@ export function registerNatureTemplate(name, obj, spec) {
   NATURE[name] = obj;
   NATURE_SPEC[name] = spec;
 }
-// 大批量静态地标:按"160m 格 × 种类 × 材质"合成 InstancedMesh——几百上千件地标/树只占几十次绘制,
-// 而且每格各自做视锥剔除(身后和雾外的格子整格不画,三角形不白算)
+// 大批量静态地标:按"160m 格 × 种类"合成 InstancedMesh——几百上千件地标/树只占几十次绘制,
+// 而且每格各自做视锥剔除(身后和雾外的格子整格不画,三角形不白算)。
+// 模板里只差颜色/粗糙度的部件(树皮+树叶、石头+苔藓……)先烘成一个顶点色 PBR 几何(gfx/vpbr.js),
+// 一种地标一格只画一次;夜里发光的玻璃等特殊部件保持原材质单独实例化。
+// 每个 InstancedMesh 用一份"共享缓冲的新几何":VAO 按几何缓存,同一几何配不同实例矩阵会每次重设顶点属性。
 // list: [{ name, x, y, z, yaw, s }],y 为绝对高度(已含地面),返回的 Group 不参与贴地
 const NAT_CELL = 160;
+const instTpl = new Map(); // 种类 → [{ geometry, material, rel }]
+function instParts(name) {
+  let parts = instTpl.get(name);
+  if (parts) return parts;
+  const tpl = NATURE[name];
+  tpl.updateMatrixWorld(true);
+  const inv = new THREE.Matrix4().copy(tpl.matrixWorld).invert();
+  const plain = new Map(); // 面向 → 待烘焙部件
+  parts = [];
+  tpl.traverse((m) => {
+    if (!m.isMesh) return;
+    const rel = new THREE.Matrix4().multiplyMatrices(inv, m.matrixWorld);
+    const mats = Array.isArray(m.material) ? m.material : [m.material];
+    if (mats.every((mt) => plainStandard(mt, { allowFlat: true }) && !NIGHT_GLOW.includes(mt))) {
+      const side = mats[0].side;
+      if (!plain.has(side)) plain.set(side, []);
+      plain.get(side).push({ geometry: m.geometry, material: m.material, matrix: rel });
+    } else parts.push({ geometry: m.geometry, material: m.material, rel });
+  });
+  for (const [side, items] of plain) {
+    const geometry = bakeVPBR(items);
+    geometry.computeBoundingSphere();
+    geometry.userData.shared = true;
+    parts.unshift({ geometry, material: vpbrMaterial({ side, instanced: true }), rel: new THREE.Matrix4() });
+  }
+  instTpl.set(name, parts);
+  return parts;
+}
+function sharedGeo(src) {
+  const g = new THREE.BufferGeometry();
+  for (const k of Object.keys(src.attributes)) g.setAttribute(k, src.attributes[k]);
+  g.setIndex(src.index);
+  g.setDrawRange(src.drawRange.start, src.drawRange.count);
+  g.userData.shared = true; // 缓冲与模板共用:绝不能 dispose
+  return g;
+}
+const smallInst = new Set(); // 小件(灌木/树桩/木箱……)的实例块:远了整块不画
 export function buildNatureInstances(list) {
   const groups = new Map();
   for (const p of list) {
@@ -212,19 +253,13 @@ export function buildNatureInstances(list) {
   const root = new THREE.Group();
   const M = new THREE.Matrix4(), P = new THREE.Matrix4(), Q = new THREE.Quaternion();
   const S = new THREE.Vector3(), T = new THREE.Vector3(), UP = new THREE.Vector3(0, 1, 0);
-  const rels = new Map();
   for (const [key, arr] of groups) {
     const name = key.slice(0, key.indexOf('|'));
-    const tpl = NATURE[name];
-    if (!rels.has(name)) {
-      tpl.updateMatrixWorld(true);
-      const inv = new THREE.Matrix4().copy(tpl.matrixWorld).invert();
-      const parts = [];
-      tpl.traverse((m) => { if (m.isMesh) parts.push({ m, rel: new THREE.Matrix4().multiplyMatrices(inv, m.matrixWorld) }); });
-      rels.set(name, parts);
-    }
-    for (const { m, rel } of rels.get(name)) {
-      const im = new THREE.InstancedMesh(m.geometry, m.material, arr.length);
+    const parts = instParts(name);
+    const small = !name.startsWith('Tree_') && parts.length && parts[0].geometry.boundingSphere &&
+      parts[0].geometry.boundingSphere.radius < 1.6;
+    for (const { geometry, material, rel } of parts) {
+      const im = new THREE.InstancedMesh(sharedGeo(geometry), material, arr.length);
       arr.forEach((p, i) => {
         Q.setFromAxisAngle(UP, p.yaw);
         S.setScalar(p.s);
@@ -237,13 +272,44 @@ export function buildNatureInstances(list) {
       im.computeBoundingSphere();
       im.castShadow = true;
       im.receiveShadow = true;
+      im.customDepthMaterial = INSTANCED_DEPTH;
       im.frustumCulled = true;
       im.matrixAutoUpdate = false;
+      if (small) smallInst.add(im);
       root.add(im);
     }
   }
   root.userData.noSnap = true;
   return root;
+}
+// 卸载(荒野区块):实例块退出远景剔除名单;实例矩阵与包装几何释放,共享的模板缓冲保留
+export function releaseNatureInstances(root) {
+  for (const im of root.children) {
+    if (!im.isInstancedMesh) continue;
+    smallInst.delete(im);
+    const g = im.geometry;
+    for (const k of Object.keys(g.attributes)) g.deleteAttribute(k);
+    g.setIndex(null);
+    g.dispose(); // 只释放这份包装的 VAO 记录,不碰共享缓冲
+    im.dispose();
+  }
+}
+// 只算放置参数不克隆(随机数消耗与 natureProp 完全一致):荒野区块把地标交给实例化
+export function natureSpec(name, rng, scale = 1, fixedYaw = null) {
+  if (!NATURE[name]) return null;
+  const spec = NATURE_SPEC[name];
+  const s = scale * (0.85 + rng() * 0.35);
+  const yaw = fixedYaw ?? rng() * Math.PI * 2;
+  return { s, yaw, y: -spec.sink * s, cols: specCols(spec, s, yaw) };
+}
+// 小件远景剔除:离相机 far 米外的小件实例块整块不画(用 layers,不占用 visible);每隔几帧调一次
+export function updateNatureLOD(cx, cz, far) {
+  for (const im of smallInst) {
+    const s = im.boundingSphere;
+    if (!s) continue;
+    const d = Math.hypot(s.center.x - cx, s.center.z - cz) - s.radius;
+    im.layers.mask = d > far ? 0 : 1;
+  }
 }
 // 返回 { group, cols:[{dx,dz,r}] };cols 是相对放置点的碰撞圆(已含缩放与朝向)
 export function natureProp(name, rng, scale = 1, fixedYaw = null) {
