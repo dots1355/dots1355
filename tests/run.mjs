@@ -139,7 +139,8 @@ const TESTS = {
       const g = window.__gtm;
       const b = g.bandits.find((x) => !x.dead && !x.boss);
       if (!b) return { skip: true };
-      const place = () => { g.player.pos.set(b.pos.x, 0, b.pos.z - 1.4); g.player.yaw = 0; g.player.sta = 100; g.player.attackT = 0; };
+      // 测试只看我方出招:让盗贼别还手(挨打会打断蓄力,那是另一个测试的事)
+      const place = () => { g.player.pos.set(b.pos.x, 0, b.pos.z - 1.4); g.player.yaw = 0; g.player.sta = 100; g.player.attackT = 0; b.attackCd = 99; b.windupT = 0; };
       place();
       b.hp = 20; b.armorT = 0;
       g.tryAttack();
@@ -151,16 +152,18 @@ const TESTS = {
       place();
       b.hp = 20; b.armorT = 0; b.hitStunT = 0; b.stunT = 0;
       g.player.chainN = 0; g.player.chainT = 0;
-      g.attackDown();
+      g.attackDown(); // 按下即出轻击,按住 0.2 秒、这刀落下后转入蓄力
       g.step(75); // 1.25 秒:满蓄
       const charging = g.player.charging;
+      const hpBeforeHeavy = b.hp;
+      b.stunT = 0; b.hitStunT = 0; b.armorT = 0;
       g.attackUp();
       g.step(60);
-      const heavyDmg = 20 - b.hp;
+      const heavyDmg = hpBeforeHeavy - b.hp;
       // 打断:敌人起手中挨一刀,起手作废
       place();
       b.hp = 20; b.armorT = 0; b.hitStunT = 0; b.stunT = 0;
-      b.windupT = 0.6;
+      b.windupT = 0.6; b.yaw = Math.PI; // 面朝玩家起手
       g.tryAttack();
       g.step(30);
       return { afterPress, afterLight, charging, heavyDmg, windup: b.windupT, hitStun: b.hitStunT };
@@ -171,6 +174,67 @@ const TESTS = {
     if (!r.charging) throw new Error('按住没有进入蓄力');
     if (r.heavyDmg < 3) throw new Error(`满蓄重击伤害太低:${r.heavyDmg}`);
     if (r.windup > 0) throw new Error('轻击没有打断敌人的起手');
+  },
+  // 战斗规则:出招中按键进缓冲不吞;敌人的刀只砍正前方扇形;挨打打断自己的刀;弹反窗口按游戏时钟
+  async combatRules(page) {
+    await boot(page);
+    const r = await page.evaluate(() => {
+      const g = window.__gtm, out = {};
+      const b = g.bandits.find((x) => !x.dead && !x.boss);
+      if (!b) return { skip: true };
+      const reset = () => {
+        b.hp = 50; b.armorT = 0; b.hitStunT = 0; b.stunT = 0; b.windupT = 0; b.attackCd = 9; b.yaw = 0;
+        g.player.sta = 100; g.player.attackT = 0; g.player.strike = null; g.player.atkBufT = 0;
+        g.player.staggerT = 0; g.player.invulnT = 0; g.player.hp = g.player.maxHp; g.player.chainN = 0;
+      };
+      // 1) 缓冲:第一刀出手 0.17 秒后再按,收刀即接出第二刀
+      reset();
+      g.player.pos.set(b.pos.x, 0, b.pos.z - 1.4); g.player.yaw = 0;
+      const s0 = g.stats.swings || 0;
+      g.attackDown(); g.attackUp();
+      g.step(10);
+      g.attackDown(); g.attackUp();
+      g.step(45);
+      out.swings = (g.stats.swings || 0) - s0;
+      // 2) 朝向:敌人面朝 +Z,人站在它身后 1.5m——锁定方向后出手砍不到
+      reset();
+      g.player.pos.set(b.pos.x, 0, b.pos.z - 1.5);
+      b.windupT = 0.15;
+      g.step(20);
+      out.behindHp = g.player.hp;
+      // 正前方 1.5m:挨刀
+      reset();
+      g.player.pos.set(b.pos.x, 0, b.pos.z + 1.5);
+      b.windupT = 0.15;
+      g.step(20);
+      out.frontHp = g.player.hp;
+      out.max = g.player.maxHp;
+      // 3) 挨打打断自己的刀:起手中被砍,判定帧作废
+      reset();
+      g.player.pos.set(b.pos.x, 0, b.pos.z + 1.5); g.player.yaw = Math.PI;
+      g.tryAttack();
+      g.damagePlayer(1, b);
+      out.strikeAfterHit = !!(g.player.strike && !g.player.strike.done);
+      out.stagger = g.player.staggerT;
+      // 4) 弹反窗口用游戏时钟:举盾当刻挨刀 = 弹反
+      reset();
+      g.step(20);
+      g.player.pos.set(b.pos.x, 0, b.pos.z + 1.5); g.player.yaw = Math.PI;
+      g.player.blockHeld = true;
+      g.step(1);
+      g.damagePlayer(1, b);
+      out.parried = b.stunSrc === 'parry';
+      g.player.blockHeld = false;
+      g.step(1);
+      return out;
+    });
+    if (r.skip) return;
+    if (r.swings !== 2) throw new Error(`出招中按键被吞:两次按键只出了 ${r.swings} 刀`);
+    if (r.behindHp !== r.max) throw new Error('站在敌人背后也挨了刀(出刀没看朝向)');
+    if (!(r.frontHp < r.max)) throw new Error('站在敌人正前方却没挨刀');
+    if (r.strikeAfterHit) throw new Error('挨打后自己的刀还会落下');
+    if (!(r.stagger > 0)) throw new Error('挨打没有硬直');
+    if (!r.parried) throw new Error('举盾当刻挨刀没有判成弹反');
   },
   // 序章教学:锁定 → 翻滚 → 格挡 → 出刀 → 魔光弹 → 清场;做到才进下一步,结束回满血并送马
   async prologue(page) {
@@ -188,14 +252,14 @@ const TESTS = {
       if (!until(() => w0.lunging > 0 || w0.biteT > 0, 900)) return { err: '第一只狼迟迟不出手', log };
       g.doRoll();
       until(() => P.step >= 3, 60); log.push(P.step);
-      g.player.blocking = true; g.player.blockStart = performance.now() - 5000;
+      g.player.blockHeld = true; g.player.blocking = true; g.player.blockStart = g.simNow() - 5000;
       until(() => P.step >= 4, 1200); log.push(P.step);
-      g.player.blocking = false;
+      g.player.blockHeld = false; g.player.blocking = false;
       g.killWolf(w0);
       until(() => P.step >= 5, 30); log.push(P.step);
       g.player.castT = 0; g.player.mp = 6;
       g.castSpell();
-      until(() => P.step >= 6, 30); log.push(P.step);
+      until(() => P.step >= 6, 90); log.push(P.step);
       for (const w of P.wolves) if (!w.dead) g.killWolf(w);
       until(() => P.step >= 7, 30); log.push(P.step);
       until(() => !P.on, 400);
@@ -258,6 +322,49 @@ const TESTS = {
     if (!r.dialog) throw new Error('按 E 没有和管家对话');
     if (!/宝箱/.test(r.chestPrompt)) throw new Error(`宝箱旁的提示不对:${r.chestPrompt}`);
     if (!r.chestOpened) throw new Error('按 E 没有打开宝箱');
+  },
+  // 流程:自己的马比 NPC 近时 E=上马;走远对话自动收;城外穿城的光柱绕墙角;没委托时光柱指埃隆
+  async playFlow(page) {
+    await boot(page);
+    const r = await page.evaluate(() => {
+      const g = window.__gtm, out = {};
+      // 1) 上马优先
+      const h = g.player.horse;
+      const v = g.villagers.find((x) => !x.sleeping && !(x.downT > 0));
+      if (h && v) {
+        g.player.pos.set(v.pos.x + 2.4, 0, v.pos.z);
+        h.pos.set(v.pos.x + 3.6, 0, v.pos.z); h.group.position.copy(h.pos);
+        g.step(1);
+        out.prompt = g.getPrompt();
+      }
+      // 2) 对话走远自动收起
+      g.player.pos.set(v.pos.x + 1.5, 0, v.pos.z);
+      g.step(1);
+      g.tryInteract();
+      out.opened = g.dialogOpen();
+      g.player.pos.set(v.pos.x + 20, 0, v.pos.z);
+      g.step(2);
+      out.closed = !g.dialogOpen();
+      // 3) 没委托时光柱在埃隆身上
+      g.quest.active = false;
+      g.player.pos.set(g.steward.pos.x + 30, 0, g.steward.pos.z + 3);
+      g.step(2);
+      const b0 = g.getBeacon();
+      out.stewardBeacon = b0.v && Math.hypot(b0.x - g.steward.pos.x, b0.z - g.steward.pos.z) < 2;
+      // 4) 城外西侧去东边磨坊:光柱先指墙角,不是直穿城墙
+      const i = g.missions.findIndex((m) => m.type === 'deliver');
+      g.quest.idx = i; g.quest.active = true; g.quest.timer = 99;
+      g.player.pos.set(-90, 0, 4);
+      g.step(2);
+      out.beacon = g.getBeacon();
+      return out;
+    });
+    if (r.prompt !== undefined && !/马/.test(r.prompt)) throw new Error(`自己的马更近,提示却是:${r.prompt}`);
+    if (!r.opened) throw new Error('贴着村民按 E 没开对话');
+    if (!r.closed) throw new Error('走出 20 米对话还挂着');
+    if (!r.stewardBeacon) throw new Error('没有委托时光柱没指向埃隆');
+    const b = r.beacon;
+    if (!(Math.abs(Math.abs(b.x) - 79) < 1 && Math.abs(Math.abs(b.z) - 64) < 1)) throw new Error(`城外穿城的光柱应先指墙角,实际 ${JSON.stringify(b)}`);
   },
   // 生命上限只有一个来源:护甲 + 湖神 + 屠龙
   async maxhp(page) {

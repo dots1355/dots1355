@@ -196,7 +196,9 @@ function updateBiomeAtmo(dt) {
 }
 export function updateDayNight(dt) {
   updateBiomeAtmo(dt);
-  clock.time = (clock.time + dt / 240) % 1;
+  // 一天约 230 秒实时:白天按 330 秒一圈的速度走,夜里(日落到日出)快 2.5 倍——夜晚只占约三成
+  const nightT = clock.time > 0.74 || clock.time < 0.26;
+  clock.time = (clock.time + dt / 330 * (nightT ? 2.5 : 1)) % 1;
   const ang = clock.time * Math.PI * 2 - Math.PI / 2;
   const elev = Math.sin(ang);
   const day = Math.max(0, Math.min(1, elev * 2 + 0.25));
@@ -220,8 +222,8 @@ export function updateDayNight(dt) {
   sun.intensity = 3.4 * day * rainDim * dgnDim * atmo[9];
   sun.color.copy(C_SUN_DUSK).lerp(C_SUN_DAY, Math.min(1, Math.max(0, (elev - 0.05) * 2.4)));
   moon.position.set(-sx, Math.max(30, -sy), -sz);
-  moon.intensity = 0.55 * night; // 月色提亮:夜里也看得清路
-  hemi.intensity = (0.22 + 0.28 * day) * (1 - 0.3 * weather.rain) * dgnDim * (0.6 + 0.4 * atmo[9]);
+  moon.intensity = 0.75 * night; // 月色提亮:夜里也看得清路、看得清敌人
+  hemi.intensity = (0.32 + 0.18 * day) * (1 - 0.3 * weather.rain) * dgnDim * (0.6 + 0.4 * atmo[9]);
   envIntensity = (0.1 + 0.25 * day) * rainDim * (ctx.inDungeon() ? 0.25 : 1);
   // 随身提灯:入夜自动点起一圈暖光(地窖里已有火把,不重复)
   lantern.intensity = night * 1.2 * (ctx.inDungeon() ? 0 : 1);
