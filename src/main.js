@@ -20,7 +20,8 @@ import { cam, updateCamera } from './systems/camera.js';
 import { weather, setWeather, updateWeather, updateRain, spawnDust, updateDust } from './systems/weather.js';
 import { clock, sun, lantern, vistaFar, vistaNear, updateDayNight, updateEnvIntensity, fitViewDistance } from './systems/sky.js';
 import { mapState, toggleBigMap, drawMinimap } from './ui/maps.js';
-import { iconHTML, heartsHTML, weatherHTML, manaHTML, svgIcon } from './ui/hud.js';
+import { iconHTML, heartsHTML, weatherHTML, manaHTML, svgIcon, richText, wantedHTML } from './ui/hud.js';
+import { facetKind } from './gfx/facet.js';
 import { ctx } from './core/ctx.js';
 import { LIGHT_POOL, lightPool, initLightPool, addLightSource, removeLightSource, updateLightPool, pooledMat, releaseMat } from './gfx/pools.js';
 import { mergeGeometries } from '../lib/jsm/utils/BufferGeometryUtils.js';
@@ -40,6 +41,7 @@ try {
   const b64buf = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)).buffer;
   await Promise.all(Object.entries(MODELS_B64).map(([kind, b64]) =>
     new Promise((res) => gltfLoader.parse(b64buf(b64), '', (gltf) => {
+      facetKind(kind, gltf.scene); // 环境静物统一刻面(gfx/facet.js);角色与生物保持光滑
       if (kind === 'human') setHumanModel(gltf.scene);
       else if (kind === 'horse' || kind === 'wolf' || kind === 'dragon') setFaunaModel(kind, gltf.scene);
       else if (kind === 'weapons') setWeaponModels(gltf.scene);
@@ -207,9 +209,9 @@ function setTitleArt(bitmap) {
 generateRemoteAITextures({
   onStatus(state, done, total) {
     if (!aiStatusEl) return;
-    if (state === 'generating') aiStatusEl.textContent = `🎨 AI 高清材质生成中… ${done}/${total}(首次需约 1 分钟,已自动缓存)`;
-    else if (state === 'done') aiStatusEl.textContent = `🎨 AI 高清材质已启用(${done}/${total})`;
-    else aiStatusEl.textContent = '🎨 离线模式:使用内置程序化材质(联网后自动启用 AI 材质)';
+    if (state === 'generating') aiStatusEl.textContent = `AI 高清材质生成中… ${done}/${total}(首次需约 1 分钟,已自动缓存)`;
+    else if (state === 'done') aiStatusEl.textContent = `AI 高清材质已启用(${done}/${total})`;
+    else aiStatusEl.textContent = '离线模式:使用内置程序化材质(联网后自动启用 AI 材质)';
   },
   onTexture(name, canvases) {
     const set = new Set(canvases);
@@ -261,7 +263,7 @@ function updateToast(dt) {
   } else if (toastQueue.length) {
     while (toastQueue.length > 1 && performance.now() - toastQueue[0][2] > 7000 && !toastQueue[0][3]) toastQueue.shift();
     const [msg, dur] = toastQueue.shift();
-    toastEl.textContent = msg;
+    toastEl.innerHTML = richText(msg);
     toastEl.style.opacity = 1;
     toastTimer = dur;
   }
@@ -9015,16 +9017,16 @@ function updateHUD() {
     dayPhase(), weather.state, isWinter() && raining);
   heartsEl.innerHTML = heartsHTML(full, half, heartsMax - full - half);
   coinsEl.innerHTML = `${svgIcon('coin')}<span>${player.coins}</span>`;
-  wantedEl.textContent = stars;
+  wantedEl.innerHTML = wantedHTML(wanted);
   wantedEl.style.display = wanted > 0 ? 'block' : 'none';
-  missionEl.textContent = missionText;
+  missionEl.innerHTML = richText(missionText);
   const wDef = WEAPONS[player.weapon];
   equipEl.innerHTML = // 法术/冷却改由底部技能栏显示,这里只留装备与法力(统一 SVG 图标)
     `${iconHTML(wDef.icon, 'ico-s')}<span>${wDef.name}${player.swordLv >= 2 ? '+1' : ''}</span>${player.relic ? svgIcon('relic', 'ico-s') : ''}` +
     (player.armor ? `<span class="eq-sep">·</span>${svgIcon('armor', 'ico-s')}<span>${ARMORS[player.armor].name}</span>` : '') +
     (player.spells.length
       ? `<span class="eq-sep">·</span><span>法力</span>${manaHTML(Math.floor(player.mp), player.maxMp)}` : '');
-  promptEl.textContent = promptText;
+  promptEl.innerHTML = richText(promptText);
   promptEl.style.display = promptText ? 'block' : 'none';
   // Boss 血条(仅 Boss 战期间)
   const boss = questRT.boss;

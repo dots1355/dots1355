@@ -1,6 +1,7 @@
 // HUD 图标:统一风格的内联 SVG(24×24,圆头描边 + 少量填色,羊皮纸金色系),替掉 emoji——
-// 红心、金币、技能栏、装备栏、日期/时辰/天气共用一套。iconHTML 接受图标名或旧 emoji(未收录的原样返回)。
-// 另含 HUD 小部件:红心条、日期天气条、按键提示自动淡出。
+// 红心、金币、技能栏、装备栏、日期/时辰/天气、通缉星、任务栏/提示条共用一套。iconHTML 接受图标名或旧 emoji
+// (未收录的原样返回);richText 把一段文字里的 emoji 换成图标(认不得的装饰 emoji 去掉)。
+// 另含 HUD 小部件:红心条、日期天气条、按键提示自动淡出、操作说明标题图标。
 const P = {
   heart: 'M12 20.4C9.6 18.7 3.6 14.2 3.6 9a4.2 4.2 0 0 1 8.4-1.6A4.2 4.2 0 0 1 20.4 9c0 5.2-6 9.7-8.4 11.4z',
 };
@@ -42,21 +43,39 @@ const ICONS = {
   armor: '<path d="M8 4h8l3 3-2 3v9H7v-9L5 7z" fill="currentColor" fill-opacity="0.2" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M9.6 4.2c.6 1.8 4.2 1.8 4.8 0M7 12h10" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>',
   relic: '<circle cx="12" cy="12" r="3.8" fill="#f2c55a" stroke="#7a5214" stroke-width="1.2"/><g stroke="#f2c55a" stroke-width="1.6" stroke-linecap="round"><path d="M12 3.6v2.6M12 17.8v2.6M3.6 12h2.6M17.8 12h2.6"/></g>',
   mana: '<path d="M12 4.2 17.6 12 12 19.8 6.4 12z" fill="#6aa8e8" stroke="#1e3e66" stroke-width="1.3" stroke-linejoin="round"/>',
+  // 任务栏 / 提示条里的小图标(同一套线稿风格)
+  scroll: '<g stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" fill="none"><path d="M7 4.5h10.5a1.8 1.8 0 0 1 1.8 1.8V18a1.8 1.8 0 0 1-1.8 1.8H8.8A1.8 1.8 0 0 1 7 18z" fill="currentColor" fill-opacity="0.16"/><path d="M7 4.5a2 2 0 0 0-2.2 2v1.6H7M10 9h6.5M10 12h6.5M10 15h4.5"/></g>',
+  trophy: '<g stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" fill="none"><path d="M8 4h8v5.2a4 4 0 0 1-8 0z" fill="currentColor" fill-opacity="0.2"/><path d="M8 6H5.2a3.2 3.2 0 0 0 3.4 4.2M16 6h2.8a3.2 3.2 0 0 1-3.4 4.2M12 13.2v3.6M8.6 20h6.8M10 16.8h4"/></g>',
+  hourglass: '<g stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"><path d="M7 3.6h10M7 20.4h10"/><path d="M8.2 3.6c0 4.2 3.8 5 3.8 8.4s-3.8 4.2-3.8 8.4M15.8 3.6c0 4.2-3.8 5-3.8 8.4s3.8 4.2 3.8 8.4"/><path d="M9.6 19.2h4.8L12 16.4z" fill="currentColor"/></g>',
+  warn: '<path d="M12 3.6 21 19.6H3z" fill="#e2b13c" fill-opacity="0.25" stroke="#e2b13c" stroke-width="1.7" stroke-linejoin="round"/><path d="M12 9.4v5M12 17.1v.4" stroke="#f3d27a" stroke-width="2" stroke-linecap="round"/>',
+  dragon: '<path d="M2.8 15.6c3.2-.6 5.4-3.6 6.2-8.6 1.4 2.2 2 4 2 6 1.6-1.6 3.4-2.2 5.6-2.2-1 1.4-1.2 3-.4 4.4 1.6-.6 3.4-.4 5.4.4-3.2.8-6.4 2.8-9.4 5.8-3.4-1-6.6-2.6-9.4-5.8z" fill="currentColor" fill-opacity="0.22" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/>',
+  paw: '<g fill="currentColor"><ellipse cx="6.8" cy="9.6" rx="1.7" ry="2.1"/><ellipse cx="10.2" cy="6.4" rx="1.7" ry="2.2"/><ellipse cx="13.8" cy="6.4" rx="1.7" ry="2.2"/><ellipse cx="17.2" cy="9.6" rx="1.7" ry="2.1"/><path d="M12 11.2c-3 0-5.2 3.2-5.2 5.4 0 1.6 1.4 2.4 2.8 2.1 1-.2 1.6-.6 2.4-.6s1.4.4 2.4.6c1.4.3 2.8-.5 2.8-2.1 0-2.2-2.2-5.4-5.2-5.4z"/></g>',
+  flag: '<g stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M6 20.6V3.8"/><path d="M6 4.6h11.4l-2.6 4 2.6 4H6" fill="currentColor" fill-opacity="0.25"/></g>',
+  horseshoe: '<g stroke="currentColor" stroke-linecap="round" fill="none"><path d="M7.2 20V12a4.8 4.8 0 0 1 9.6 0v8" stroke-width="3"/></g><g fill="#2a1a0c"><circle cx="7.2" cy="13" r="0.7"/><circle cx="16.8" cy="13" r="0.7"/><circle cx="8.4" cy="8.6" r="0.7"/><circle cx="15.6" cy="8.6" r="0.7"/></g>',
+  star: '<path d="M12 3.2l2.6 5.5 6 .8-4.4 4.1 1.1 5.9L12 16.7l-5.3 2.8 1.1-5.9-4.4-4.1 6-.8z" fill="#f2c55a" stroke="#6a4a0c" stroke-width="1.2" stroke-linejoin="round"/>',
+  starEmpty: '<path d="M12 3.2l2.6 5.5 6 .8-4.4 4.1 1.1 5.9L12 16.7l-5.3 2.8 1.1-5.9-4.4-4.1 6-.8z" fill="#2e2421" fill-opacity="0.6" stroke="#8a6a4a" stroke-width="1.2" stroke-linejoin="round"/>',
+  crown: '<g stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"><path d="M4.2 17.4 3.6 7.2l5 4.4L12 5.2l3.4 6.4 5-4.4-.6 10.2z" fill="currentColor" fill-opacity="0.22"/><path d="M4.6 20.2h14.8"/></g>',
+  castle: '<g stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M4 20.4V9h2.8v2h2.4V9h1.6v2h2.4V9h1.6v2h2.4V9H20v11.4z" fill="currentColor" fill-opacity="0.2"/><path d="M10.4 20.4v-3.6a1.6 1.6 0 0 1 3.2 0v3.6" fill="none"/></g>',
+  feather: '<g stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"><path d="M19.4 4.2C12.6 4.6 7.8 9.6 7.4 16.4l-.2 4"/><path d="M19.4 4.2c-.6 7-4.6 11.2-12 12.2" fill="currentColor" fill-opacity="0.2"/><path d="M11 13l4-4"/></g>',
   manaEmpty: '<path d="M12 4.2 17.6 12 12 19.8 6.4 12z" fill="#2a3440" fill-opacity="0.6" stroke="#6a7a8a" stroke-width="1.2" stroke-linejoin="round"/>',
 };
-// 旧 emoji → 图标名(数据表里的 icon 字段沿用 emoji,渲染时换成 SVG)
+// 旧 emoji → 图标名(数据表、任务与提示文字里的 icon 沿用 emoji,渲染时换成 SVG);键里不带 U+FE0F
 const EMOJI = {
-  '🗡️': 'sword', '🔪': 'dagger', '⚔️': 'greatsword', '🏹': 'bow', '⚜️': 'fleur', '🛡️': 'shield', '🌀': 'roll',
-  '✴️': 'spark', '🔥': 'fire', '✨': 'heal', '❄️': 'frost', '💠': 'blink', '🐉': 'shout', '🎯': 'lock', '🤫': 'sneak',
-  '🔄': 'swap', '☀️': 'sun', '🌞': 'sun', '⛅': 'partly', '🌧️': 'rain', '⛈️': 'storm', '🌨️': 'snow', '🌅': 'dawn',
-  '🌇': 'dusk', '🌙': 'moon', '🌸': 'spring', '🍂': 'autumn', '🪙': 'coin', '❤️': 'heart',
+  '🗡': 'sword', '🔪': 'dagger', '⚔': 'greatsword', '🏹': 'bow', '⚜': 'fleur', '🛡': 'shield', '🌀': 'roll',
+  '✴': 'spark', '🔥': 'fire', '✨': 'heal', '❄': 'frost', '💠': 'blink', '🐉': 'dragon', '🎯': 'lock', '🤫': 'sneak',
+  '🔄': 'swap', '☀': 'sun', '🌞': 'sun', '⛅': 'partly', '🌧': 'rain', '⛈': 'storm', '🌨': 'snow', '🌅': 'dawn',
+  '🌇': 'dusk', '🌙': 'moon', '🌕': 'moon', '🌘': 'moon', '🌸': 'spring', '🍂': 'autumn', '🪙': 'coin', '💰': 'coin',
+  '💸': 'coin', '❤': 'heart', '📜': 'scroll', '📋': 'scroll', '🏆': 'trophy', '🎖': 'trophy', '⏱': 'hourglass',
+  '⏳': 'hourglass', '⚠': 'warn', '🚨': 'warn', '🐺': 'paw', '📣': 'shout', '🏁': 'flag', '🚩': 'flag', '🏟': 'flag',
+  '🐴': 'horseshoe', '🐎': 'horseshoe', '★': 'star', '⭐': 'star', '✩': 'starEmpty', '👑': 'crown', '🏰': 'castle',
+  '🐔': 'feather',
 };
 export function svgIcon(name, cls = '') {
   const inner = ICONS[name];
   return inner ? S(inner, cls ? ' ' + cls : '') : '';
 }
 export function iconHTML(key, cls = '') {
-  const name = ICONS[key] ? key : EMOJI[key];
+  const name = ICONS[key] ? key : EMOJI[String(key || '').replace(/\uFE0F/g, '')];
   if (name) return svgIcon(name, cls);
   const span = document.createElement('span');
   span.textContent = key || '';
@@ -76,8 +95,32 @@ export function weatherHTML(seasonIdx, dateText, phase, weatherState, winterSnow
   return svgIcon(SEASON_ICONS[seasonIdx] || 'spring') + `<span class="wx-date">${span.innerHTML}</span>` +
     svgIcon(PHASE_ICONS[phase] || 'sun') + svgIcon(winterSnow ? 'snow' : WEATHER_ICONS[weatherState] || 'sun');
 }
+// 任务栏 / 提示条 / 交互提示的文字:转义后把认得的 emoji 换成同风格 SVG,认不得的装饰 emoji 直接去掉
+// (箭头与几何符号 ▶◀▪ 之类保留)
+const PICTO = /\p{Extended_Pictographic}/gu;
+export function richText(msg) {
+  const span = document.createElement('span');
+  span.textContent = msg == null ? '' : String(msg);
+  return span.innerHTML.replace(/[\uFE0F\u200D]/g, '').replace(PICTO, (ch) => {
+    const cp = ch.codePointAt(0);
+    if ((cp >= 0x2190 && cp <= 0x21ff) || (cp >= 0x25a0 && cp <= 0x25ff)) return ch;
+    const n = EMOJI[ch];
+    return n ? svgIcon(n, 'ico-t') : '';
+  }).replace(/^ +/gm, '').replace(/ {2,}/g, ' ');
+}
+// 通缉星:实心 / 空心各一套
+export function wantedHTML(n) {
+  return n > 0 ? svgIcon('star').repeat(n) + svgIcon('starEmpty').repeat(Math.max(0, 5 - n)) : '';
+}
 export function manaHTML(cur, max) {
   return svgIcon('mana', 'ico-s').repeat(cur) + svgIcon('manaEmpty', 'ico-s').repeat(Math.max(0, max - cur));
+}
+// 操作说明(H)各栏标题的 emoji 换成同风格图标
+for (const h of document.querySelectorAll('#controls-hint h4')) {
+  const t = h.textContent.replace(/[\uFE0F\u200D]/g, '');
+  const m = t.match(PICTO);
+  const head = { '🏃': 'roll', '⚔': 'greatsword', '✨': 'spark', '👁': 'lock', '🗺': 'flag' }[m ? m[0] : ''];
+  h.innerHTML = (head ? svgIcon(head, 'ico-t') : '') + richText(t.replace(PICTO, '').trim());
 }
 // 按键提示:开局后 12 秒淡出(H 键的完整操作说明不受影响)
 const titleEl = document.getElementById('title');

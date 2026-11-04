@@ -1,8 +1,10 @@
 // 植被系统:围绕玩家流式散布的实例化草木(纯视觉,不参与碰撞)
 //
-// 8 类程序化几何(草丛/高草/野花/蕨/芦苇/干草簇/雪草/碎石),每类一个 InstancedMesh,
+// 10 类程序化几何(草丛/高草/野花/蕨/芦苇/干草簇/雪草/碎石/林下灌木/蘑菇),每类一个 InstancedMesh,
 // 一次绘制。按 16 米格子确定性生成(同一位置永远长同样的草),按群系权重挑类型与密度,
 // 避开道路/建筑/水面(terrain.vegAllowed)与陡坡;顶点着色器做风吹摆动与远处渐隐。
+// 中远景另有一圈"草片"(宽矮的大草簇,32 米格,近处草淡出的地方淡入),远处原野不再只剩光秃的地皮。
+// 草叶受光:透光(逆光时叶片发亮)+ 包裹光 + 最低环境光——低角度阳光下不发黑、不发褐(光照由 sky.js 每帧给)。
 import * as THREE from 'three';
 import { groundH, groundNormalY, biomeWeights, vegAllowed, BIOME } from './terrain.js';
 import { waterProx } from './waterbodies.js';
@@ -108,6 +110,39 @@ function buildGeometries() {
       }
     }
   });
+  GEO.shrub = makeGeo((api) => { // 林下灌木:一蓬外翻的宽叶 + 中间直立的嫩叶,半人高
+    for (let i = 0; i < 9; i++) {
+      blade(api, (i / 9) * Math.PI * 2 + r() * 0.5, 0.62 + r() * 0.3, 0.3, 0.9 + r() * 0.4, 3, 0.42, 0.95, 0.1 + r() * 0.1);
+    }
+    for (let i = 0; i < 5; i++) blade(api, (i / 5) * Math.PI * 2 + r(), 0.85 + r() * 0.3, 0.22, 0.45, 3, 0.5, 1.05, 0.04);
+  });
+  GEO.mushroom = makeGeo((api) => { // 蘑菇:三朵一簇,白茎(不染色)+ 伞盖(染实例色)
+    for (let k = 0; k < 3; k++) {
+      const a = r() * Math.PI * 2, d = k ? 0.08 + r() * 0.1 : 0, h = 0.09 + r() * 0.08, R = 0.05 + h * 0.45;
+      const ox = Math.cos(a) * d, oz = Math.sin(a) * d;
+      for (let q = 0; q < 2; q++) { // 十字茎
+        const ca = q ? 0 : 0.012, sa = q ? 0.012 : 0;
+        const s0 = api.v(ox - ca, 0, oz - sa, 0, 1, 0, 0.86, 0.82, 0.74, 0, 0);
+        const s1 = api.v(ox + ca, 0, oz + sa, 0, 1, 0, 0.86, 0.82, 0.74, 0, 0);
+        const s2 = api.v(ox + ca, h, oz + sa, 0, 1, 0, 0.9, 0.86, 0.78, 0.4, 0);
+        const s3 = api.v(ox - ca, h, oz - sa, 0, 1, 0, 0.9, 0.86, 0.78, 0.4, 0);
+        api.tri(s0, s1, s2); api.tri(s0, s2, s3);
+      }
+      const top = api.v(ox, h + R * 0.55, oz, 0, 1, 0, 1, 1, 1, 0.5);
+      const ring = [];
+      for (let j = 0; j < 7; j++) {
+        const b = (j / 7) * Math.PI * 2;
+        ring.push(api.v(ox + Math.cos(b) * R, h - 0.01, oz + Math.sin(b) * R, Math.cos(b) * 0.5, 0.8, Math.sin(b) * 0.5, 0.8, 0.8, 0.8, 0.45));
+      }
+      for (let j = 0; j < 7; j++) api.tri(top, ring[(j + 1) % 7], ring[j]);
+    }
+  });
+  GEO.patch = makeGeo((api) => { // 中远景草片:宽而矮的一大簇(远看是一块有起伏的草皮)
+    for (let i = 0; i < 9; i++) {
+      const a = (i / 9) * Math.PI * 2 + r() * 0.5;
+      blade(api, a, 0.5 + r() * 0.3, 0.2, 0.7 + r() * 0.5, 1, 0.55, 1.0, 0.35 + r() * 0.3);
+    }
+  });
   // ---- 作物(农田/菜园,见 buildCropMesh):麦丛 / 卷心菜 / 葱韭 ----
   GEO.wheat = makeGeo((api) => { // 麦:细直茎 + 顶端麦穗(穗不随实例色,保持金黄)
     for (let i = 0; i < 7; i++) {
@@ -153,20 +188,23 @@ function buildGeometries() {
 // ---------------- 群系配方 ----------------
 // 每格(256 ㎡)的期望株数;颜色用 HSL 区间 [h0,h1, s, l0,l1]
 const RECIPE = {
-  [BIOME.plains]: { n: 120, mix: [['grass', 62], ['tall', 26], ['flower', 9], ['pebble', 3]] },
-  [BIOME.hills]: { n: 120, mix: [['grass', 55], ['tall', 33], ['flower', 8], ['pebble', 4]] },
-  [BIOME.forest]: { n: 100, mix: [['grass', 30], ['fern', 52], ['flower', 6], ['pebble', 4], ['tall', 8]] },
+  [BIOME.plains]: { n: 120, mix: [['grass', 64], ['tall', 22], ['flower', 10], ['pebble', 2], ['shrub', 2]] },
+  [BIOME.hills]: { n: 120, mix: [['grass', 62], ['tall', 24], ['flower', 9], ['pebble', 3], ['shrub', 2]] },
+  [BIOME.forest]: { n: 130, mix: [['grass', 26], ['fern', 40], ['shrub', 16], ['mushroom', 5], ['flower', 4], ['pebble', 3], ['tall', 6]] },
   [BIOME.desert]: { n: 20, mix: [['dry', 70], ['pebble', 30]] },
   [BIOME.snow]: { n: 26, mix: [['snowtuft', 65], ['pebble', 35]] },
-  [BIOME.swamp]: { n: 110, mix: [['reed', 48], ['grass', 34], ['fern', 12], ['tall', 6]] },
+  [BIOME.swamp]: { n: 110, mix: [['reed', 46], ['grass', 30], ['fern', 10], ['shrub', 6], ['mushroom', 3], ['tall', 5]] },
   [BIOME.ash]: { n: 30, mix: [['dry', 55], ['pebble', 45]] },
   [BIOME.rock]: { n: 50, mix: [['pebble', 35], ['dry', 25], ['grass', 40]] },
 };
 const COLOR = {
-  grass: { [BIOME.plains]: [0.11, 0.17, 0.36, 0.34, 0.5], [BIOME.hills]: [0.15, 0.22, 0.38, 0.33, 0.47],
-    [BIOME.forest]: [0.2, 0.27, 0.4, 0.26, 0.38], [BIOME.swamp]: [0.16, 0.22, 0.32, 0.22, 0.32],
-    [BIOME.rock]: [0.12, 0.17, 0.22, 0.38, 0.5] },
-  tall: { def: [0.1, 0.15, 0.4, 0.45, 0.6], [BIOME.forest]: [0.18, 0.24, 0.35, 0.34, 0.46] },
+  grass: { [BIOME.plains]: [0.19, 0.27, 0.46, 0.25, 0.37], [BIOME.hills]: [0.2, 0.28, 0.44, 0.25, 0.38],
+    [BIOME.forest]: [0.22, 0.29, 0.42, 0.24, 0.36], [BIOME.swamp]: [0.17, 0.23, 0.32, 0.22, 0.32],
+    [BIOME.rock]: [0.13, 0.19, 0.24, 0.36, 0.48] },
+  tall: { def: [0.15, 0.23, 0.42, 0.28, 0.4], [BIOME.forest]: [0.19, 0.25, 0.36, 0.3, 0.42] },
+  shrub: { def: [0.24, 0.31, 0.38, 0.2, 0.3], [BIOME.swamp]: [0.2, 0.26, 0.3, 0.18, 0.26],
+    [BIOME.plains]: [0.2, 0.27, 0.36, 0.24, 0.32] },
+  mushroom: { def: [0.0, 0.08, 0.55, 0.38, 0.62] },
   fern: { def: [0.25, 0.31, 0.45, 0.22, 0.34], [BIOME.swamp]: [0.2, 0.26, 0.35, 0.2, 0.3] },
   reed: { def: [0.12, 0.16, 0.32, 0.32, 0.44] },
   dry: { def: [0.08, 0.11, 0.38, 0.45, 0.6], [BIOME.ash]: [0.06, 0.08, 0.08, 0.16, 0.24],
@@ -176,13 +214,17 @@ const COLOR = {
     [BIOME.ash]: [0.05, 0.08, 0.06, 0.18, 0.28], [BIOME.snow]: [0.58, 0.6, 0.06, 0.5, 0.62] },
 };
 const FLOWER_COLS = [0xf2d95c, 0xf4f1e6, 0xb48fd8, 0x7aa4e0, 0xd9584a, 0xf0a046];
-const CAP = { grass: 7000, tall: 3800, fern: 3000, reed: 3200, dry: 1800, snowtuft: 1400, flower: 1500, pebble: 2000 };
+const CAP = { grass: 7000, tall: 3800, fern: 3000, reed: 3200, dry: 1800, snowtuft: 1400, flower: 1500, pebble: 2000,
+  shrub: 1600, mushroom: 700 };
 const TYPES = Object.keys(CAP);
 
-// ---------------- 材质:风摆 + 远处渐隐 + 季节色 ----------------
+// ---------------- 材质:风摆 + 远处渐隐(中远景草片另有近处淡入)+ 季节色 + 草叶受光 ----------------
 const uniforms = {
   uTime: { value: 0 }, uWind: { value: 1 }, uCenter: { value: new THREE.Vector2() },
-  uRadius: { value: 64 }, uSeason: { value: new THREE.Color(1, 1, 1) }, uFrost: { value: 0 },
+  uRadius: { value: 64 }, uInner: { value: 0 }, uSeason: { value: new THREE.Color(1, 1, 1) }, uFrost: { value: 0 },
+  // 受光(sky.js 每帧经 setVegetationLight 写):太阳方向(世界)、透光色(含强度)、最低环境光
+  uSunDir: { value: new THREE.Vector3(0, 1, 0) }, uSunCol: { value: new THREE.Color(0, 0, 0) },
+  uAmbMin: { value: new THREE.Color(0.08, 0.09, 0.08) },
 };
 function makeMaterial(u = uniforms) {
   const m = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
@@ -193,32 +235,55 @@ function makeMaterial(u = uniforms) {
       .replace('#include <common>', `#include <common>
         attribute float aH;
         attribute float aTint;
-        uniform float uTime, uWind, uRadius;
-        uniform vec2 uCenter;`)
+        uniform float uTime, uWind, uRadius, uInner;
+        uniform vec2 uCenter;
+        varying float vVegH;`)
       .replace('#include <color_vertex>', `#include <color_vertex>
         #ifdef USE_INSTANCING_COLOR
           vColor.xyz = mix(color.xyz, color.xyz * instanceColor.xyz, aTint);
         #endif`)
       .replace('#include <begin_vertex>', `#include <begin_vertex>
+        vVegH = aH;
         vec2 ip = vec2(instanceMatrix[3][0], instanceMatrix[3][2]);
         float ph = uTime * 1.6 + ip.x * 0.13 + ip.y * 0.09;
         float sway = (sin(ph) * 0.65 + sin(ph * 2.7 + ip.x * 0.5) * 0.25) * uWind;
         float hh = aH * aH;
         transformed.x += sway * hh * 0.22;
         transformed.z += sway * hh * 0.11;
-        float fade = 1.0 - smoothstep(uRadius * 0.72, uRadius, distance(ip, uCenter));
+        float dc = distance(ip, uCenter);
+        float fade = 1.0 - smoothstep(uRadius * 0.72, uRadius, dc);
+        if (uInner > 0.0) fade *= smoothstep(uInner * 0.78, uInner, dc); // 中远景草片:近处让给细草
         transformed *= fade;`);
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <normal_fragment_begin>', `#include <normal_fragment_begin>
         normal = normalize(vNormal); // 草叶不分正反面:一律按朝上的法线受光,避免背面发黑`)
       .replace('#include <common>', `#include <common>
-        uniform vec3 uSeason;
-        uniform float uFrost;`)
+        uniform vec3 uSeason, uSunDir, uSunCol, uAmbMin;
+        uniform float uFrost;
+        varying float vVegH;`)
       .replace('#include <color_fragment>', `#include <color_fragment>
         diffuseColor.rgb *= uSeason;
-        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.82, 0.87, 0.93), uFrost);`);
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.82, 0.87, 0.93), uFrost);`)
+      .replace('#include <opaque_fragment>', `
+        {
+          // 草叶是竖着的薄片:法线按朝上算(不分正反面),低角度的阳光其实照在叶片侧面——补上这份侧光,
+          // 黄昏的草是金色而不是褐色尖刺;逆光时叶尖透光发亮;再给一层最低环境光
+          vec3 sunV = normalize((viewMatrix * vec4(uSunDir, 0.0)).xyz);
+          float back = pow(clamp(dot(-normalize(vViewPosition), sunV), 0.0, 1.0), 2.5);
+          float side = (1.0 - clamp(uSunDir.y, 0.0, 1.0)) * 0.9;
+          float tipK = 0.35 + 0.65 * vVegH;
+          outgoingLight += diffuseColor.rgb * uSunCol * (0.12 + side + 0.5 * back) * tipK;
+          outgoingLight = max(outgoingLight, diffuseColor.rgb * uAmbMin);
+        }
+        #include <opaque_fragment>`);
   };
   return m;
+}
+// 草叶受光(sky.js 每帧调用):sunDir 世界方向(指向太阳),sunCol 已含强度,amb 最低环境光(线性色)
+export function setVegetationLight(sunDir, sunCol, amb) {
+  uniforms.uSunDir.value.copy(sunDir);
+  uniforms.uSunCol.value.copy(sunCol);
+  uniforms.uAmbMin.value.copy(amb);
 }
 
 // ---------------- 散布 ----------------
@@ -306,14 +371,28 @@ export function initVegetation(sc) {
     scene.add(im);
     meshes[t] = im;
   }
+  // 中远景草片:同一着色器(程序共用),另一套半径——近处淡入、远处淡出
+  farMesh = new THREE.InstancedMesh(GEO.patch, makeMaterial(farU), FAR_CAP);
+  farMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  farMesh.setColorAt(0, new THREE.Color(1, 1, 1));
+  farMesh.count = 0;
+  farMesh.frustumCulled = false;
+  farMesh.receiveShadow = true;
+  farMesh.castShadow = false;
+  farMesh.userData.noSnap = true;
+  scene.add(farMesh);
 }
 
 // 画质档位:0.35~1.3(影响密度与半径)
 export function setVegetationDensity(d) {
   density = d;
   uniforms.uRadius.value = 40 + 30 * Math.min(1, d);
+  farU.uRadius.value = 95 + 65 * Math.min(1, d);
+  farU.uInner.value = uniforms.uRadius.value * 0.88;
   cellCache.clear();
+  farCache.clear();
   lastX = 1e9;
+  farLastX = 1e9;
 }
 export function getVegetationDensity() { return density; }
 export function setVegetationSeason(seasonIdx) {
@@ -327,6 +406,7 @@ export function updateVegetation(dt, px, pz, windK = 1) {
   uniforms.uTime.value += dt;
   uniforms.uWind.value += (windK - uniforms.uWind.value) * Math.min(1, dt * 0.8);
   uniforms.uCenter.value.set(px, pz);
+  if (Math.hypot(px - farLastX, pz - farLastZ) >= 16) updateFar(px, pz);
   if (Math.hypot(px - lastX, pz - lastZ) < 8) return;
   lastX = px; lastZ = pz;
   const R = uniforms.uRadius.value;
@@ -373,6 +453,80 @@ export function updateVegetation(dt, px, pz, windK = 1) {
   // 缓存只留在视野附近的格子
   if (cellCache.size > keep.size * 2 + 64) {
     for (const k of cellCache.keys()) if (!keep.has(k)) cellCache.delete(k);
+  }
+}
+
+// ---------------- 中远景草片:32 米格,宽矮大草簇,近处细草淡出的地方淡入 ----------------
+const FAR_CELL = 32, FAR_CAP = 6000;
+// 每格期望簇数(按群系);荒漠/焦土/雪原只零星几簇
+const FAR_N = [60, 34, 4, 8, 40, 3, 22, 60]; // 顺序同 terrain.BIOME_KEYS:平原 森林 荒漠 雪原 沼泽 焦土 碎石 丘陵
+const farU = { ...uniforms, uRadius: { value: 140 }, uInner: { value: 52 } };
+let farMesh = null;
+let farLastX = 1e9, farLastZ = 1e9;
+const farCache = new Map();
+function genFarCell(cx, cz) {
+  const rng = rngOf(cellSeed(cx + 7919, cz - 4721));
+  const x0 = cx * FAR_CELL, z0 = cz * FAR_CELL;
+  const w0 = biomeWeights(x0 + FAR_CELL / 2, z0 + FAR_CELL / 2, _bw);
+  let expect = 0;
+  for (let b = 0; b < 8; b++) expect += w0[b] * FAR_N[b];
+  const count = Math.round(expect * Math.min(1, 0.45 + density * 0.55));
+  const m = [], c = [];
+  for (let i = 0; i < count; i++) {
+    const x = x0 + rng() * FAR_CELL, z = z0 + rng() * FAR_CELL;
+    if (!vegAllowed(x, z) || waterProx(x, z) > -2.5 || groundNormalY(x, z) < 0.86) continue;
+    const w = biomeWeights(x, z, _bw);
+    let r = rng(), b = 0;
+    for (; b < 7; b++) { r -= w[b]; if (r <= 0) break; }
+    const sc = 1.5 + rng() * 1.3;
+    _e.set(0, rng() * Math.PI * 2, 0);
+    _q.setFromEuler(_e);
+    _s.set(sc, sc * (0.6 + rng() * 0.4), sc);
+    _p.set(x, groundH(x, z) - 0.04, z);
+    _m4.compose(_p, _q, _s);
+    m.push(..._m4.elements);
+    const tbl = b === BIOME.snow ? COLOR.snowtuft : (b === BIOME.desert || b === BIOME.ash) ? COLOR.dry : COLOR.grass;
+    const [h0, h1, sat, l0, l1] = tbl[b] || tbl.def || tbl[BIOME.plains];
+    _col.setHSL(h0 + (h1 - h0) * rng(), sat, (l0 + (l1 - l0) * rng()) * 0.92);
+    c.push(_col.r, _col.g, _col.b);
+  }
+  return { m: new Float32Array(m), c: new Float32Array(c), n: c.length / 3 };
+}
+function updateFar(px, pz) {
+  farLastX = px; farLastZ = pz;
+  farU.uCenter.value.set(px, pz);
+  const R = farU.uRadius.value, inner = farU.uInner.value * 0.7;
+  const pcx = Math.floor(px / FAR_CELL), pcz = Math.floor(pz / FAR_CELL);
+  const rc = Math.ceil(R / FAR_CELL) + 1;
+  const cells = [];
+  for (let dz = -rc; dz <= rc; dz++) {
+    for (let dx = -rc; dx <= rc; dx++) {
+      const cx = pcx + dx, cz = pcz + dz;
+      const ccx = (cx + 0.5) * FAR_CELL - px, ccz = (cz + 0.5) * FAR_CELL - pz;
+      const d = Math.hypot(ccx, ccz);
+      if (d > R + FAR_CELL || d < inner - FAR_CELL) continue; // 近处那圈本来就淡掉了,不占名额
+      cells.push([d, cx, cz]);
+    }
+  }
+  cells.sort((a, b) => a[0] - b[0]);
+  let fill = 0;
+  const keep = new Set();
+  for (const [, cx, cz] of cells) {
+    const key = cx * 100003 + cz;
+    keep.add(key);
+    let c = farCache.get(key);
+    if (!c) { c = genFarCell(cx, cz); farCache.set(key, c); }
+    const k = Math.min(FAR_CAP - fill, c.n);
+    if (k <= 0) continue;
+    farMesh.instanceMatrix.array.set(k === c.n ? c.m : c.m.subarray(0, k * 16), fill * 16);
+    farMesh.instanceColor.array.set(k === c.n ? c.c : c.c.subarray(0, k * 3), fill * 3);
+    fill += k;
+  }
+  farMesh.count = fill;
+  farMesh.instanceMatrix.needsUpdate = true;
+  farMesh.instanceColor.needsUpdate = true;
+  if (farCache.size > keep.size * 2 + 64) {
+    for (const k of farCache.keys()) if (!keep.has(k)) farCache.delete(k);
   }
 }
 

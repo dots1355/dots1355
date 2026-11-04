@@ -57,10 +57,10 @@ function addTree(g, rng, x, z, biome, cols) {
     built = rng() < 0.6 ? buildPine(rng) : buildDeadTree(rng, { bark: 0x5a5048 });
   } else if (biome === 'snow') {
     built = rng() < 0.85 ? buildPine(rng, { snow: true }) : buildDeadTree(rng, { bark: 0x5a5048 });
-  } else if (biome === 'forest') {
+  } else if (biome === 'forest') { // 林海用 Blender 写实橡树/桦树/松树(与王国森林同一套模型,每棵只几次绘制)
     const roll = rng();
-    built = roll < 0.6 ? buildTree(rng, { leaf: 0x3d7a47 })
-      : roll < 0.9 ? buildPine(rng)
+    built = roll < 0.6 ? buildTree(rng)
+      : roll < 0.93 ? buildPine(rng)
       : buildBush(rng, { leaf: 0x3d7a47 });
   } else { // plains
     const roll = rng();
@@ -69,7 +69,7 @@ function addTree(g, rng, x, z, biome, cols) {
       : buildPine(rng);
   }
   const grp = built.group;
-  const sc = 0.85 + rng() * 0.5;
+  const sc = biome === 'forest' ? 1 + rng() * 0.6 : 0.85 + rng() * 0.5; // 林海的树更高大,林冠才合得拢
   grp.scale.setScalar(sc);
   grp.rotation.y = rng() * 6.28;
   grp.position.set(x, 0, z);
@@ -144,7 +144,7 @@ function genChunk(cx, cz) {
   g.add(buildGroundMesh(baseX, baseZ, CHUNK, getGroundMaterial()));
 
   // 植被密度按群系
-  const treeN = biome === 'forest' ? 12 + Math.floor(rng() * 8)
+  const treeN = biome === 'forest' ? 30 + Math.floor(rng() * 12) // 茂密林海:名副其实(林下另有灌木/蕨/蘑菇,见 vegetation.js)
     : biome === 'plains' || biome === 'hills' ? 3 + Math.floor(rng() * 4)
     : biome === 'swamp' ? 5 + Math.floor(rng() * 4)
     : 3 + Math.floor(rng() * 3);

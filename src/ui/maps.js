@@ -1,6 +1,8 @@
 // 地图:小地图(以玩家为中心、群系底色、道路建筑、人物、任务目标与来袭方向)与 M 键王国全图。
+// 地形底图是一张平滑的"羊皮纸地形图":群系底色双线性过渡 + 西北光的山体晕渲 + 群系边界,
+// 王国全图、荒野图、小地图共用(按 ±520m 一张缓存)。
 // 动态数据每次绘制时经 ctx.mapView() 取一份快照,本模块不持有任何玩法状态。
-import { mapColor, dominantBiome } from '../terrain.js';
+import { mapColor, dominantBiome, groundH } from '../terrain.js';
 import { REGIONS } from '../story.js';
 import { ctx } from '../core/ctx.js';
 import { wildMarks, wildRegionName } from '../wilderness.js';
@@ -13,18 +15,75 @@ const bigmapCv = document.getElementById('bigmap-c');
 export const mapState = { open: false };
 let bigBase = null;
 const BIG_R = 520;
+// 地形底图:以 (cx,cz) 为中心 ±BIG_R,720px 见方
+const TERR_PX = 720;
+const terrCache = new Map();
+function terrainCanvas(cx, cz) {
+  const key = cx + ',' + cz;
+  let c = terrCache.get(key);
+  if (c) return c;
+  if (terrCache.size > 3) terrCache.delete(terrCache.keys().next().value);
+  // 1) 群系底色:16m 一格采样进小画布,放大时双线性插值 → 柔和过渡而不是马赛克
+  const n = Math.ceil((BIG_R * 2) / 16) + 1;
+  const col = document.createElement('canvas');
+  col.width = col.height = n;
+  const cg = col.getContext('2d');
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) {
+      cg.fillStyle = mapColor(cx - BIG_R + i * 16 + 0.5, cz - BIG_R + j * 16 + 0.5);
+      cg.fillRect(i, j, 1, 1);
+    }
+  }
+  // 2) 山体晕渲:10m 一格采高度,西北上方的光;亮面提白、背光面压暗(半透明叠在底色上)
+  const m = Math.ceil((BIG_R * 2) / 10) + 1;
+  const H = new Float32Array((m + 2) * (m + 2));
+  for (let j = -1; j <= m; j++) {
+    for (let i = -1; i <= m; i++) H[(j + 1) * (m + 2) + i + 1] = groundH(cx - BIG_R + i * 10, cz - BIG_R + j * 10);
+  }
+  const shade = document.createElement('canvas');
+  shade.width = shade.height = m;
+  const sg = shade.getContext('2d');
+  const img = sg.createImageData(m, m);
+  const L = [-0.55, 0.62, -0.55], ll = Math.hypot(...L);
+  for (let j = 0; j < m; j++) {
+    for (let i = 0; i < m; i++) {
+      const at = (di, dj) => H[(j + 1 + dj) * (m + 2) + i + 1 + di];
+      const gx = (at(1, 0) - at(-1, 0)) / 20, gz = (at(0, 1) - at(0, -1)) / 20;
+      const nl = Math.hypot(gx * 2.2, 1, gz * 2.2);
+      const d = ((-gx * 2.2) * L[0] + L[1] - (gz * 2.2) * L[2]) / (nl * ll) - L[1] / ll; // 相对平地的明暗
+      const o = (j * m + i) * 4;
+      const v = d > 0 ? 255 : 0;
+      img.data[o] = v; img.data[o + 1] = v * 0.97; img.data[o + 2] = v * 0.9;
+      img.data[o + 3] = Math.min(150, Math.abs(d) * (d > 0 ? 320 : 420));
+    }
+  }
+  sg.putImageData(img, 0, 0);
+  c = document.createElement('canvas');
+  c.width = c.height = TERR_PX;
+  const g = c.getContext('2d');
+  g.imageSmoothingEnabled = true;
+  g.imageSmoothingQuality = 'high';
+  const k = TERR_PX / (BIG_R * 2);
+  g.drawImage(col, 0, 0, n, n, -8 * k, -8 * k, n * 16 * k, n * 16 * k);
+  g.drawImage(shade, 0, 0, m, m, -5 * k, -5 * k, m * 10 * k, m * 10 * k);
+  // 3) 羊皮纸颗粒:一点点纸纹,地图像画出来的
+  g.globalAlpha = 0.06;
+  for (let i = 0; i < 2600; i++) {
+    g.fillStyle = (i & 1) ? '#000' : '#fff';
+    g.fillRect(((i * 7919) % TERR_PX), ((i * 104729) % TERR_PX), 2, 2);
+  }
+  g.globalAlpha = 1;
+  biomeEdges(g, cx - BIG_R, cz - BIG_R, cx + BIG_R, cz + BIG_R, 24,
+    (x, z) => [(x - cx + BIG_R) * k, (z - cz + BIG_R) * k], 'rgba(40,26,12,0.28)');
+  terrCache.set(key, c);
+  return c;
+}
 function buildBigBase() {
   const c = document.createElement('canvas');
   c.width = c.height = 720;
   const g = c.getContext('2d');
   const k = 720 / (BIG_R * 2);
-  const cell = 12;
-  for (let x = -BIG_R; x < BIG_R; x += cell) {
-    for (let z = -BIG_R; z < BIG_R; z += cell) {
-      g.fillStyle = mapColor(x, z);
-      g.fillRect((x + BIG_R) * k, (z + BIG_R) * k, cell * k + 0.7, cell * k + 0.7);
-    }
-  }
+  g.drawImage(terrainCanvas(0, 0), 0, 0);
   for (const f of ctx.world.features) {
     const mx = (f.x + BIG_R) * k, mz = (f.z + BIG_R) * k;
     if (f.type === 'road') {
@@ -52,21 +111,14 @@ function buildBigBase() {
   }
   return c;
 }
-// 荒野图:玩家在王国之外时,以玩家所在 256m 格为中心画 ±520m(群系底色 + 边界 + 已探到的营地/遗迹)
+// 荒野图:玩家在王国之外时,以玩家所在 256m 格为中心画 ±520m(地形底图 + 群系地名 + 已探到的营地/遗迹)
 let wildBase = null, wildKey = '';
 function buildWildBase(cx, cz) {
   const c = document.createElement('canvas');
   c.width = c.height = 720;
   const g = c.getContext('2d');
   const k = 720 / (BIG_R * 2);
-  const cell = 12;
-  for (let x = -BIG_R; x < BIG_R; x += cell) {
-    for (let z = -BIG_R; z < BIG_R; z += cell) {
-      g.fillStyle = mapColor(cx + x, cz + z);
-      g.fillRect((x + BIG_R) * k, (z + BIG_R) * k, cell * k + 0.7, cell * k + 0.7);
-    }
-  }
-  biomeEdges(g, cx - BIG_R, cz - BIG_R, cx + BIG_R, cz + BIG_R, 24, (x, z) => [(x - cx + BIG_R) * k, (z - cz + BIG_R) * k], 'rgba(30,20,10,0.4)');
+  g.drawImage(terrainCanvas(cx, cz), 0, 0);
   g.font = 'bold 13px sans-serif';
   g.textAlign = 'center';
   for (let x = -BIG_R + 130; x < BIG_R; x += 260) { // 群系地名
@@ -170,18 +222,15 @@ export function drawMinimap() {
   mm.beginPath();
   mm.rect(0, 0, S, S);
   mm.clip();
-  // 底图:按群系/高度上色的 16m 格(荒野里不再是一块空绿板)
+  // 底图:从共用的地形底图里裁一块(王国内用王国那张,荒野里按 256m 格换中心)——平滑过渡 + 山体晕渲
   {
-    const cell = 16, x0 = Math.floor((px - range / 2) / cell) * cell, z0 = Math.floor((pz - range / 2) / cell) * cell;
-    const cs = cell * k + 0.6;
-    for (let x = x0; x < px + range / 2 + cell; x += cell) {
-      for (let z = z0; z < pz + range / 2 + cell; z += cell) {
-        mm.fillStyle = mapColor(x, z);
-        const [mx, mz] = toMap(x, z);
-        mm.fillRect(mx, mz, cs, cs);
-      }
-    }
-    biomeEdges(mm, x0, z0, px + range / 2 + cell, pz + range / 2 + cell, cell, toMap, 'rgba(30,20,10,0.32)');
+    const inCore = Math.max(Math.abs(px), Math.abs(pz)) < BIG_R - range * 0.75;
+    const ox = inCore ? 0 : Math.round(px / 256) * 256, oz = inCore ? 0 : Math.round(pz / 256) * 256;
+    const tc = terrainCanvas(ox, oz), tk = TERR_PX / (BIG_R * 2);
+    mm.fillStyle = '#6b7a52';
+    mm.fillRect(0, 0, S, S);
+    mm.imageSmoothingEnabled = true;
+    mm.drawImage(tc, (px - range / 2 - ox + BIG_R) * tk, (pz - range / 2 - oz + BIG_R) * tk, range * tk, range * tk, 0, 0, S, S);
   }
   for (const f of ctx.world.features) {
     const [mx, mz] = toMap(f.x, f.z);

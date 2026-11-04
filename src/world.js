@@ -725,10 +725,10 @@ export function buildWorld(scene) {
       p.setXYZ(i, x * (1 - t * 0.2) + jx, y + jy + x * 0.26 * t * t, z * 0.62 * (1 - t * 0.12) + jz);
     }
     parts.push(body.toNonIndexed());
-    for (let k = 0; k < 6; k++) { // 脚下半埋的碎石
+    for (let k = 0; k < 6; k++) { // 脚下半埋的碎石(二十面体本就是非索引几何)
       const a = (k / 6) * Math.PI * 2 + rr() * 0.7, r = 0.72 + rr() * 0.3, s = 0.12 + rr() * 0.14;
       parts.push(new THREE.IcosahedronGeometry(s, 0).scale(1.2, 0.6, 1)
-        .translate(Math.cos(a) * r, s * 0.15, Math.sin(a) * r * 0.8).toNonIndexed());
+        .translate(Math.cos(a) * r, s * 0.15, Math.sin(a) * r * 0.8));
     }
     const g = mergeGeometries(parts.map((q) => { q.deleteAttribute('uv'); q.deleteAttribute('normal'); return q; }));
     g.computeVertexNormals();
