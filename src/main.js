@@ -1,7 +1,7 @@
 // 《侠盗猎马人:中世纪王国》主逻辑
 import * as THREE from 'three';
 import { buildWorld } from './world.js';
-import { makeHumanoid, makeHorse, makeWolf, makeChicken, makeSheep, makeDragon, resolveCollisions, angleLerp, dist2, lambert, setHumanModel, setFaunaModel, setWeaponModels, getWeaponModel, disposeEntityGroup } from './entities.js';
+import { makeHumanoid, makeHorse, makeWolf, makeChicken, makeSheep, resolveCollisions, angleLerp, dist2, lambert, setHumanModel, setFaunaModel, setWeaponModels, getWeaponModel, disposeEntityGroup } from './entities.js';
 import { INTRO, REGIONS, GUARD_LINES, NPCS, MISSIONS, VILLAGERS, DIALOGS, TIME_GREETINGS, LORE } from './story.js';
 import { initAudio, sfx, startMusic, toggleMusic, weatherAudio, setAmbience, setCombatMusic } from './audio.js';
 import { preloadAIAssets, generateRemoteAITextures } from './textures.js';
@@ -14,6 +14,7 @@ import { buildMasks, buildCoreGround, getGroundMaterial, groundH, maskAt, vegAll
 import { initVegetation, updateVegetation, setVegetationSeason, setVegetationDensity } from './vegetation.js';
 import { staticBatch } from './batch.js';
 import { later, updateTimers, pendingTimers, simNow } from './core/timers.js';
+import { hitStop, slowMo, scaleDt } from './core/timefx.js';
 import { rand, seed as seedRng } from './core/rng.js';
 import { initAmbient, updateAmbient } from './ambient.js';
 import { cam, updateCamera } from './systems/camera.js';
@@ -24,6 +25,18 @@ import { ctx } from './core/ctx.js';
 import { LIGHT_POOL, lightPool, initLightPool, addLightSource, removeLightSource, updateLightPool, pooledMat, releaseMat } from './gfx/pools.js';
 import { mergeGeometries } from '../lib/jsm/utils/BufferGeometryUtils.js';
 import { renderer, scene, camera, LOWFX, composer, gtao, bloom, gradePass, STYLE_PRESETS, stylePass, smaa, styleKey, applyStyle, cycleStyle } from './gfx/core.js';
+import {
+  awakenDragon, damageDragon, dragonRT, telegraphArea, updateDragon,
+} from './systems/dragon.js';
+import {
+  prologue, setTutor, skipPrologue, startPrologue, updatePrologue, whistleHorse,
+} from './systems/prologue.js';
+import {
+  DRAGON_SKULL, SKILL_DEFS, SPELLS, addBarricade, arrowBonus, castBigFire, castSpell, cycleSpell,
+  doShout, dragonAim, explodeAt, frostPatches, frostSlow, learnShout, learnSpell, meleeBonus, shout,
+  skillLv, skillXp, sneakFactor, spellDown, spellUp, spendSta, toggleSneak, updateFrostPatches,
+  updateMagic,
+} from './systems/magic.js';
 
 // ================= 基础渲染 =================
 initLightPool(scene); // 固定数量的点光池(火把/篝火等光源只登记,由它代为发光)
@@ -302,6 +315,10 @@ const player = {
   walkT: 0, attackT: 0, invulnT: 0, mounted: null, dead: false, herbs: 0, venison: 0,
   parcel: null, swordLv: 1, royalHorse: false,
   carrying: null, drunkT: 0, hiccupT: 0,
+  // 法术:魔光弹与生俱来,R 键即放(法力自然回复)
+  mp: 8, maxMp: 8, spells: ['spark'], spellIdx: 0, castT: 0,
+  // 技艺熟练度:用什么涨什么(定义见 systems/magic.js 的 SKILL_DEFS)
+  skills: Object.fromEntries(Object.keys(SKILL_DEFS).map((k) => [k, { lv: 1, xp: 0 }])),
 };
 player.group.position.copy(player.pos);
 scene.add(player.group);
@@ -730,405 +747,6 @@ const ARMORS = [
 ];
 player.weapon = 'sword';
 player.weaponsOwned = ['sword'];
-
-// ================= 魔法系统 =================
-// 四门法术分别来自四处地标:女巫卖火球、教堂授治愈、湖心祭坛赠冰霜、回响之镜予闪现。
-// R 施放 · V 切换 · 数字键 1-4 直选;法力自然回复,自家安眠/庇佑时回得更快。
-const SPELLS = {
-  spark: { name: '魔光弹', icon: '✴️', mp: 1, cd: 0.45 }, // 娘胎里带的:1 蓝速射,毁灭系入门
-  fire:  { name: '火球术', icon: '🔥', mp: 3, cd: 1.1 },
-  heal:  { name: '治愈术', icon: '✨', mp: 4, cd: 2.5 },
-  frost: { name: '冰霜新星', icon: '❄️', mp: 4, cd: 6 },
-  blink: { name: '闪现', icon: '💠', mp: 2, cd: 2.5 },
-};
-player.mp = 8;
-player.maxMp = 8;
-player.spells = ['spark']; // 基础魔法与生俱来,R 键即放
-player.spellIdx = 0;
-player.castT = 0;
-function learnSpell(key) {
-  if (player.spells.includes(key)) return false;
-  player.spells.push(key);
-  player.spellIdx = player.spells.length - 1;
-  sfx.fanfare();
-  toast(`${SPELLS[key].icon} 习得法术「${SPELLS[key].name}」!R 施放 · V 切换`, 5);
-  remember(`习得了法术「${SPELLS[key].name}」`, `spell-${key}`);
-  saveGame();
-  return true;
-}
-function cycleSpell() {
-  if (player.spells.length < 2) { callout('目前只会魔光弹(女巫处可买火球术卷轴)', 'dim'); return; }
-  player.fireChargeT = 0; // 换法术=松开引导
-  player.spellIdx = (player.spellIdx + 1) % player.spells.length;
-  const k = player.spells[player.spellIdx];
-  sfx.equip();
-  toast(`${SPELLS[k].icon} ${SPELLS[k].name}`, 1.2);
-}
-// 范围爆破:火球命中点的 AoE(打卫兵照样算犯罪)
-// src:'player'(默认,火球/火油罐)或环境伤害(如 'dragon'):环境伤害不进连杀、不算卫兵罪行
-function explodeAt(x, z, dmg = 3, radius = 3.4, src = 'player') {
-  const env = src !== 'player';
-  cam.shake = Math.max(cam.shake, 0.35);
-  sfx.stomp();
-  spawnDust(x, 0.5, z, 16, radius * 0.5, 2.2);
-  // 卫兵不受龙息之类的环境爆炸牵连,也不会因此通缉你
-  for (const list of env ? [bandits, wolves] : [bandits, wolves, guards]) {
-    for (const e of list) {
-      if (e.dead || e.downT > 0 || dist2(x, z, e.pos.x, e.pos.z) > radius * radius) continue;
-      applyDamage(e, dmg, { source: env ? 'env' : 'player', knock: 1.2, crit: true, crime: 2, crimeMsg: '你的火球炸到了卫兵!' });
-    }
-  }
-}
-// ================= 冰霜留痕:新星过后地面结霜,敌人踩上去减速一半 =================
-const frostPatches = [];
-function addFrostPatch(x, z, r = 5.5, dur = 6) {
-  const m = new THREE.Mesh(new THREE.CircleGeometry(r, 24),
-    new THREE.MeshBasicMaterial({ color: 0x9fe0ff, transparent: true, opacity: 0.28,
-      blending: THREE.AdditiveBlending, depthWrite: false }));
-  m.rotation.x = -Math.PI / 2;
-  m.position.set(x, 0.06, z);
-  scene.add(m);
-  frostPatches.push({ x, z, r, t: dur, m });
-}
-function updateFrostPatches(dt) {
-  for (let i = frostPatches.length - 1; i >= 0; i--) {
-    const p = frostPatches[i];
-    p.t -= dt;
-    if (p.t <= 0) {
-      scene.remove(p.m);
-      p.m.traverse ? p.m.traverse((o) => { // 拒马是组合体,逐件回收
-        if (o.geometry) o.geometry.dispose();
-        if (o.material && o.material.dispose && !o.material._shared) o.material.dispose();
-      }) : null;
-      if (p.m.geometry) { p.m.geometry.dispose(); p.m.material.dispose(); }
-      frostPatches.splice(i, 1);
-      continue;
-    }
-    if (!p.wood && p.t < 1) p.m.material.opacity = 0.28 * p.t; // 冰面最后一秒融化(拒马不透明)
-  }
-}
-// 拒马:攻城警报拉响时,卫兵在来袭方向支起两座木刺阵——踩进去的人腿脚都慢半拍
-function addBarricade(x, z) {
-  const grp = new THREE.Group();
-  const wood = lambert(0x6a4a28, { roughness: 0.92 });
-  wood._shared = true; // 共享一份材质,dispose 时跳过
-  for (let i = 0; i < 6; i++) {
-    const spike = new THREE.Mesh(new THREE.ConeGeometry(0.1, 1.2, 5), wood);
-    const a2 = (i / 6) * Math.PI * 2;
-    spike.position.set(Math.cos(a2) * 1.7, 0.55, Math.sin(a2) * 1.7);
-    spike.rotation.z = i % 2 ? 0.55 : -0.55;
-    spike.rotation.y = a2;
-    grp.add(spike);
-  }
-  grp.position.set(x, 0, z);
-  scene.add(grp);
-  frostPatches.push({ x, z, r: 3.2, t: 90, m: grp, wood: true });
-}
-function frostSlow(e) {
-  if (!frostPatches.length) return 1;
-  for (const p of frostPatches) {
-    if (dist2(e.pos.x, e.pos.z, p.x, p.z) < p.r * p.r) return 0.5;
-  }
-  return 1;
-}
-
-// 大火球:蓄力引导的产物——更大更疼,炸开半径 5,配大冷却
-function castBigFire() {
-  if (!started || player.dead || player.carrying || dialog.open ||
-      player.castT > 0 || player.staggerT > 0 ||
-      player.spells[player.spellIdx] !== 'fire') return; // 蓄力途中切了法术/进了冷却就作废
-  const cost = Math.max(2, Math.round(4 * (1 - 0.04 * (skillLv('destruction') - 1))));
-  if (player.mp < cost) { callout(`法力不足(大火球要 ${cost} 点)`, 'dim'); return; }
-  player.mp -= cost;
-  player.castT = 1.8;
-  player.castPoseT = 0.3;
-  stats.casts = (stats.casts || 0) + 1;
-  skillXp('destruction', 3);
-  sfx.arrow();
-  sfx.stomp();
-  cam.shake = Math.max(cam.shake, 0.2);
-  const fx = Math.sin(player.yaw), fz = Math.cos(player.yaw);
-  const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.4, 10, 8),
-    new THREE.MeshBasicMaterial({ color: 0xffa040 }));
-  mesh.add(new THREE.Mesh(new THREE.SphereGeometry(0.85, 10, 8),
-    new THREE.MeshBasicMaterial({ color: 0xff4400, transparent: true, opacity: 0.32,
-      blending: THREE.AdditiveBlending, depthWrite: false })));
-  const pos = new THREE.Vector3(player.pos.x + fx * 0.9, 1.35, player.pos.z + fz * 0.9);
-  mesh.position.copy(pos);
-  scene.add(mesh);
-  arrows.push({ mesh, pos, vel: dragonAim(pos, 19) || new THREE.Vector3(fx, 0.05, fz).multiplyScalar(19),
-    ttl: 2.4, stuck: false, fire: true, big: true });
-}
-
-// 对空瞄准:飞龙在前方 45 米内时,弹道自动抬向它(带提前量)——平射永远够不着 9 米高的龙
-function dragonAim(from, speed) {
-  if (!dragonRT.on || dragonRT.hp <= 0 || dragonRT.phase === 'land' || dragonRT.phase === 'dead') return null;
-  const gp = dragonRT.ent.group.position;
-  const tx = gp.x, ty = gp.y + 1.6, tz = gp.z;
-  const dx = tx - from.x, dz = tz - from.z;
-  const dh = Math.hypot(dx, dz);
-  if (dh > 45) return null;
-  const fx = Math.sin(player.yaw), fz = Math.cos(player.yaw);
-  if ((dx * fx + dz * fz) / (dh || 1) < 0.35) return null; // 只瞄身前的龙
-  const lead = dh / speed;
-  const vx = dragonRT._vx || 0, vz = dragonRT._vz || 0;
-  const v = new THREE.Vector3(tx + vx * lead - from.x, ty - from.y, tz + vz * lead - from.z);
-  v.normalize().multiplyScalar(speed);
-  v.aimed = true; // 对空弹道不吃重力(否则必然坠在龙下面)
-  return v;
-}
-// R/中键:按下施放;火球例外——按下开始聚能,松手放出(不足 0.55 秒是小火球,蓄满是大火球)
-function spellDown() {
-  if (!started || player.dead || dialog.open || !player.spells.length) return;
-  if (player.spells[player.spellIdx] === 'fire') {
-    if (player.castT > 0) { callout('火球术冷却中', 'dim'); return; }
-    if (player.carrying) return;
-    player.fireCharging = true;
-    player.fireChargeT = 0;
-    return;
-  }
-  castSpell();
-}
-function spellUp() {
-  if (!player.fireCharging) return;
-  player.fireCharging = false;
-  const t = player.fireChargeT || 0;
-  player.fireChargeT = 0;
-  if (player.dead || dialog.open || player.spells[player.spellIdx] !== 'fire') return;
-  if (t >= 0.55) castBigFire();
-  else castSpell();
-}
-function castSpell() {
-  if (!started || player.dead || player.castT > 0 || !player.spells.length ||
-      player.carrying || dialog.open) return;
-  const key = player.spells[player.spellIdx];
-  const def = SPELLS[key];
-  const cost = Math.max(1, Math.round(def.mp * (1 - 0.04 * (skillLv('destruction') - 1)))); // 法术专精:省蓝
-  if (player.mp < cost) { callout(`法力不足(${SPELLS[key].name}要 ${cost} 点)`, 'dim'); return; }
-  player.mp -= cost;
-  player.castT = def.cd;
-  player.castPoseT = 0.25; // 抬手施法的动作
-  stats.casts = (stats.casts || 0) + 1;
-  if (stats.casts >= 30) unlockAch('mage');
-  skillXp('destruction', 2);
-  const fx = Math.sin(player.yaw), fz = Math.cos(player.yaw);
-  if (key === 'spark') {
-    // 魔光弹:速射直线光弹,带辉光;毁灭系每 3 级伤害 +1,5 级起三连扇射
-    sfx.arrow();
-    if (prologue.on && prologue.step === 5) prologue.flags.sparked = true;
-    if (!player.sneaking) faceNearestFoe(9); // 法弹也吸目标,新手第一发就该打中
-    const yaws = skillLv('destruction') >= 5
-      ? [player.yaw - 0.17, player.yaw, player.yaw + 0.17]
-      : [player.yaw];
-    for (const yw of yaws) {
-      const fx2 = Math.sin(yw), fz2 = Math.cos(yw);
-      const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.12, 8, 6),
-        new THREE.MeshBasicMaterial({ color: 0xbfe4ff }));
-      mesh.add(new THREE.Mesh(new THREE.SphereGeometry(0.3, 8, 6),
-        new THREE.MeshBasicMaterial({ color: 0x5599ff, transparent: true, opacity: 0.35,
-          blending: THREE.AdditiveBlending, depthWrite: false })));
-      const pos = new THREE.Vector3(player.pos.x + fx2 * 0.7, 1.25, player.pos.z + fz2 * 0.7);
-      mesh.position.copy(pos);
-      scene.add(mesh);
-      const vel = (yw === player.yaw && dragonAim(pos, 26)) || new THREE.Vector3(fx2, 0.02, fz2).multiplyScalar(26);
-      arrows.push({ mesh, pos, vel,
-        ttl: 1.8, stuck: false, mag: true, dmg: 1 + Math.floor((skillLv('destruction') - 1) / 3) });
-    }
-  } else if (key === 'fire') {
-    sfx.arrow();
-    const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.22, 8, 6),
-      new THREE.MeshBasicMaterial({ color: 0xff8830 }));
-    mesh.add(new THREE.Mesh(new THREE.SphereGeometry(0.5, 8, 6),
-      new THREE.MeshBasicMaterial({ color: 0xff5510, transparent: true, opacity: 0.3,
-        blending: THREE.AdditiveBlending, depthWrite: false })));
-    const pos = new THREE.Vector3(player.pos.x + fx * 0.8, 1.3, player.pos.z + fz * 0.8);
-    mesh.position.copy(pos);
-    scene.add(mesh);
-    arrows.push({ mesh, pos, vel: dragonAim(pos, 22) || new THREE.Vector3(fx, 0.06, fz).multiplyScalar(22), ttl: 2.2, stuck: false, fire: true });
-  } else if (key === 'heal') {
-    sfx.heart();
-    player.hp = Math.min(player.maxHp, player.hp + 4);
-    spawnDust(player.pos.x, 1.2, player.pos.z, 10, 0.8, 2.6);
-    toast('✨ 暖流漫过伤口。(回复 ❤×2)', 2);
-  } else if (key === 'frost') {
-    sfx.clear();
-    cam.shake = Math.max(cam.shake, 0.25);
-    spawnDust(player.pos.x, 0.4, player.pos.z, 22, 3.2, 1.6);
-    // 冰霜留痕:6 秒冰面(雨天水汽足,冻得住 9 秒),踩上减速一半
-    addFrostPatch(player.pos.x, player.pos.z, 5.5,
-      weather.state === 'rain' || weather.state === 'storm' ? 9 : 6);
-    const freeze = (list) => {
-      for (const e of list) {
-        if (e.dead || e.downT > 0 || e.stunT === undefined) continue;
-        if (dist2(player.pos.x, player.pos.z, e.pos.x, e.pos.z) > 49) continue;
-        e.stunT = Math.max(e.stunT || 0, 3.5); e.stunSrc = 'other';
-        applyDamage(e, 1, { crimeMsg: '你的寒气冻伤了卫兵!' });
-      }
-    };
-    freeze(bandits);
-    freeze(wolves);
-    freeze(guards);
-    toast('❄️ 寒气炸开,周围的敌人冻在了原地!', 2);
-  } else if (key === 'blink') {
-    sfx.roll();
-    spawnDust(player.pos.x, 0.6, player.pos.z, 8, 0.5, 1.8);
-    player.pos.x += fx * 7;
-    player.pos.z += fz * 7;
-    resolveCollisions(player.pos, 0.45, colliders);
-    player.invulnT = Math.max(player.invulnT, 0.35);
-    spawnDust(player.pos.x, 0.6, player.pos.z, 8, 0.5, 1.8);
-  }
-}
-function updateMagic(dt) {
-  if (player.castT > 0) player.castT -= dt;
-  if (player.riposteT > 0) player.riposteT -= dt;
-  const regen = 0.32 * (player.homeDay === calendar.day ? 1.5 : 1) * (player.blessT > 0 ? 1.4 : 1);
-  player.mp = Math.min(player.maxMp, player.mp + regen * dt);
-  if (shout.cd > 0) shout.cd -= dt;
-  // 按住连发:R/中键压住不放,魔光弹按冷却节奏一发接一发(只限魔光弹,别把治愈术的蓝烧干)
-  const heldCast = (keys['KeyR'] || midHeld) && !dialog.open;
-  if (heldCast && player.castT <= 0 && player.spells[player.spellIdx] === 'spark' &&
-      player.mp >= 1) castSpell(); // 没蓝就松手,别每帧挤一条"法力不足"
-  if (player.castPoseT > 0) player.castPoseT -= dt;
-  // 火球聚能:按住期间掌心聚火,0.55 秒蓄满,松手放出(spellUp)
-  if (player.fireCharging) {
-    if (!heldCast || player.spells[player.spellIdx] !== 'fire' || player.dead || player.staggerT > 0) {
-      if (!heldCast) spellUp(); // 松手的事件丢了也照样放出去
-      else { player.fireCharging = false; player.fireChargeT = 0; }
-    } else {
-      const t0 = player.fireChargeT || 0;
-      player.fireChargeT = Math.min(1, t0 + dt);
-      if (rand() < 0.35) spawnDust(player.pos.x + Math.sin(player.yaw) * 0.7, 1.3,
-        player.pos.z + Math.cos(player.yaw) * 0.7, 1, 0.3, 1.2); // 聚能星火
-      if (t0 < 0.55 && player.fireChargeT >= 0.55) {
-        sfx.clear();
-        callout('蓄满!松手放大火球', 'gold');
-      }
-    }
-  }
-  // 体力(骑砍规则):格挡/疾跑/出手/喘气中不回,其余时刻 16/s 回满
-  if (player.gaspT > 0) player.gaspT -= dt;
-  if (player.staggerT > 0) player.staggerT -= dt;
-  const busy = player.blocking || player.attackT > 0 || player.charging || player.gaspT > 0 || cam.moveState >= 2;
-  if (!busy) player.sta = Math.min(player.maxSta, player.sta + 16 * dt);
-  updateSneakXp(dt);
-}
-// 花体力:不够=喘不上气(出不了手);花光=力竭破绽
-let gaspToastT = -1e9;
-function spendSta(cost) {
-  if (player.sta < cost) {
-    if (simNow() - gaspToastT > 1500) {
-      gaspToastT = simNow();
-      callout('喘不上气!', 'dim');
-      sfx.hiccup();
-    }
-    return false;
-  }
-  player.sta -= cost;
-  if (player.sta <= 0) { player.sta = 0; player.gaspT = 1.2; } // 榨干最后一口气=1.2 秒喘息
-  return true;
-}
-
-// ================= 技能熟练度(上古卷轴式:用什么,涨什么) =================
-const SKILL_DEFS = {
-  onehand:     { name: '武艺', icon: '⚔️', perk: '近战伤害 +6%/级' },
-  archery:     { name: '弓术', icon: '🏹', perk: '箭矢伤害 +6%/级' },
-  destruction: { name: '法术', icon: '🔮', perk: '法力消耗 -4%/级;5 级魔光弹三连扇射' },
-  riding:      { name: '骑术', icon: '🐴', perk: '骑乘速度 +2%/级' },
-  sneak:       { name: '潜行', icon: '🤫', perk: '警觉圈再缩 3%/级' },
-};
-player.skills = Object.fromEntries(Object.keys(SKILL_DEFS).map((k) => [k, { lv: 1, xp: 0 }]));
-function skillXp(k, n) {
-  const s = player.skills[k];
-  if (!s || s.lv >= 10) return;
-  s.xp += n;
-  const need = s.lv * 20;
-  if (s.xp >= need) {
-    s.xp -= need;
-    s.lv++;
-    sfx.fanfare();
-    // 技艺磨炼身体:每次升级体力上限 +3(封顶 160)——练什么都算锻炼
-    if (player.maxSta < 180) {
-      player.maxSta = Math.min(180, player.maxSta + 3);
-      player.sta = player.maxSta; // 升级瞬间气也回满,爽快些
-    }
-    toast(`${SKILL_DEFS[k].icon} ${SKILL_DEFS[k].name}提升到 ${s.lv} 级!(${SKILL_DEFS[k].perk};体力上限 ${player.maxSta})`, 3.5);
-    if (s.lv === 10) remember(`把${SKILL_DEFS[k].name}练到了炉火纯青`, `skill-${k}`);
-    saveGame();
-  }
-}
-const skillLv = (k) => (player.skills[k] ? player.skills[k].lv : 1);
-const meleeBonus = (base) => Math.round(base * (1 + 0.06 * (skillLv('onehand') - 1)));
-const arrowBonus = (base) => Math.round(base * (1 + 0.06 * (skillLv('archery') - 1)));
-
-// ================= 潜行(Z 键蹲行:靠近不惊、背刺三倍) =================
-function sneakFactor() {
-  return player.sneaking ? Math.max(0.22, 0.45 - 0.03 * (skillLv('sneak') - 1)) : 1;
-}
-function toggleSneak() {
-  if (player.mounted || player.dead) return;
-  player.sneaking = !player.sneaking;
-  player.group.scale.y = player.sneaking ? 0.8 : 1;
-  toast(player.sneaking ? '🤫 潜行(移动放缓,敌人警觉圈大幅缩小;近身出手=偷袭 ×3)' : '(起身)', 2);
-}
-let sneakXpT = 0;
-function updateSneakXp(dt) {
-  if (!player.sneaking) return;
-  sneakXpT += dt;
-  if (sneakXpT < 2) return;
-  sneakXpT = 0;
-  // 在活着的敌人眼皮底下潜着,才算练功
-  const near = (list, r2) => list.some((e) => !e.dead && !(e.downT > 0) &&
-    dist2(player.pos.x, player.pos.z, e.pos.x, e.pos.z) < r2);
-  if (near(bandits, 400) || near(wolves, 400)) skillXp('sneak', 1);
-}
-
-// ================= 龙吼(龙骨之地的龙颅所授,X 键释放) =================
-const DRAGON_SKULL = { x: 298, z: -152 };
-const shout = { learned: false, cd: 0 };
-function learnShout() {
-  if (shout.learned) {
-    if (stats.dragonSlain) {
-      openDialog(['(龙颅静默。它的残魂已得安息——而它的力量,在你血脉里。)']);
-    } else if (dragonRT.on) {
-      openDialog(['(骨头是空的。它的主人正在你头顶盘旋。)']);
-    } else if (dayPhase() === 'night') {
-      awakenDragon();
-    } else {
-      openDialog(['(龙颅空洞的眼窝深处,有风声盘旋。夜里再来——骨头缝里有什么在等着。)']);
-    }
-    return;
-  }
-  shout.learned = true;
-  sfx.fanfare();
-  cam.shake = 0.5;
-  unlockAch('dovah');
-  remember('把手放上龙骨之地的龙颅,学会了先古的战吼', 'shout');
-  openDialog([
-    '(你把手放上龙颅。骨头是凉的,却在你掌心底下嗡嗡作响,像一头还没散尽的雷。)',
-    '(三个不属于任何语言的音节,自己滚进了你的胸腔。)',
-    '🐉 习得「冲击战吼」!按 X 释放——把周围的一切掀翻在地(45 秒回气)。',
-  ], () => saveGame());
-}
-function doShout() {
-  if (player.dead || dialog.open) return;
-  if (!shout.learned) { callout('还没学会战吼(去龙骨之地的龙颅看看)', 'dim'); return; }
-  if (shout.cd > 0) { callout(`战吼冷却中 ${Math.ceil(shout.cd)} 秒`, 'dim'); return; }
-  shout.cd = stats.dragonSlain ? 22.5 : 45; // 屠龙者:龙魂减半冷却
-  sfx.stomp();
-  sfx.clear();
-  cam.shake = 0.6;
-  hitStopT = Math.max(hitStopT, 0.08);
-  spawnDust(player.pos.x, 0.4, player.pos.z, 26, 4, 2.6);
-  for (const list of [bandits, wolves, guards]) {
-    for (const e of list) {
-      if (e.dead || e.downT > 0 || dist2(player.pos.x, player.pos.z, e.pos.x, e.pos.z) > 100) continue;
-      if (e.stunT !== undefined) { e.stunT = Math.max(e.stunT || 0, 2); e.stunSrc = 'other'; }
-      applyDamage(e, 1, { knock: 4, crimeMsg: '你的战吼掀翻了卫兵!' }); // FUS RO DAH:掀飞
-    }
-  }
-  toast('🐉 冲击战吼!!', 2);
-}
 
 // ================= 佣兵(骑砍式:旅店雇剑士随行,按日发饷) =================
 const mercs = [];
@@ -1568,8 +1186,6 @@ document.getElementById('shop-close').onclick = () => {
 };
 
 // ================= 打击感:慢动作/伤害数字/连杀/倒地动画 =================
-let hitStopT = 0;
-function hitStop(t) { hitStopT = Math.max(hitStopT, t); }
 
 const dmgPool = [];
 const _dmgV = new THREE.Vector3();
@@ -1765,224 +1381,6 @@ function updateDanger(dt) {
       continue;
     }
     f.ring.material.opacity = 0.25 + 0.55 * k;    // 越接近出手越亮
-  }
-}
-
-// ================= 霜龙苏醒(龙骨之地终局 Boss)=================
-// 学会战吼后,夜里再触龙颅——骨翼重聚血肉。空中盘旋/俯冲/三段吐息;掉血落地喘息时才能近战。
-const dragonRT = { on: false, ent: null, hp: 0, maxHp: 30, phase: 'circle', t: 0, h: 9, ang: 0,
-  landAt: [], _sw: false, _breathed: false };
-function awakenDragon() {
-  const d = makeDragon();
-  d.group.scale.setScalar(1.5);
-  dragonRT.ent = d;
-  dragonRT.on = true;
-  dragonRT.hp = dragonRT.maxHp;
-  dragonRT.phase = 'rise';
-  dragonRT.t = 0;
-  dragonRT.ang = 0;
-  dragonRT.landAt = [23, 13, 5];
-  dragonRT.landDmg = 0;
-  d.group.position.set(DRAGON_SKULL.x, 0.5, DRAGON_SKULL.z);
-  scene.add(d.group);
-  cam.shake = 0.6;
-  sfx.wanted();
-  sfx.stomp();
-  toast('🐉 大地震颤——霜龙的残魂闻声而起,骨翼重聚血肉!!(飞行时用弓和法术,等它落地喘息再上刀)', 6);
-  remember('在龙骨之地唤醒了霜龙的残魂', 'dragonwake');
-}
-const DRAGON_LAND_CAP = 6; // 每次落地最多挨 6 点:落地是窗口,不是刑场
-function damageDragon(nDmg, from) {
-  if (!dragonRT.on || dragonRT.hp <= 0) return;
-  if (dragonRT.phase === 'land') {
-    nDmg = Math.min(nDmg, DRAGON_LAND_CAP - (dragonRT.landDmg || 0));
-    if (nDmg <= 0) return;
-    dragonRT.landDmg = (dragonRT.landDmg || 0) + nDmg;
-  } else if (dragonRT.phase !== 'dead') nDmg = Math.max(1, Math.round(nDmg * 0.6)); // 空中:鳞甲迎风,打七折还多
-  dragonRT.hp -= nDmg;
-  showDamage(dragonRT.ent.group.position, nDmg, nDmg >= 3);
-  sfx.hit();
-  if (dragonRT.hp <= 0) {
-    dragonRT.phase = 'dead';
-    dragonRT.t = 2.2;
-    hitStopT = Math.max(hitStopT, 0.25);
-    slowMoT = 0.8;
-    cam.shake = 0.8;
-    return;
-  }
-  if (dragonRT.phase === 'land') {
-    // 落地中跨过的阈值直接作废(不再重置落地计时、连锁续地);挨满上限就振翅起飞
-    while (dragonRT.landAt.length && dragonRT.hp <= dragonRT.landAt[0]) dragonRT.landAt.shift();
-    if (dragonRT.landDmg >= DRAGON_LAND_CAP) {
-      dragonRT.t = Math.min(dragonRT.t, 0.6);
-      callout('霜龙怒吼,要起飞了!', 'red');
-    }
-    return;
-  }
-  if (dragonRT.landAt.length && dragonRT.hp <= dragonRT.landAt[0]) {
-    while (dragonRT.landAt.length && dragonRT.hp <= dragonRT.landAt[0]) dragonRT.landAt.shift();
-    dragonRT.phase = 'land';
-    dragonRT.t = 7;
-    dragonRT.landDmg = 0;
-    dragonRT.sweepT = 1.4;
-    callout('霜龙坠地喘息——上刀!', 'gold');
-    sfx.stomp();
-    cam.shake = Math.max(cam.shake, 0.4);
-  }
-}
-// 地面范围预警:一圈不收缩的红环(龙尾横扫等大范围招式)
-function telegraphArea(x, z, r, dur) {
-  sfx.warn();
-  const ring = new THREE.Mesh(new THREE.RingGeometry(Math.max(0.2, r - 0.6), r, 48, 1), pooledMat(dangerMat));
-  ring.rotation.x = -Math.PI / 2;
-  ring.position.set(x, 0.12, z);
-  scene.add(ring);
-  dangerFX.push({ ring, e: { pos: { x, z }, dead: false }, t: 0, dur, fixed: true });
-}
-function updateDragon(dt) {
-  if (!dragonRT.on) return;
-  const g = dragonRT.ent.group;
-  if (dt > 0) { // 记下龙的水平速度:对空弹道要打提前量
-    dragonRT._vx = (g.position.x - (dragonRT._px ?? g.position.x)) / dt;
-    dragonRT._vz = (g.position.z - (dragonRT._pz ?? g.position.z)) / dt;
-  }
-  dragonRT._px = g.position.x;
-  dragonRT._pz = g.position.z;
-  dragonRT.t -= dt;
-  // 翼拍:飞行大摆,落地收拢
-  const flap = dragonRT.phase === 'land' || dragonRT.phase === 'dead'
-    ? 0.95 : Math.sin(performance.now() * 0.006) * 0.55;
-  const W = dragonRT.ent.parts.wings;
-  if (W.length === 2) {
-    W[0].rotation.z = -0.15 + flap;
-    W[1].rotation.z = 0.15 - flap;
-  }
-  if (dragonRT.phase === 'rise') {
-    g.position.y += dt * 4;
-    if (g.position.y >= dragonRT.h) { dragonRT.phase = 'circle'; dragonRT.t = 6; }
-  } else if (dragonRT.phase === 'circle') {
-    dragonRT.ang += dt * 0.55;
-    const cx = DRAGON_SKULL.x + Math.cos(dragonRT.ang) * 17;
-    const cz = DRAGON_SKULL.z + Math.sin(dragonRT.ang) * 17;
-    g.position.x += (cx - g.position.x) * Math.min(1, dt * 2);
-    g.position.z += (cz - g.position.z) * Math.min(1, dt * 2);
-    g.position.y += (dragonRT.h - g.position.y) * Math.min(1, dt * 2);
-    g.rotation.y = Math.atan2(-Math.sin(dragonRT.ang), Math.cos(dragonRT.ang)); // 沿切线飞
-    g.rotation.z = 0;
-    if (dragonRT.t <= 0 && dist2(player.pos.x, player.pos.z, DRAGON_SKULL.x, DRAGON_SKULL.z) < 3600) {
-      if (rand() < 0.55) {
-        // 俯冲:先盯住你脚下(0.8 秒地面红环预警),再沿直线扑过去——不追踪,滚开或侧跑就扑空
-        dragonRT.phase = 'swoopWind';
-        dragonRT.t = 0.8;
-        dragonRT._sw = false;
-        dragonRT.swX = player.pos.x;
-        dragonRT.swZ = player.pos.z;
-        telegraphArea(player.pos.x, player.pos.z, 3.2, 0.8 + 0.5);
-        callout('俯冲!滚开!', 'red');
-        sfx.warn();
-      } else {
-        dragonRT.phase = 'breath';
-        dragonRT.t = 2.2;
-        dragonRT._breathed = false;
-        callout('冰息!看地上的圈', 'red');
-        sfx.warn();
-      }
-    }
-  } else if (dragonRT.phase === 'swoopWind') {
-    g.position.y += (dragonRT.h + 1.5 - g.position.y) * Math.min(1, dt * 3); // 拔高蓄势
-    g.rotation.y = angleLerp(g.rotation.y, Math.atan2(dragonRT.swX - g.position.x, dragonRT.swZ - g.position.z), dt * 6);
-    if (dragonRT.t <= 0) {
-      dragonRT.phase = 'swoop';
-      dragonRT.t = 2.5;
-      const dx = dragonRT.swX - g.position.x, dz = dragonRT.swZ - g.position.z;
-      const dd = Math.hypot(dx, dz) || 1;
-      dragonRT.swVx = dx / dd;
-      dragonRT.swVz = dz / dd;
-      dragonRT.swLeft = dd + 6; // 冲过落点再拉起
-    }
-  } else if (dragonRT.phase === 'swoop') {
-    const step = 24 * dt;
-    g.position.x += dragonRT.swVx * step;
-    g.position.z += dragonRT.swVz * step;
-    dragonRT.swLeft -= step;
-    g.position.y += (1.4 - g.position.y) * Math.min(1, dt * 4);
-    g.rotation.y = Math.atan2(dragonRT.swVx, dragonRT.swVz);
-    if (!dragonRT._sw && Math.hypot(player.pos.x - g.position.x, player.pos.z - g.position.z) < 2.6 && !(player.rollT > 0)) {
-      dragonRT._sw = true;
-      damagePlayer(2, null, true); // 俯冲是破防的:盾挡不住,得滚
-      cam.shake = Math.max(cam.shake, 0.4);
-    }
-    if (dragonRT.t <= 0 || dragonRT.swLeft <= 0) { dragonRT.phase = 'circle'; dragonRT.t = 5 + rand() * 3; }
-  } else if (dragonRT.phase === 'breath') {
-    g.position.y += (dragonRT.h - g.position.y) * Math.min(1, dt * 2);
-    g.rotation.y = Math.atan2(player.pos.x - g.position.x, player.pos.z - g.position.z);
-    if (!dragonRT._breathed && dragonRT.t <= 2.0) {
-      // 三段冰息:沿龙→你的连线依次炸开,每一段落下前 0.8 秒地上先亮圈
-      dragonRT._breathed = true;
-      const bx = g.position.x, bz = g.position.z;
-      const dx = player.pos.x - bx, dz = player.pos.z - bz;
-      const dd = Math.hypot(dx, dz) || 1;
-      for (let i = 1; i <= 3; i++) {
-        const px2 = bx + (dx / dd) * dd * (i / 3), pz2 = bz + (dz / dd) * dd * (i / 3);
-        const at = 0.8 + (i - 1) * 0.28;
-        telegraphArea(px2, pz2, 2.6, at);
-        later(at, () => { // 龙的伤害不算你的罪,也不算你的连杀
-          explodeAt(px2, pz2, 2, 2.6, 'dragon');
-          addFrostPatch(px2, pz2, 2.6, 4); // 息后留霜
-          if (!player.dead && dist2(player.pos.x, player.pos.z, px2, pz2) < 2.6 * 2.6 && !(player.rollT > 0)) damagePlayer(2, null);
-        });
-      }
-    }
-    if (dragonRT.t <= 0) { dragonRT.phase = 'circle'; dragonRT.t = 5 + rand() * 3; }
-  } else if (dragonRT.phase === 'land') {
-    g.position.y += (0 - g.position.y) * Math.min(1, dt * 3);
-    g.rotation.y = angleLerp(g.rotation.y, Math.atan2(player.pos.x - g.position.x, player.pos.z - g.position.z), dt * 3);
-    // 落地也不是任人宰割:每 2.4 秒一记龙尾横扫(0.9 秒红圈预警,翻滚或退出圈外)
-    dragonRT.sweepT = (dragonRT.sweepT ?? 1.2) - dt;
-    if (!(dragonRT.sweepWind > 0) && dragonRT.sweepT <= 0) {
-      dragonRT.sweepWind = 0.9;
-      telegraphArea(g.position.x, g.position.z, 5.4, 0.9);
-    }
-    if (dragonRT.sweepWind > 0) {
-      dragonRT.sweepWind -= dt;
-      g.rotation.z = Math.sin(dragonRT.sweepWind * 9) * 0.08; // 蓄力:身子一拧
-      if (dragonRT.sweepWind <= 0) {
-        g.rotation.z = 0;
-        dragonRT.sweepT = 2.4;
-        cam.shake = Math.max(cam.shake, 0.35);
-        sfx.stomp();
-        spawnDust(g.position.x, 0.3, g.position.z, 18, 5, 2);
-        if (Math.hypot(player.pos.x - g.position.x, player.pos.z - g.position.z) < 5.4 && !(player.rollT > 0)) {
-          damagePlayer(2, null, true);
-          callout('被龙尾扫中!', 'red');
-        }
-      }
-    }
-    if (dragonRT.t <= 0) {
-      dragonRT.sweepWind = 0;
-      g.rotation.z = 0;
-      dragonRT.phase = 'rise';
-      callout('霜龙振翅升空', 'dim');
-    }
-  } else if (dragonRT.phase === 'dead') {
-    g.position.y += (0 - g.position.y) * Math.min(1, dt * 2.5);
-    g.rotation.z = Math.min(0.6, g.rotation.z + dt);
-    if (dragonRT.t <= 0) {
-      dragonRT.on = false;
-      scene.remove(g);
-      stats.dragonSlain = true;
-      recomputeMaxHp();
-      player.hp = player.maxHp;
-      player.coins += 150;
-      unlockAch('dragonslayer');
-      sfx.fanfare();
-      openDialog([
-        '(霜龙的残魂散作漫天冰晶,像一场向上落的雪。)',
-        '🐉 屠龙者!龙魂涌入你的血脉:生命上限 +2、战吼冷却减半、+150 金币!',
-      ]);
-      remember('斩落了龙骨之地的霜龙残魂', 'dragonslain');
-      saveGame();
-    }
   }
 }
 
@@ -3382,7 +2780,7 @@ const DIRECTOR_EVENTS = [
             scene.remove(w.group);
             const i = wolves.indexOf(w);
             if (i >= 0) wolves.splice(i, 1);
-            if (lockFoe === w) { lockFoe = null; lockMark.visible = false; }
+            if (lockFoe === w) { setLockFoe(null); lockMark.visible = false; }
           }
         },
       };
@@ -6017,168 +5415,6 @@ document.addEventListener('mousemove', (e) => {
   cam.pitch = Math.max(-0.1, Math.min(1.15, cam.pitch + e.movementY * 0.0028));
 });
 
-// ================= 序章(天际式开场):狼袭教学 → 队长赏识 → 标题卡揭幕 =================
-const prologue = { on: false, step: 0, t: 0, wolves: [] };
-// 教学卡:屏幕下方常驻,写清"现在要按什么";完成一步才换下一步(不再被别的提示挤掉)
-const tutorEl = document.getElementById('tutor');
-function setTutor(keyLabel, text, sub = '') {
-  if (!tutorEl) return;
-  if (!text) { tutorEl.style.display = 'none'; abHighlight(null); return; }
-  tutorEl.style.display = 'block';
-  tutorEl.innerHTML = `<span class="tk">${keyLabel}</span><span class="tt">${text}</span>` +
-    (sub ? `<div class="ts">${sub}</div>` : '');
-  abHighlight(keyLabel);
-}
-function startPrologue() {
-  prologue.on = true;
-  prologue.step = 0;
-  prologue.t = 0;
-  prologue.tries = 0;
-  prologue.flags = {};
-  clock.time = 0.27; // 黎明,冷光里开场
-  for (let i = 0; i < 3; i++) {
-    const w = wolves[i];
-    if (!w) break;
-    w._home0 = w.home; // 记住老巢,序章完了送回去
-    w._prol = true;    // 序章狼死了不复活,教学关才能通
-    w._hold = true;    // 先在场边候着,一只一只上
-    w.home = { x: player.pos.x, z: player.pos.z };
-    w.dead = false; w.hp = 2; w.stunT = 0; w.lunging = 0; w.lungeCd = 0.6; w.biteT = 0;
-    w.group.visible = true;
-    const a = 0.6 + i * 0.9;
-    w.pos.set(player.pos.x + Math.sin(a) * (9 + i * 3), 0, player.pos.z + Math.cos(a) * (9 + i * 3));
-    w.group.position.copy(w.pos);
-    prologue.wolves.push(w);
-  }
-  toastNow('🐺 黎明——狼群冲进了村子!', 3.5);
-}
-function endPrologue() {
-  prologue.wolves.forEach((w) => {
-    if (w._home0) w.home = w._home0;
-    w._prol = false;
-    w._hold = false;
-    if (w.dead) w.respawnT = 45; // 回归野外正常轮回
-  });
-  prologue.on = false;
-  setTutor(null);
-}
-function showTitleCard() {
-  const el = document.getElementById('titlecard');
-  el.style.display = 'flex';
-  requestAnimationFrame(() => (el.style.opacity = 1));
-  sfx.fanfare();
-  setTimeout(() => {
-    el.style.opacity = 0;
-    setTimeout(() => (el.style.display = 'none'), 1600);
-  }, 3400);
-}
-// 序章奖励:回满血、赏钱、借你一匹马(按 B 吹口哨唤马)
-function prologueReward() {
-  player.hp = player.maxHp;
-  player.sta = player.maxSta;
-  player.mp = player.maxMp;
-  player.coins += 15;
-  giveStarterHorse();
-}
-function skipPrologue(silent) {
-  prologue.wolves.forEach((w) => { if (!w.dead) killWolf(w); });
-  endPrologue();
-  if (prologue.step < 9) prologueReward();
-  prologue.step = 9;
-  if (!silent) { toast('(序章已跳过)', 1.5); showTitleCard(); }
-}
-// 一步一步教:锁定 → 翻滚 → 格挡 → 出刀(轻点/按住) → 魔光弹 → 自由战斗。做到了才进下一步
-function prologueRelease(i) {
-  const w = prologue.wolves[i];
-  if (w && !w.dead) { w._hold = false; w.lungeCd = 0.8; w.attackCd = 0.6; }
-  return w;
-}
-function updatePrologue(dt) {
-  if (!prologue.on) return;
-  prologue.t += dt;
-  const P = prologue, F = P.flags;
-  const w0 = P.wolves[0], w1 = P.wolves[1];
-  if (player.hp < 3) player.hp = 3; // 教学里不让人倒下:学会比惩罚重要
-  if (P.step === 0 && P.t > 1.4) {
-    P.step = 1;
-    toastNow('⚔️ 卫兵队长:「旅人,拿稳你的剑!」', 3);
-    setTutor('Tab', '锁定最近的狼', '锁定后镜头会框住它,出刀也会自动对准(按 O 跳过序章)');
-  } else if (P.step === 1 && lockFoe) {
-    P.step = 2; P.t = 0;
-    prologueRelease(0);
-    setTutor('C', '它面前铺开红色扇形时,按 C 翻滚躲开', '亮区从脚下往外长,长满的一刻扑过来;翻滚有无敌帧,横着走出扇形也行');
-  } else if (P.step === 2 && (F.rolled || P.t > 25)) {
-    P.step = 3; P.t = 0;
-    F.blocked = false;
-    callout(F.rolled ? '漂亮的翻滚!' : '下次早点滚', 'gold');
-    setTutor('右键', '按住右键举盾,挡下它的下一次扑咬', '亮区快长满(出手前一瞬)时才举盾 = 完美弹反:它会踉跄,还击伤害 ×2.5');
-  } else if (P.step === 3 && (F.blocked || P.t > 25)) {
-    P.step = 4; P.t = 0;
-    callout(F.parried ? '完美弹反!' : '挡住了!', 'gold');
-    setTutor('F', '出刀!轻点 F(或左键)快斩,按住蓄力、松手重击', 'W+F 突刺 · S+F 下劈(慢但重) · 敌人起手时砍它能打断');
-  } else if (P.step === 4 && w0 && w0.dead) {
-    P.step = 5; P.t = 0;
-    F.sparked = false;
-    F.sparkHit = false;
-    const w = prologueRelease(1);
-    if (w) { // 远远站在镜头正前方 7 米(魔光弹自动瞄准够得着),先学远程
-      w._hold = true;
-      const fx = -Math.sin(cam.yaw), fz = -Math.cos(cam.yaw);
-      w.pos.set(player.pos.x + fx * 7, 0, player.pos.z + fz * 7);
-      resolveCollisions(w.pos, 0.4, colliders);
-      w.group.position.copy(w.pos);
-      lockFoe = w; // 镜头直接框住它
-    }
-    setTutor('R', '前面那只:按 R(或鼠标中键)放魔光弹打中它', '魔光弹耗 1 点法力(蓝点),会自动吸附前方的敌人');
-  } else if (P.step === 5 && F.sparked && !F.sparkHit && !F._missHint && P.t > 1.5) {
-    F._missHint = true;
-    callout('没打中——对准它再按 R', 'dim');
-  } else if (P.step === 5 && (F.sparkHit || (w1 && w1.dead) || P.t > 30)) {
-    P.step = 6; P.t = 0;
-    prologueRelease(1);
-    setTutor('自由', '把剩下的狼都解决掉', '体力条(黄)见底就砍不动、跑不动——留一口气翻滚');
-  } else if (P.step === 6 && !F.thirdOut && (P.t > 4 || (w1 && w1.dead))) {
-    F.thirdOut = true; // 第三只错开放出:别让一刀横扫全收
-    prologueRelease(2);
-  } else if (P.step === 6 && P.wolves.every((w) => w.dead)) {
-    P.step = 7; P.t = 0;
-    setTutor(null);
-    prologueReward();
-    sfx.fanfare();
-    toastNow('🎖️ 卫兵队长:「好身手!赏钱拿着,这匹马也借你——按 B 吹口哨,它就会跑来。」(+15 金币)', 6);
-  } else if (P.step === 7 && P.t > 3) {
-    P.step = 9;
-    endPrologue();
-    showTitleCard();
-    toast('欢迎来到艾尔德里亚!去喷泉广场找管家埃隆接取委托吧(按 E 互动,光柱指路)', 5);
-  }
-}
-// 玩家的马:序章送一匹;按 B 吹口哨把它唤到身边
-function giveStarterHorse() {
-  if (player.horse && horses.includes(player.horse)) return;
-  const a = player.yaw + Math.PI * 0.6;
-  const h = addHorse(player.pos.x + Math.sin(a) * 4, player.pos.z + Math.cos(a) * 4, 0x6b4a32, false);
-  h.playerHorse = true;
-  player.horse = h;
-}
-function whistleHorse() {
-  const h = player.horse;
-  if (!h || !horses.includes(h)) { callout('你还没有自己的马', 'dim'); return; }
-  if (player.mounted === h) return;
-  sfx.whoosh(1.4);
-  const d = Math.hypot(h.pos.x - player.pos.x, h.pos.z - player.pos.z);
-  if (d > 6) {
-    const a = cam.yaw + Math.PI; // 从镜头背后跑进画面
-    h.pos.set(player.pos.x + Math.sin(a) * 5 + Math.cos(a) * 2, 0, player.pos.z + Math.cos(a) * 5 - Math.sin(a) * 2);
-    resolveCollisions(h.pos, 0.6, colliders);
-    h.home.copy(h.pos);
-    h.group.position.copy(h.pos);
-    spawnDust(h.pos.x, 0.2, h.pos.z, 10, 1.2, 1.4);
-    sfx.hoof();
-  }
-  callout('🐴 马来了', 'gold');
-}
-
 let started = false;
 titleEl.addEventListener('click', () => {
   initAudio();
@@ -6324,7 +5560,7 @@ function tryInteract(probe = false) {
       if (probe) return P('按 E 向枭首发起单挑(赢了他带人撤走)', lead.pos.x, lead.pos.z, 2.6);
       warband.duelOn = true;
       for (const b of warband.members) if (!b.warlord) b._truce = true;
-      lockFoe = lead; // 镜头直接咬住对手
+      setLockFoe(lead); // 镜头直接咬住对手
       toast('⚔️ 枭首狞笑:「有胆!就你我二人——赢了,我带人走;输了,城归我!」', 5);
       sfx.wanted();
       return;
@@ -7126,6 +6362,8 @@ function faceNearestFoe(range, noStep = false) {
 // ================= 目标锁定(Tab)=================
 // 骑砍式对峙:镜头咬住敌人环绕,人始终面向目标侧移;死亡/倒地/拉开距离自动解除
 let lockFoe = null;
+// 锁定目标的唯一写入口(拆出去的系统用它,不直接改 lockFoe)
+function setLockFoe(e) { lockFoe = e; if (!e) lockMark.visible = false; }
 const lockMark = new THREE.Mesh(new THREE.ConeGeometry(0.17, 0.36, 4),
   new THREE.MeshBasicMaterial({ color: 0xff4433, transparent: true, opacity: 0.9, depthWrite: false }));
 lockMark.rotation.x = Math.PI; // 尖朝下悬在头顶
@@ -7661,10 +6899,10 @@ function meleeSweep(dmg, range, arcDot, knock, opts = {}) {
   });
   if (opts.riposte && !executed && hitSet.size) callout('还击 ×2.5', 'gold');
   if (executed) { // 处决演出:时停 + 震屏 + 镜头急推;目击者胆寒;按武器各有终结技
-    hitStopT = Math.max(hitStopT, 0.22);
+    hitStop(0.22);
     cam.shake = Math.max(cam.shake, 0.45);
     cam.fovKick = 0.4;
-    slowMoT = 0.55;
+    slowMo(0.55);
     if (execTarget) {
       if (player.weapon === 'dagger') {
         // 影袭:黑雾一闪,人已在目标身后收刀
@@ -8005,7 +7243,7 @@ function tryAttack() {
       riposteMul = 2.5;
       player.riposteT = 0;
       sfx.combo(5);
-      hitStopT = Math.max(hitStopT, 0.1);
+      hitStop(0.1);
     }
     if (sneaking) callout(`偷袭 ×${sneakMul}`, 'gold');
     if (third) { sfx.combo(3); cam.shake = Math.max(cam.shake, 0.22); }
@@ -8055,7 +7293,7 @@ function heavyAttack(k = 1) {
     sfx.clank();
     sfx.whoosh(0.7); // 重击破空声最沉
     cam.shake = Math.max(cam.shake, full ? 0.38 : 0.26);
-    hitStopT = Math.max(hitStopT, full ? 0.1 : 0.06);
+    hitStop(full ? 0.1 : 0.06);
     if (wide) swingTrail(def.range + 0.7, Math.PI * 1.7, 0);
     else swingTrailV(def.range + 0.7, full);
     if (full) spawnDust(player.pos.x + Math.sin(player.yaw) * 1.6, 0.2, player.pos.z + Math.cos(player.yaw) * 1.6, 12, 1.4, 1.8);
@@ -8138,7 +7376,7 @@ function damagePlayer(n, attacker = null, pierce = false) {
     if (attacker && attacker.stunT !== undefined &&
         simNow() - (player.blockStart ?? -1e9) < 250) {
       attacker.stunT = Math.max(attacker.stunT || 0, 2.2); attacker.stunSrc = 'parry';
-      hitStopT = Math.max(hitStopT, 0.14);
+      hitStop(0.14);
       cam.shake = Math.max(cam.shake, 0.25);
       sfx.clank();
       sfx.clear();
@@ -8478,7 +7716,7 @@ function updateBandits(dt) {
       b.speed += 2.2;
       b.dmg = 3;
       telegraphFlash(b);
-      hitStopT = Math.max(hitStopT, 0.1);
+      hitStop(0.1);
       sfx.wanted();
       toast('🔥 血斧巴罗克双目赤红——狂暴了!!', 3.5);
       const m1 = addBandit(b.pos.x - 3, b.pos.z, { hp: 2 });
@@ -9023,7 +8261,7 @@ function updatePlayer(dt) {
       const def = WEAPONS[player.weapon];
       sfx.stomp();
       cam.shake = Math.max(cam.shake, 0.4);
-      hitStopT = Math.max(hitStopT, 0.05);
+      hitStop(0.05);
       spawnDust(player.pos.x, 0.1, player.pos.z, 14, 2.4, 2);
       swingTrail(3.4, Math.PI * 2);
       meleeSweep(def.dmg + (player.swordLv >= 2 ? 1 : 0) + (player.relic ? 1 : 0) + 1, 3.4, -1.01, def.knock * 1.6);
@@ -9506,7 +8744,6 @@ function updateWanted(dt) {
 }
 
 // ================= 相机 =================
-let slowMoT = 0; // 处决慢镜头(时停之后的余韵)
 
 // ================= HUD =================
 let hudCache = '';
@@ -10235,14 +9472,7 @@ function loop(now) {
 // 一帧的全部模拟(不含渲染):主循环与测试步进(__gtm.step)共用
 function tick(dt, now) {
   drainInput();
-  // 击杀慢动作
-  if (hitStopT > 0) {
-    hitStopT -= dt;
-    dt *= 0.12;
-  } else if (slowMoT > 0) { // 处决余韵:时停之后再来半秒慢镜,看清那一刀的分量
-    slowMoT -= dt;
-    dt *= 0.4;
-  }
+  dt = scaleDt(dt); // 打击停顿 / 处决慢镜(core/timefx.js)
 
   updateToast(dt);
   updateDialogRange();
@@ -10544,3 +9774,11 @@ ctx.mapView = () => ({ guards, bandits, horses, wanted, warband, beacon, beaconR
   for (const t of tmp) scene.remove(t);
 }
 requestAnimationFrame(loop);
+
+// ==== 供拆出的系统模块使用的绑定 ====
+export {
+  abHighlight, addHorse, applyDamage, arrows, bandits, calendar, callout, colliders, damagePlayer,
+  dangerFX, dangerMat, dayPhase, dialog, faceNearestFoe, guards, horses, keys, killWolf, lockFoe,
+  midHeld, openDialog, player, recomputeMaxHp, remember, saveGame, setLockFoe, showDamage, started,
+  stats, toast, toastNow, unlockAch, wolves,
+};
