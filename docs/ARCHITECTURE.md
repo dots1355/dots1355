@@ -6,16 +6,17 @@
 
 | 模块 | 职责 |
 | --- | --- |
-| `src/gfx/core.js` | 渲染器、场景、相机;后处理链(Render → GTAO → Bloom → Output → 调色 → 画风 → SMAA);8 种画风预设 `applyStyle/cycleStyle` |
-| `src/gfx/surface.js` | 表面着色补丁(onBeforeCompile 注入,共享同一程序):世界坐标低频调色破平铺重复;雨天湿润(反照率压暗、粗糙度降低),由 `surfaceUniforms` 驱动 |
+| `src/gfx/core.js` | 渲染器、场景、相机;后处理链(Render → GTAO → Bloom → Output → 调色 → 画风 → SMAA);8 种画风预设 `applyStyle/cycleStyle`(油画/卡通/水墨/像素/版画/电影遮幅/复古老胶片是真正的屏幕风格化) |
+| `src/gfx/surface.js` | 表面着色补丁(onBeforeCompile 注入,共享同一程序):世界坐标低频调色破平铺重复;雨天湿润(反照率压暗、粗糙度降低);水洼四段注入片段(`PUDDLE_*`,地表与 worldTint 共用:噪声斑 + 湿泥外圈 + 菲涅尔天光 + 雨点涟漪),由 `surfaceUniforms` 驱动 |
+| `src/gfx/facet.js` | 统一着色风格:环境静物 GLB(nature/camp/props/橡桦松)加载时转成刻面几何(面法线),与民居、岩石同一画法;地表、水面、角色与生物保持光滑 |
 | `src/gfx/water.js` | 统一水体着色器(湖/河/喷泉/沼泽水塘/冰面共用一个程序):按水深变色、菲涅尔反射天空、岸边泡沫、雨天涟漪、浮萍、冰面;极坐标与样条条带水面网格 |
 | `src/gfx/pools.js` | 固定数量的**点光池**(光源只登记,按远近"附身")与**特效材质池**——两者都为了不在游戏中途重编译着色器 |
 | `src/core/ctx.js` | 共享上下文:main.js 启动时登记玩家/世界/碰撞体与少量回调,拆出的系统模块经它访问(带安全缺省值) |
 | `src/systems/camera.js` | 相机:跟随、锁定越肩、防穿墙/穿岩、震屏与速度感视野;共享镜头状态 `cam` |
-| `src/systems/sky.js` | 天空与昼夜:日月星辰、天穹、远山环、雾与光照随时间变化;群系氛围平滑过渡;视距跟随雾距;`clock.time` 是一天的进度 |
-| `src/ui/hud.js` | HUD 图标:统一风格的内联 SVG(红心/金币/技能栏/装备/日期时辰天气),`iconHTML` 兼容旧 emoji 键;按键提示开局 12 秒后淡出 |
-| `src/ui/maps.js` | 小地图与 M 键王国全图(在荒野里换成以玩家为中心的荒野图);群系边界线、荒野营地/匪窝/断塔/遗迹/温泉标记(`wilderness.wildMarks()` + `mapView().wildSpots`);动态数据每次绘制经 `ctx.mapView()` 取快照,本身不持有玩法状态 |
-| `src/systems/weather.js` | 天气轮换;雷电(`weather.flash` 交给 sky.js 照亮天光与雾 + 天边一道闪电);实例化雨丝面片(着色器里下落/风斜/循环,冬季变雪花,数量随画质档位)、地面水花与水面涟漪;地面湿润度 `weather.wet` → `gfx/surface.js` 的 uWet(压暗、降粗糙度、平地水洼倒映天色);地面扬尘 |
+| `src/systems/sky.js` | 天空与昼夜:日月星辰、天穹、远山环、雾与光照随时间变化;群系氛围(雾色/雾距/阳光/曝光/光强/天光色)平滑过渡;天光黄昏染暖、夜里月蓝;闪电借月光做定向闪光;每帧把太阳/最低环境光交给植被;视距跟随雾距;`clock.time` 是一天的进度 |
+| `src/ui/hud.js` | HUD 图标:统一风格的内联 SVG(红心/金币/技能栏/装备/日期时辰天气/通缉星),`iconHTML` 兼容旧 emoji 键;`richText` 把提示条/任务栏/交互提示里的 emoji 换成同风格图标(认不得的装饰 emoji 去掉);按键提示开局 12 秒后淡出 |
+| `src/ui/maps.js` | 小地图与 M 键王国全图(在荒野里换成以玩家为中心的荒野图);三者共用一张平滑的羊皮纸地形底图(群系底色双线性过渡 + 山体晕渲 + 群系边界,±520m 一张缓存);荒野营地/匪窝/断塔/遗迹/温泉标记(`wilderness.wildMarks()` + `mapView().wildSpots`);动态数据每次绘制经 `ctx.mapView()` 取快照,本身不持有玩法状态 |
+| `src/systems/weather.js` | 天气轮换;雷电(明灭包络 `weather.flash`,sky.js 用它照亮天光、雾与定向闪光 + 视野内一道闪电);实例化雨丝面片(着色器里下落/风斜/循环,冬季变雪花,数量随画质档位)、地面水花与水面涟漪;地面湿润度 `weather.wet` → `gfx/surface.js` 的 uWet(压暗、降粗糙度、平地水洼倒映天色);地面扬尘 |
 | `src/core/timers.js` | 游戏时钟定时器 `later(sec, fn)`:按游戏 dt 结算,暂停即冻结 |
 | `src/core/rng.js` | 可设种子的 `rand()`;玩法与世界生成的随机都走它,测试可复现 |
 | `src/waterbodies.js` | 水体布局(纯数据 + 解析函数):湖岸噪声轮廓、样条河道、沼泽水塘、冰湖;`waterBasin` 给地形挖盆地(栈桥/木桥下垫土埂),`waterProx` 供岸边配色、禁草与芦苇 |
@@ -23,7 +24,7 @@
 | `src/world.js` | 王国手工布局(城墙、建筑、道路、兴趣点、碰撞体、小地图要素);Blender 建筑模板按材质拆件 + 平面投影 UV(`prepParts`),三种民居户型、门口道具、巷道与菜园 |
 | `src/batch.js` | 静态合批:世界里不会动的网格按"材质签名 × 64m 格"合并,剩余静态物冻结矩阵 |
 | `src/flora.js` | 树/岩石/地标模板与实例化(`buildNatureInstances`:160m 格分块,可整块剔除) |
-| `src/vegetation.js` | 围绕玩家流式散布的草/花/蕨/芦苇/碎石(实例化 + 风摆 + 远处渐隐);农田/菜园作物的静态实例化 `buildCropMesh`(麦/卷心菜/葱韭) |
+| `src/vegetation.js` | 围绕玩家流式散布的草/花/蕨/芦苇/碎石/林下灌木/蘑菇/龙舌兰/枯灌木/冰晶(实例化 + 风摆 + 远处渐隐),外加一圈中远景草片(32m 格,近处淡入);草叶受光(侧光 + 透光 + 最低环境光,`setVegetationLight` 由 sky.js 每帧给);农田/菜园作物的静态实例化 `buildCropMesh`(麦/卷心菜/葱韭) |
 | `src/ambient.js` | 群系环境粒子(雪/沙/余烬/落叶/萤火/花粉),运动全在着色器 |
 | `src/wilderness.js` | 王国之外的无尽荒野:按坐标哈希确定性生成区块 |
 | `src/entities.js` | 人形/马/狼/龙等模型构建,碰撞网格 `resolveCollisions`,实体资源回收 `disposeEntityGroup` |

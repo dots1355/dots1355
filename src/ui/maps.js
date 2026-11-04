@@ -93,7 +93,7 @@ function buildBigBase() {
       g.restore();
       continue;
     }
-    if (f.type === 'tree' || f.type === 'dome') continue;
+    if (f.type === 'tree' || f.type === 'dome' || ZONE_FEATS.has(f.type)) continue;
     g.fillStyle = MM_COLS[f.type] || '#888';
     if (drawShaped(g, f, (x, z) => [(x + BIG_R) * k, (z + BIG_R) * k], k)) continue;
     g.fillRect(mx - (f.w * k) / 2, mz - (f.h * k) / 2, Math.max(1.5, f.w * k), Math.max(1.5, f.h * k));
@@ -186,6 +186,8 @@ export function toggleBigMap(force) {
   clearInterval(bigMapTimer);
   if (mapState.open) { drawBigMap(); bigMapTimer = setInterval(drawBigMap, 250); }
 }
+// 群系片区(荒漠/沼泽/焦土/雪原的圆盘标记):地形底图已按群系上色,地图上不再叠一块方色板
+const ZONE_FEATS = new Set(['sand', 'snow', 'swamp', 'ash']);
 // ================= 小地图 =================
 export const MM_COLS = {
   wall: '#9d9486', tower: '#8d8476', keep: '#7d7466', house: '#a3703f',
@@ -244,7 +246,9 @@ export function drawMinimap() {
       mm.restore();
       continue;
     }
+    if (ZONE_FEATS.has(f.type) || f.type === 'dome') continue; // 群系片区已画在地形底图里
     mm.fillStyle = MM_COLS[f.type] || '#888';
+    if (f.type === 'tree') { mm.beginPath(); mm.arc(mx, mz, Math.max(1.6, (f.w * k) / 2), 0, 6.28); mm.fill(); continue; }
     if (drawShaped(mm, f, toMap, k)) continue;
     mm.fillRect(mx - (f.w * k) / 2, mz - (f.h * k) / 2, Math.max(2, f.w * k), Math.max(2, f.h * k));
   }

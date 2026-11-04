@@ -142,6 +142,9 @@
   @keyframes blink { from { opacity: 1; } to { opacity: 0.35; } }
   #title .key { display: inline-block; background: #3a2e1a; border: 1px solid #b08d3e;
     border-radius: 5px; padding: 0 8px; margin: 0 3px; font-family: monospace; color: #ffd83d; }
+  #title-art { position: absolute; left: 0; bottom: 0; width: 100%; height: 64%; pointer-events: none; z-index: 0; }
+  #title > :not(#title-art) { position: relative; z-index: 1; }
+  #title[style*="background-image"] #title-art { display: none; } /* 有 AI/本地标题图时让位 */
   #title .tip::before { content: '◆'; color: #c9a24a; font-size: 11px; margin-right: 7px; vertical-align: 2px; }
   /* 矮窗口(≤ 640 高,如 960×540):收紧标题页,标题与开始按钮都不被裁掉 */
   @media (max-height: 640px) {
@@ -323,6 +326,47 @@
   </div>
 
   <div id="title">
+    <!-- 标题背景:暮色里的王都剪影(远山雪顶、山丘上的城堡与灯火、山脊上的兜帽骑手);有 AI 标题图时让位 -->
+    <svg id="title-art" viewBox="0 0 1600 560" preserveAspectRatio="xMidYMax slice" aria-hidden="true">
+      <defs>
+        <radialGradient id="ta-glow"><stop offset="0" stop-color="#ffe2a8" stop-opacity="0.5"/><stop offset="1" stop-color="#ffe2a8" stop-opacity="0"/></radialGradient>
+        <mask id="ta-cres"><rect width="1600" height="560" fill="#fff"/><circle cx="1268" cy="98" r="35" fill="#000"/></mask>
+        <linearGradient id="ta-haze" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#e09060" stop-opacity="0"/><stop offset="1" stop-color="#e09060" stop-opacity="0.28"/></linearGradient>
+      </defs>
+      <g fill="#fff3d6" opacity="0.7"><circle cx="140" cy="60" r="1.6"/><circle cx="420" cy="30" r="1.2"/><circle cx="610" cy="90" r="1.4"/><circle cx="880" cy="40" r="1.1"/><circle cx="1010" cy="110" r="1.5"/><circle cx="1460" cy="70" r="1.3"/><circle cx="1540" cy="150" r="1"/><circle cx="300" cy="140" r="1"/><circle cx="760" cy="150" r="1.2"/></g>
+      <circle cx="1250" cy="110" r="130" fill="url(#ta-glow)"/>
+      <circle cx="1250" cy="110" r="38" fill="#f6e5bc" mask="url(#ta-cres)"/>
+      <path d="M0 330 L120 252 L190 292 L300 188 L382 262 L470 216 L560 282 L662 168 L762 262 L852 230 L932 292 L1032 198 L1122 272 L1222 222 L1332 292 L1432 208 L1522 272 L1600 238 V560 H0Z" fill="#4c2d48" opacity="0.8"/>
+      <g fill="#d7b8c4" opacity="0.45"><path d="M300 188 L326 212 L311 209 L300 222 L289 208 L276 213Z"/><path d="M662 168 L690 194 L674 191 L662 205 L650 190 L636 196Z"/><path d="M1032 198 L1056 220 L1043 218 L1032 230 L1021 217 L1010 222Z"/><path d="M1432 208 L1458 232 L1444 229 L1432 242 L1420 228 L1407 233Z"/></g>
+      <path d="M0 402 C150 352 262 382 382 342 S622 332 762 362 S1002 302 1152 332 S1402 362 1600 322 V560 H0Z" fill="#33203a"/>
+      <rect y="300" width="1600" height="260" fill="url(#ta-haze)"/>
+      <path d="M720 560 V430 C850 382 960 346 1080 340 C1200 345 1300 382 1420 422 L1600 446 V560Z" fill="#24151f"/>
+      <path d="M1080 346 C1052 400 1142 430 1098 480 S1000 540 982 560" stroke="#6e4c3c" stroke-width="7" fill="none" opacity="0.55"/>
+      <g fill="#1c1018">
+        <rect x="1036" y="232" width="98" height="112"/><rect x="1006" y="252" width="36" height="96"/><rect x="1128" y="252" width="36" height="96"/>
+        <rect x="1070" y="178" width="30" height="60"/>
+        <path d="M1064 180 L1085 134 L1106 180Z M1000 254 L1024 214 L1048 254Z M1122 254 L1146 214 L1170 254Z"/>
+        <path d="M1036 232 v-9 h8 v9 h6 v-9 h8 v9 h6 v-9 h8 v9 h6 v-9 h8 v9 h6 v-9 h8 v9 h6 v-9 h8 v9 h6 v-9 h8 v9 z"/>
+        <path d="M1085 134 V112 M1024 214 V198 M1146 214 V198" stroke="#1c1018" stroke-width="2.5"/>
+      </g>
+      <g fill="#8a2a24"><path d="M1086 112 L1106 118 L1086 124Z"/><path d="M1025 198 L1040 202 L1025 207Z"/><path d="M1147 198 L1162 202 L1147 207Z"/></g>
+      <g fill="#ffcf6a"><rect x="1058" y="262" width="7" height="11" rx="3"/><rect x="1104" y="262" width="7" height="11" rx="3"/><rect x="1081" y="196" width="7" height="10" rx="3"/><rect x="1018" y="282" width="6" height="9" rx="3"/><rect x="1144" y="282" width="6" height="9" rx="3"/><rect x="1080" y="300" width="10" height="44" rx="5" fill="#6a3a20"/></g>
+      <g fill="#ffcf6a" opacity="0.85"><rect x="1190" y="372" width="5" height="5"/><rect x="1222" y="380" width="5" height="5"/><rect x="960" y="380" width="5" height="5"/><rect x="930" y="392" width="5" height="5"/><rect x="1262" y="392" width="4" height="4"/></g>
+      <path d="M0 560 V432 C120 420 222 440 332 452 C432 462 522 472 642 502 L760 560Z" fill="#150c13"/>
+      <path d="M1600 560 V468 C1500 478 1440 502 1380 560Z" fill="#150c13"/>
+      <g fill="#150c13"><path d="M34 440 l20 -82 l20 82z M78 446 l16 -64 l16 64z M118 440 l22 -92 l22 92z M164 446 l14 -54 l14 54z M560 488 l14 -52 l14 52z M598 494 l12 -40 l12 40z M1500 486 l18 -74 l18 74z M1546 480 l16 -62 l16 62z M1440 504 l14 -50 l14 50z"/></g>
+      <g transform="translate(386 448) scale(1.55)" fill="#150c13">
+        <path d="M-20 4 l-3 22 h4 l3 -20z M-12 6 l1 20 h4 l-1 -20z M14 6 l-2 20 h4 l2 -20z M22 3 l3 23 h4 l-3 -23z"/>
+        <ellipse cx="0" cy="0" rx="27" ry="11"/>
+        <path d="M16 -6 L28 -26 L34 -30 L44 -25 L45 -21 L36 -19 L30 -8Z"/>
+        <path d="M-26 -3 C-36 0 -40 10 -38 20 C-34 12 -30 6 -24 4Z"/>
+        <path d="M-4 -9 L-8 -30 C-8 -36 0 -38 4 -34 L6 -30 L4 -10Z"/>
+        <circle cx="-2" cy="-40" r="6"/><path d="M-8 -43 L-3 -51 L3 -44Z"/>
+        <path d="M-6 -32 C-18 -28 -27 -18 -31 -7 L-6 -12Z"/>
+        <path d="M8 -28 L14 -72" stroke="#150c13" stroke-width="2.4"/>
+        <path d="M14 -72 L33 -66 L14 -60Z" fill="#8a2a24"/>
+      </g>
+    </svg>
     <h1>侠盗猎马人</h1>
     <h2>—— 中世纪王国 ——</h2>
     <div class="box" style="max-width:720px">

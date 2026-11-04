@@ -88,15 +88,16 @@ export const gradePass = new ShaderPass({
 });
 // ---- 画风预设:油画(默认)/ 电影 / 动画 / 复古,一键切换、独立持久化 ----
 // mode:0 纯调色 · 1 油画(Kuwahara 笔触)· 2 卡通(色阶+描边)· 3 水墨(宣纸+墨线)· 4 像素(马赛克+抖动)· 5 版画(粗描边+网点)
+// · 6 电影(2.39:1 遮幅 + 边缘色散)· 7 复古(老胶片:划痕、尘点、片门抖动、闪烁)
 export const STYLE_PRESETS = {
   nordic: { name: '天际写实', mode: 0, contrast: 1.12, sat: 0.96, lift: -0.006, split: [0.03, 0.012, -0.045], vig: 0.22, grain: 0.015, sepia: 0, bloom: 0.26, exposure: 1.0 },
   oil:    { name: '油画', mode: 1, contrast: 1.1, sat: 1.22, lift: 0, split: [0.04, 0.014, -0.04], vig: 0.2, grain: 0, sepia: 0, bloom: 0.3, exposure: 1.0 },
-  toon:   { name: '卡通', mode: 2, contrast: 1.05, sat: 1.4, lift: 0.02, split: [0.02, 0.012, -0.015], vig: 0.06, grain: 0, sepia: 0, bloom: 0.36, exposure: 1.06 },
+  toon:   { name: '卡通', mode: 2, contrast: 1.1, sat: 1.16, lift: 0.015, split: [0.015, 0.008, -0.02], vig: 0.06, grain: 0, sepia: 0, bloom: 0.36, exposure: 1.04 },
   ink:    { name: '水墨', mode: 3, contrast: 1.0, sat: 1.0, lift: 0, split: [0, 0, 0], vig: 0.3, grain: 0, sepia: 0, bloom: 0.12, exposure: 1.02 },
   pixel:  { name: '像素', mode: 4, contrast: 1.12, sat: 1.25, lift: 0, split: [0.03, 0.01, -0.03], vig: 0.1, grain: 0, sepia: 0, bloom: 0.2, exposure: 1.02 },
   print:  { name: '版画', mode: 5, contrast: 1.2, sat: 0.9, lift: 0, split: [0.05, 0.02, -0.04], vig: 0.22, grain: 0, sepia: 0.2, bloom: 0.15, exposure: 1.0 },
-  film:   { name: '电影', mode: 0, contrast: 1.15, sat: 1.02, lift: -0.012, split: [0.065, 0.012, -0.06], vig: 0.34, grain: 0.028, sepia: 0, bloom: 0.26, exposure: 1.04 },
-  retro:  { name: '复古', mode: 0, contrast: 1.08, sat: 0.82, lift: 0.01, split: [0.03, 0.01, -0.02], vig: 0.42, grain: 0.06, sepia: 0.45, bloom: 0.2, exposure: 0.97 },
+  film:   { name: '电影', mode: 6, contrast: 1.15, sat: 1.02, lift: -0.012, split: [0.065, 0.012, -0.06], vig: 0.34, grain: 0.028, sepia: 0, bloom: 0.26, exposure: 1.04 },
+  retro:  { name: '复古', mode: 7, contrast: 1.08, sat: 0.82, lift: 0.01, split: [0.03, 0.01, -0.02], vig: 0.42, grain: 0.06, sepia: 0.45, bloom: 0.2, exposure: 0.97 },
 };
 export const STYLE_ORDER = ['nordic', 'oil', 'toon', 'ink', 'pixel', 'print', 'film', 'retro'];
 
@@ -137,10 +138,10 @@ export const stylePass = new ShaderPass({
       for (int k = 0; k < 4; k++) { m[k] = vec3(0.0); s2[k] = vec3(0.0); }
       for (int j = 0; j <= 3; j++) {
         for (int i = 0; i <= 3; i++) {
-          vec3 a = texture2D(tDiffuse, uv + vec2(-float(i), -float(j)) * t * 1.5).rgb;
-          vec3 b = texture2D(tDiffuse, uv + vec2(float(i), -float(j)) * t * 1.5).rgb;
-          vec3 c = texture2D(tDiffuse, uv + vec2(float(i), float(j)) * t * 1.5).rgb;
-          vec3 d = texture2D(tDiffuse, uv + vec2(-float(i), float(j)) * t * 1.5).rgb;
+          vec3 a = texture2D(tDiffuse, uv + vec2(-float(i), -float(j)) * t * 2.3).rgb;
+          vec3 b = texture2D(tDiffuse, uv + vec2(float(i), -float(j)) * t * 2.3).rgb;
+          vec3 c = texture2D(tDiffuse, uv + vec2(float(i), float(j)) * t * 2.3).rgb;
+          vec3 d = texture2D(tDiffuse, uv + vec2(-float(i), float(j)) * t * 2.3).rgb;
           m[0] += a; s2[0] += a * a; m[1] += b; s2[1] += b * b;
           m[2] += c; s2[2] += c * c; m[3] += d; s2[3] += d * d;
         }
@@ -209,10 +210,28 @@ export const stylePass = new ShaderPass({
         col = mix(paper, inkC, max(dotK * 0.85, smoothstep(0.75, 0.2, l) * 0.55));
         float e = smoothstep(0.18, 0.45, edge(vUv, 1.4));
         col = mix(col, vec3(0.08, 0.06, 0.05), e);
+      } else if (uMode == 6) {
+        // 电影:边缘轻微色散 + 2.39:1 遮幅黑边
+        vec2 dc = vUv - 0.5;
+        float ca = dot(dc, dc) * 0.012;
+        col = vec3(texture2D(tDiffuse, vUv + dc * ca * 2.0).r, col.g, texture2D(tDiffuse, vUv - dc * ca * 2.0).b);
+        float bar = clamp((1.0 - (uRes.x / uRes.y) / 2.39) * 0.5, 0.0, 0.2);
+        col *= smoothstep(bar - 0.002, bar + 0.002, vUv.y) * smoothstep(bar - 0.002, bar + 0.002, 1.0 - vUv.y);
+      } else if (uMode == 7) {
+        // 复古:老胶片——片门抖动、帧间闪烁、竖向划痕、尘点
+        float fr = floor(uTime * 96.0);
+        vec2 juv = vUv + vec2(0.0, (hash(vec2(fr, 1.7)) - 0.5) * 0.003);
+        col = texture2D(tDiffuse, juv).rgb;
+        col *= 0.94 + 0.06 * hash(vec2(fr, 9.1));
+        float sx = hash(vec2(fr, 3.3));
+        if (sx > 0.55) col *= 1.0 - 0.35 * (1.0 - smoothstep(0.0, 0.0012, abs(vUv.x - hash(vec2(fr, 5.5)))));
+        float dust = step(0.9993, hash(floor(vUv * uRes / 3.0) + fr));
+        col = mix(col, vec3(0.08, 0.06, 0.05), dust * 0.8);
       }
       gl_FragColor = vec4(clamp(col, 0.0, 1.0), c.a);
     }`,
 });
+stylePass.uniforms.uTime = gradePass.uniforms.uTime; // 复古胶片的帧时钟与颗粒共用(主循环每帧写)
 export let styleKey = 'nordic';
 try { if (STYLE_PRESETS[localStorage.getItem('gth-style')]) styleKey = localStorage.getItem('gth-style'); } catch { /* 隐私模式 */ }
 export function applyStyle(key) {

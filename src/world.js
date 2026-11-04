@@ -5,6 +5,7 @@ import { buildTree, buildPine, buildDeadTree, buildCactus, buildRock, buildBush,
 import { lambert } from './entities.js';
 import { makeTextures } from './textures.js';
 import { worldTint } from './gfx/surface.js';
+import { facetGeometry } from './gfx/facet.js';
 import { buildCropMesh } from './vegetation.js';
 import { waterMesh, polarWaterGeo, riverWaterGeo } from './gfx/water.js';
 import { LAKE, lakeR, RIVER, POOLS, poolR, ICE, iceR, outline, riverNear, waterBasin } from './waterbodies.js';
@@ -752,7 +753,8 @@ export function buildWorld(scene) {
   function qblock(x, z, yaw = 0) {
     const g = new THREE.Group();
     g.add(new THREE.Mesh(RUNE_SOIL, runeSoilMat));
-    const mat = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, map: rune.map, roughness: 0.95,
+    // 刻面来自几何面法线(非索引 + 逐面法线),材质不开 flatShading(片元导数法线会出 NaN 像素,见 gfx/facet.js)
+    const mat = new THREE.MeshStandardMaterial({ vertexColors: true, map: rune.map, roughness: 0.95,
       metalness: 0, emissive: 0x6fd8ff, emissiveMap: rune.glow, emissiveIntensity: 1.1 });
     mat.userData.wettable = true;
     mat.userData.baseRough = 0.95;
@@ -1363,25 +1365,49 @@ export function buildWorld(scene) {
   coinLine(-225, -42, -350, -40, 10);
   chest(-388, -48, 60);
 
-  // ---- 龙骨之地(东北) ----
-  for (let i = 0; i < 7; i++) {
-    const rz = -160 + i * 9;
-    const rib = new THREE.Mesh(new THREE.TorusGeometry(7 - Math.abs(i - 3) * 0.9, 0.32, 6, 12, Math.PI),
-      lambert(0xe8e2d4, { roughness: 0.85 }));
-    rib.position.set(300, 0.2, rz);
-    rib.rotation.y = Math.PI / 2;
-    rib.castShadow = true;
-    scene.add(rib);
-    circle(300 - (7 - Math.abs(i - 3) * 0.9), rz, 0.7);
-    circle(300 + (7 - Math.abs(i - 3) * 0.9), rz, 0.7);
-  }
+  // ---- 龙骨之地(东北):风化的巨龙骸骨——刻面低多边形(与岩石/树同一画法),肋骨略带扭曲、半埋的脊椎、带角的头骨 ----
   {
-    const skull = new THREE.Mesh(new THREE.SphereGeometry(3.2, 10, 8), lambert(0xe8e2d4, { roughness: 0.85 }));
+    let sd = 9173;
+    const rr = () => { sd = (sd * 16807) % 2147483647; return sd / 2147483647; };
+    const rough = (geo, amt) => { // 同位置顶点同样扰动(不开裂),再拆成刻面
+      const p = geo.attributes.position, m = new Map();
+      for (let i = 0; i < p.count; i++) {
+        const key = `${p.getX(i).toFixed(3)},${p.getY(i).toFixed(3)},${p.getZ(i).toFixed(3)}`;
+        if (!m.has(key)) m.set(key, [(rr() - 0.5) * amt, (rr() - 0.5) * amt, (rr() - 0.5) * amt]);
+        const [a, b, c] = m.get(key);
+        p.setXYZ(i, p.getX(i) + a, p.getY(i) + b, p.getZ(i) + c);
+      }
+      return facetGeometry(geo);
+    };
+    const boneMat = lambert(0xdcd2bc, { roughness: 0.92 });
+    const boneDark = lambert(0xbfb39a, { roughness: 0.95 });
+    for (let i = 0; i < 7; i++) {
+      const rz = -160 + i * 9, R = 7 - Math.abs(i - 3) * 0.9;
+      const rib = new THREE.Mesh(rough(new THREE.TorusGeometry(R, 0.34, 5, 14, Math.PI), 0.1), boneMat);
+      rib.position.set(300, 0.2, rz);
+      rib.rotation.set(0, Math.PI / 2, (rr() - 0.5) * 0.12); // 略歪:倒下几百年了
+      rib.castShadow = true;
+      scene.add(rib);
+      circle(300 - R, rz, 0.7);
+      circle(300 + R, rz, 0.7);
+    }
+    // 脊椎:沿肋骨中线一串半埋的椎骨(带棘突),一直拖到尾巴
+    const vert = [];
+    for (let k = 0; k < 16; k++) {
+      const z = -168 + k * 5.2, sc = 1 - Math.max(0, k - 9) * 0.1;
+      vert.push(rough(new THREE.CylinderGeometry(0.75 * sc, 0.75 * sc, 1.1, 6), 0.08).rotateX(Math.PI / 2).translate(0, 0.35 * sc, z + 140));
+      vert.push(rough(new THREE.ConeGeometry(0.28 * sc, 1.3 * sc, 4), 0.05).translate(0, 1.2 * sc, z + 140));
+    }
+    const spine = new THREE.Mesh(mergeGeometries(vert), boneDark);
+    spine.castShadow = spine.receiveShadow = true;
+    spine.position.set(300, 0, -140); // 逻辑 y 离地:贴地由 snapScene 统一处理(龙骨之地是平整区)
+    scene.add(spine);
+    const skull = new THREE.Mesh(rough(new THREE.SphereGeometry(3.2, 9, 7), 0.35), boneMat);
     skull.scale.set(1, 0.85, 1.2);
     skull.position.set(300, 2.2, -178);
     skull.castShadow = true;
     scene.add(skull);
-    const jaw = new THREE.Mesh(new THREE.BoxGeometry(4.2, 1, 3), lambert(0xd8d2c4, { roughness: 0.9 }));
+    const jaw = new THREE.Mesh(rough(new THREE.BoxGeometry(4.2, 1, 3, 2, 1, 2), 0.25), boneDark);
     jaw.position.set(300, 0.5, -180);
     scene.add(jaw);
     for (const s of [-1, 1]) {
@@ -1389,6 +1415,12 @@ export function buildWorld(scene) {
         new THREE.MeshLambertMaterial({ color: 0x111111 }));
       eye.position.set(300 + 1.2 * s, 2.6, -175.5);
       scene.add(eye);
+      // 一对向后弯的角
+      const horn = new THREE.Mesh(rough(new THREE.ConeGeometry(0.55, 4.2, 5, 3), 0.08), boneDark);
+      horn.position.set(300 + 1.9 * s, 4.4, -179.5);
+      horn.rotation.set(-0.95, 0, -0.35 * s);
+      horn.castShadow = true;
+      scene.add(horn);
     }
     circle(300, -178, 3.8);
     feat('bone', 300, -155, 16, 40);

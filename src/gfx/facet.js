@@ -1,6 +1,6 @@
 // 统一着色风格:环境静物(树、岩石、地标、营地与集市道具)一律"刻面"——几何拆成独立三角形、用面法线,
 // 和城里的民居(world.prepParts)、程序化岩石/符文立石一个画法;地表、水面、角色与生物保持光滑着色。
-// 直接改几何法线(而不是只开材质的 flatShading):之后无论被合批、实例化还是烘成顶点色材质,刻面都还在。
+// 直接改几何法线(而不是开材质的 flatShading,见 facetKind 下的注意):之后无论被合批、实例化还是烘成顶点色材质,刻面都还在。
 import * as THREE from 'three';
 
 // 哪些 GLB 模板属于"环境静物"(models-data 里的键)
@@ -27,25 +27,12 @@ export function facetModel(root) {
   return root;
 }
 
-// 材质端也标上 flatShading:法线贴图/实例化等路径下与几何法线一致
-export function flatMaterials(root) {
-  root.traverse((o) => {
-    if (!o.isMesh) return;
-    for (const m of Array.isArray(o.material) ? o.material : [o.material]) {
-      if (m && (m.isMeshStandardMaterial || m.isMeshLambertMaterial || m.isMeshPhongMaterial) && !m.flatShading) {
-        m.flatShading = true;
-        m.needsUpdate = true;
-      }
-    }
-  });
-}
-
 export function facetKind(kind, root) {
   if (!FACETED_KINDS.has(kind)) return root;
-  facetModel(root);
-  flatMaterials(root);
-  return root;
+  return facetModel(root);
 }
+// 注意:不要再给这些材质开 flatShading。材质端的平直着色靠片元导数现算法线,远处细碎三角形上会算出
+// NaN 像素,泛光一模糊就把整屏染黑(实测:王都广场、磨坊方向整帧全黑);刻面只靠几何面法线就够了。
 
 // 给调试/测试用:一个网格是不是刻面(非索引且相邻三顶点法线相同)
 export function isFaceted(geo) {

@@ -1,6 +1,6 @@
 // 植被系统:围绕玩家流式散布的实例化草木(纯视觉,不参与碰撞)
 //
-// 10 类程序化几何(草丛/高草/野花/蕨/芦苇/干草簇/雪草/碎石/林下灌木/蘑菇),每类一个 InstancedMesh,
+// 13 类程序化几何(草丛/高草/野花/蕨/芦苇/干草簇/雪草/碎石/林下灌木/蘑菇/龙舌兰/枯灌木/冰晶),每类一个 InstancedMesh,
 // 一次绘制。按 16 米格子确定性生成(同一位置永远长同样的草),按群系权重挑类型与密度,
 // 避开道路/建筑/水面(terrain.vegAllowed)与陡坡;顶点着色器做风吹摆动与远处渐隐。
 // 中远景另有一圈"草片"(宽矮的大草簇,32 米格,近处草淡出的地方淡入),远处原野不再只剩光秃的地皮。
@@ -137,6 +137,31 @@ function buildGeometries() {
       for (let j = 0; j < 7; j++) api.tri(top, ring[(j + 1) % 7], ring[j]);
     }
   });
+  GEO.succulent = makeGeo((api) => { // 荒漠龙舌兰:一圈肥厚的尖叶向外摊开
+    for (let i = 0; i < 9; i++) {
+      blade(api, (i / 9) * Math.PI * 2 + r() * 0.3, 0.32 + r() * 0.18, 0.14, 0.7 + r() * 0.5, 2, 0.6, 1.0, 0.12);
+    }
+    for (let i = 0; i < 4; i++) blade(api, (i / 4) * Math.PI * 2 + 0.4, 0.42, 0.1, 0.2, 2, 0.7, 1.05, 0.02);
+  });
+  GEO.deadbush = makeGeo((api) => { // 枯灌木 / 风滚草:一团四散的细枝
+    for (let i = 0; i < 16; i++) {
+      blade(api, r() * Math.PI * 2, 0.35 + r() * 0.3, 0.03, 0.4 + r() * 1.0, 2, 0.7, 1.0, 0.2 + r() * 0.4);
+    }
+  });
+  GEO.icecrystal = makeGeo((api) => { // 冰晶:几根斜插出地面的三棱冰锥
+    for (let k = 0; k < 5; k++) {
+      const a = r() * Math.PI * 2, d = k ? 0.08 + r() * 0.12 : 0, h = 0.35 + r() * 0.45, w = 0.05 + r() * 0.03;
+      const lx = Math.cos(a) * 0.35 * h, lz = Math.sin(a) * 0.35 * h; // 向外斜
+      const ox = Math.cos(a) * d, oz = Math.sin(a) * d;
+      const tip = api.v(ox + lx, h, oz + lz, Math.cos(a), 0.6, Math.sin(a), 1, 1, 1, 1);
+      const base = [];
+      for (let j = 0; j < 3; j++) {
+        const b = a + (j / 3) * Math.PI * 2;
+        base.push(api.v(ox + Math.cos(b) * w, -0.02, oz + Math.sin(b) * w, Math.cos(b), 0.3, Math.sin(b), 0.7, 0.72, 0.78, 0));
+      }
+      for (let j = 0; j < 3; j++) api.tri(base[j], base[(j + 1) % 3], tip);
+    }
+  });
   GEO.patch = makeGeo((api) => { // 中远景草片:宽而矮的一大簇(远看是一块有起伏的草皮)
     for (let i = 0; i < 9; i++) {
       const a = (i / 9) * Math.PI * 2 + r() * 0.5;
@@ -191,11 +216,11 @@ const RECIPE = {
   [BIOME.plains]: { n: 120, mix: [['grass', 64], ['tall', 22], ['flower', 10], ['pebble', 2], ['shrub', 2]] },
   [BIOME.hills]: { n: 120, mix: [['grass', 62], ['tall', 24], ['flower', 9], ['pebble', 3], ['shrub', 2]] },
   [BIOME.forest]: { n: 130, mix: [['grass', 26], ['fern', 40], ['shrub', 16], ['mushroom', 5], ['flower', 4], ['pebble', 3], ['tall', 6]] },
-  [BIOME.desert]: { n: 20, mix: [['dry', 70], ['pebble', 30]] },
-  [BIOME.snow]: { n: 26, mix: [['snowtuft', 65], ['pebble', 35]] },
+  [BIOME.desert]: { n: 26, mix: [['dry', 50], ['pebble', 24], ['succulent', 14], ['deadbush', 12]] },
+  [BIOME.snow]: { n: 30, mix: [['snowtuft', 55], ['pebble', 30], ['icecrystal', 15]] },
   [BIOME.swamp]: { n: 110, mix: [['reed', 46], ['grass', 30], ['fern', 10], ['shrub', 6], ['mushroom', 3], ['tall', 5]] },
-  [BIOME.ash]: { n: 30, mix: [['dry', 55], ['pebble', 45]] },
-  [BIOME.rock]: { n: 50, mix: [['pebble', 35], ['dry', 25], ['grass', 40]] },
+  [BIOME.ash]: { n: 30, mix: [['dry', 40], ['pebble', 40], ['deadbush', 20]] },
+  [BIOME.rock]: { n: 50, mix: [['pebble', 35], ['dry', 22], ['grass', 37], ['succulent', 6]] },
 };
 const COLOR = {
   grass: { [BIOME.plains]: [0.19, 0.27, 0.46, 0.25, 0.37], [BIOME.hills]: [0.2, 0.28, 0.44, 0.25, 0.38],
@@ -205,6 +230,9 @@ const COLOR = {
   shrub: { def: [0.24, 0.31, 0.38, 0.2, 0.3], [BIOME.swamp]: [0.2, 0.26, 0.3, 0.18, 0.26],
     [BIOME.plains]: [0.2, 0.27, 0.36, 0.24, 0.32] },
   mushroom: { def: [0.0, 0.08, 0.55, 0.38, 0.62] },
+  succulent: { def: [0.36, 0.44, 0.24, 0.32, 0.44] },
+  deadbush: { def: [0.07, 0.1, 0.28, 0.3, 0.42], [BIOME.ash]: [0.05, 0.08, 0.1, 0.12, 0.2] },
+  icecrystal: { def: [0.52, 0.57, 0.4, 0.74, 0.88] },
   fern: { def: [0.25, 0.31, 0.45, 0.22, 0.34], [BIOME.swamp]: [0.2, 0.26, 0.35, 0.2, 0.3] },
   reed: { def: [0.12, 0.16, 0.32, 0.32, 0.44] },
   dry: { def: [0.08, 0.11, 0.38, 0.45, 0.6], [BIOME.ash]: [0.06, 0.08, 0.08, 0.16, 0.24],
@@ -215,7 +243,7 @@ const COLOR = {
 };
 const FLOWER_COLS = [0xf2d95c, 0xf4f1e6, 0xb48fd8, 0x7aa4e0, 0xd9584a, 0xf0a046];
 const CAP = { grass: 7000, tall: 3800, fern: 3000, reed: 3200, dry: 1800, snowtuft: 1400, flower: 1500, pebble: 2000,
-  shrub: 1600, mushroom: 700 };
+  shrub: 1600, mushroom: 700, succulent: 900, deadbush: 900, icecrystal: 700 };
 const TYPES = Object.keys(CAP);
 
 // ---------------- 材质:风摆 + 远处渐隐(中远景草片另有近处淡入)+ 季节色 + 草叶受光 ----------------
