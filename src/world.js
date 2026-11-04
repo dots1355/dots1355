@@ -16,7 +16,7 @@ export function buildWorld(scene) {
   const windmills = [];  // 需要动画的风车叶片
   const torches = [];    // 火把(夜间点亮)
   const chests = [];     // 宝箱
-  const qBlocks = [];    // “?”砖块
+  const qBlocks = [];    // 符文立石(挥刀劈开得金币)
   const coinSpots = [];  // 金币初始点位
   const clouds = [];
   const waterMats = [];  // 水面材质(法线动画)
@@ -705,18 +705,72 @@ export function buildWorld(scene) {
   chest(56, 15, 180);   // 马厩
   chest(-66, 50, 45);   // 城墙角
 
-  // ---- 符文石:悬在半空、刻着发光符文的古石块(从下方跳起顶它,符文碎光化作金币)----
+  // ---- 符文立石:落地的古立石,正反两面刻着发光符文(挥刀劈中它,符文碎光化作金币)----
+  // 立石本体是收分、斜顶的粗石柱;正反两面一块刻符文的石面(发光贴图只画刻痕)
   const rune = makeRuneTextures();
-  function qblock(x, z, y = 2.6) {
-    const m = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.95, 0.95),
-      new THREE.MeshStandardMaterial({ color: 0xffffff, map: rune.map, emissive: 0x6fd8ff,
-        emissiveMap: rune.glow, emissiveIntensity: 1.3, roughness: 0.85 }));
-    m.position.set(x, y, z);
-    m.castShadow = true;
-    scene.add(m);
-    qBlocks.push({ mesh: m, x, z, y, used: false, bump: 0 });
+  const runeStone = lambert(0xa09a8e, { roughness: 0.95, flatShading: true }); // 粗粝的整块岩石(不是砖)
+  const RUNE_GEO = (() => {
+    const g = new THREE.BoxGeometry(1.0, 2.1, 0.62);
+    const p = g.attributes.position;
+    for (let i = 0; i < p.count; i++) {
+      const y = p.getY(i) + 1.05, t = y / 2.1; // 0 底 → 1 顶:上窄下宽,斜顶
+      p.setXYZ(i, p.getX(i) * (1 - t * 0.24), y + p.getX(i) * 0.2 * t, p.getZ(i) * (1 - t * 0.16));
+    }
+    const ni = g.toNonIndexed();
+    ni.computeVertexNormals();
+    planarUV(ni);
+    return ni;
+  })();
+  const RUNE_FACES = (() => { // 正反两面的符文石面(贴着收分后的石面),合成一个网格
+    const faces = [1, -1].map((s) => new THREE.PlaneGeometry(0.6, 1.1)
+      .rotateX(-s * 0.05).rotateY(s < 0 ? Math.PI : 0).translate(0, 1.0, s * 0.285));
+    return mergeGeometries(faces);
+  })();
+  function qblock(x, z, yaw = 0) {
+    const g = new THREE.Group();
+    const body = new THREE.Mesh(RUNE_GEO, runeStone);
+    body.castShadow = body.receiveShadow = true;
+    g.add(body);
+    const mat = new THREE.MeshStandardMaterial({ color: 0xf2eee6, map: rune.map, emissive: 0x6fd8ff,
+      emissiveMap: rune.glow, emissiveIntensity: 1.1, roughness: 0.9, polygonOffset: true, polygonOffsetFactor: -2 });
+    g.add(new THREE.Mesh(RUNE_FACES, mat));
+    g.position.set(x, 0, z);
+    g.rotation.set(0, yaw, (((x * 7 + z * 13) % 5) - 2) * 0.015); // 微微歪斜:立了几百年
+    scene.add(g);
+    circle(x, z, 0.6);
+    feat('tower', x, z, 1.2, 1.2);
+    qBlocks.push({ mesh: g, mat, x, z, y: 1.3, used: false, bump: 0 });
   }
-  qblock(6, 22); qblock(-20, 0); qblock(30, 32, 2.8); qblock(0, 70); qblock(95, 6); qblock(-60, 20);
+  // 都立在路边草地上(不挡大街):广场南、西街、东区、南门外、东路边、西城
+  qblock(6, 22, 0.3); qblock(-20, 3.8, 0); qblock(30, 32, -0.5); qblock(3.8, 70, 1.4); qblock(95, 9.6, 0.2); qblock(-60, 20, 1.2);
+  // 出招时(玩家 attackT>0、近战)身前 2.6 米内的立石被劈中:返回那块石头(奖励由主循环发)
+  function runeStrike(p) {
+    if (!(p.attackT > 0) || p.weapon === 'bow') return null;
+    for (const b of qBlocks) {
+      if (b.used) continue;
+      const dx = b.x - p.pos.x, dz = b.z - p.pos.z;
+      const d2 = dx * dx + dz * dz;
+      if (d2 > 2.6 * 2.6) continue;
+      if ((Math.sin(p.yaw) * dx + Math.cos(p.yaw) * dz) < -0.3) continue; // 背对着砍不中
+      b.used = true;
+      b.bump = 0.45;
+      b.mat.emissiveIntensity = 0; // 符文熄灭,只剩一块旧石头
+      b.mat.color.setHex(0x8a857a);
+      return b;
+    }
+    return null;
+  }
+  // 立石动画:没被劈的符文缓缓呼吸;被劈中时晃一晃
+  let runeT = 0;
+  function animRunes(dt) {
+    runeT += dt;
+    for (const b of qBlocks) {
+      if (b.bump > 0) {
+        b.bump = Math.max(0, b.bump - dt);
+        b.mesh.rotation.x = Math.sin(b.bump * 40) * b.bump * 0.12;
+      } else if (!b.used) b.mat.emissiveIntensity = 0.9 + Math.sin(runeT * 1.8 + b.x) * 0.35;
+    }
+  }
 
   // ---- 金币点位 ----
   function coinLine(x1, z1, x2, z2, gap = 4.5) {
@@ -1441,7 +1495,7 @@ export function buildWorld(scene) {
     cryptLights,
     dungeon: { hatch: { x: 10, z: -50 }, inX0: 316, inZ0: -316, inW: 72, inD: 72,
       spawn: { x: 324, z: -308 }, exit: { x: 324, z: -308 }, relic: { x: 378, z: -252 } },
-    colliders, features, windmills, torches, chests, qBlocks, coinSpots, clouds, waterMats, occluders,
+    colliders, features, windmills, torches, chests, qBlocks, runeStrike, animRunes, coinSpots, clouds, waterMats, occluders,
     windmillPos, banditCamp, fortPos,
     questGiverPos: new THREE.Vector3(4, 0, 10),
     playerSpawn: new THREE.Vector3(0, 0, 20),
@@ -1530,13 +1584,13 @@ function makeRuneTextures() {
   const mk = () => { const c = document.createElement('canvas'); c.width = c.height = 128; return c; };
   const base = mk(), glow = mk();
   const g = base.getContext('2d'), e = glow.getContext('2d');
-  g.fillStyle = '#7d776d'; g.fillRect(0, 0, 128, 128);
+  g.fillStyle = '#8c877c'; g.fillRect(0, 0, 128, 128);
   for (let i = 0; i < 900; i++) {
     const l = 90 + rand() * 70;
     g.fillStyle = `rgba(${l},${l - 4},${l - 10},0.35)`;
     g.fillRect(rand() * 128, rand() * 128, 1 + rand() * 3, 1 + rand() * 3);
   }
-  g.strokeStyle = 'rgba(40,36,30,0.7)'; g.lineWidth = 6; g.strokeRect(3, 3, 122, 122); // 磨圆的边
+  g.strokeStyle = 'rgba(60,56,48,0.45)'; g.lineWidth = 5; g.strokeRect(3, 3, 122, 122); // 刻面的浅框
   e.fillStyle = '#000'; e.fillRect(0, 0, 128, 128);
   const strokes = [[[64, 22], [64, 106]], [[64, 30], [92, 50]], [[92, 50], [64, 66]], [[64, 66], [94, 104]], [[38, 40], [54, 30]], [[38, 92], [52, 102]]];
   for (const [w, col] of [[11, 'rgba(40,40,40,0.9)'], [5, '#fff']]) {

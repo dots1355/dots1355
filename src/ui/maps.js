@@ -1,8 +1,9 @@
 // 地图:小地图(以玩家为中心、群系底色、道路建筑、人物、任务目标与来袭方向)与 M 键王国全图。
 // 动态数据每次绘制时经 ctx.mapView() 取一份快照,本模块不持有任何玩法状态。
-import { mapColor } from '../terrain.js';
+import { mapColor, dominantBiome } from '../terrain.js';
 import { REGIONS } from '../story.js';
 import { ctx } from '../core/ctx.js';
+import { wildMarks, wildRegionName } from '../wilderness.js';
 
 const mm = document.getElementById('minimap').getContext('2d');
 // ================= 大地图(M) =================
@@ -51,13 +52,51 @@ function buildBigBase() {
   }
   return c;
 }
+// 荒野图:玩家在王国之外时,以玩家所在 256m 格为中心画 ±520m(群系底色 + 边界 + 已探到的营地/遗迹)
+let wildBase = null, wildKey = '';
+function buildWildBase(cx, cz) {
+  const c = document.createElement('canvas');
+  c.width = c.height = 720;
+  const g = c.getContext('2d');
+  const k = 720 / (BIG_R * 2);
+  const cell = 12;
+  for (let x = -BIG_R; x < BIG_R; x += cell) {
+    for (let z = -BIG_R; z < BIG_R; z += cell) {
+      g.fillStyle = mapColor(cx + x, cz + z);
+      g.fillRect((x + BIG_R) * k, (z + BIG_R) * k, cell * k + 0.7, cell * k + 0.7);
+    }
+  }
+  biomeEdges(g, cx - BIG_R, cz - BIG_R, cx + BIG_R, cz + BIG_R, 24, (x, z) => [(x - cx + BIG_R) * k, (z - cz + BIG_R) * k], 'rgba(30,20,10,0.4)');
+  g.font = 'bold 13px sans-serif';
+  g.textAlign = 'center';
+  for (let x = -BIG_R + 130; x < BIG_R; x += 260) { // 群系地名
+    for (let z = -BIG_R + 130; z < BIG_R; z += 260) {
+      const name = wildRegionName(cx + x, cz + z);
+      const mx = (x + BIG_R) * k, mz = (z + BIG_R) * k;
+      g.lineWidth = 3; g.strokeStyle = 'rgba(20,14,8,0.8)'; g.strokeText(name, mx, mz);
+      g.fillStyle = '#efe2c4'; g.fillText(name, mx, mz);
+    }
+  }
+  return c;
+}
 function drawBigMap() {
   const V = ctx.mapView();
-  if (!bigBase) bigBase = buildBigBase();
   const g = bigmapCv.getContext('2d');
   const k = 720 / (BIG_R * 2);
-  g.drawImage(bigBase, 0, 0);
-  const at = (x, z) => [(Math.max(-BIG_R, Math.min(BIG_R, x)) + BIG_R) * k, (Math.max(-BIG_R, Math.min(BIG_R, z)) + BIG_R) * k];
+  const wild = Math.max(Math.abs(ctx.player.pos.x), Math.abs(ctx.player.pos.z)) > BIG_R;
+  const ox = wild ? Math.round(ctx.player.pos.x / 256) * 256 : 0, oz = wild ? Math.round(ctx.player.pos.z / 256) * 256 : 0;
+  if (wild) {
+    const key = ox + ',' + oz;
+    if (key !== wildKey) { wildBase = buildWildBase(ox, oz); wildKey = key; }
+    g.drawImage(wildBase, 0, 0);
+  } else {
+    if (!bigBase) bigBase = buildBigBase();
+    g.drawImage(bigBase, 0, 0);
+  }
+  const titleEl = bigmapEl.querySelector('.bm-title');
+  if (titleEl && titleEl.firstChild) titleEl.firstChild.textContent = wild ? '荒野图(以你所在一带为中心) ' : '王国全图 ';
+  const at = (x, z) => [(Math.max(-BIG_R, Math.min(BIG_R, x - ox)) + BIG_R) * k, (Math.max(-BIG_R, Math.min(BIG_R, z - oz)) + BIG_R) * k];
+  drawMarks(g, V, (x, z) => [(x - ox + BIG_R) * k, (z - oz + BIG_R) * k], 1.3);
   for (const gd of V.guards) {
     if (gd.downT > 0) continue;
     const [x, z] = at(gd.pos.x, gd.pos.z);
@@ -87,12 +126,6 @@ function drawBigMap() {
   g.beginPath(); g.moveTo(0, -9); g.lineTo(6, 7); g.lineTo(0, 3); g.lineTo(-6, 7); g.closePath();
   g.stroke(); g.fill();
   g.restore();
-  if (Math.max(Math.abs(ctx.player.pos.x), Math.abs(ctx.player.pos.z)) > BIG_R) {
-    g.fillStyle = 'rgba(20,14,8,0.8)'; g.fillRect(8, 8, 220, 24);
-    g.fillStyle = '#f3e7cc'; g.font = '13px sans-serif'; g.textAlign = 'left';
-    g.fillText('你在王国之外的荒野(箭头指向你的方位)', 14, 25);
-    g.textAlign = 'center';
-  }
 }
 let bigMapTimer = 0;
 export function toggleBigMap(force) {
@@ -148,6 +181,7 @@ export function drawMinimap() {
         mm.fillRect(mx, mz, cs, cs);
       }
     }
+    biomeEdges(mm, x0, z0, px + range / 2 + cell, pz + range / 2 + cell, cell, toMap, 'rgba(30,20,10,0.32)');
   }
   for (const f of ctx.world.features) {
     const [mx, mz] = toMap(f.x, f.z);
@@ -165,6 +199,7 @@ export function drawMinimap() {
     if (drawShaped(mm, f, toMap, k)) continue;
     mm.fillRect(mx - (f.w * k) / 2, mz - (f.h * k) / 2, Math.max(2, f.w * k), Math.max(2, f.h * k));
   }
+  drawMarks(mm, V, toMap, 1);
   // 马
   for (const h of V.horses) {
     const [mx, mz] = toMap(h.pos.x, h.pos.z);
@@ -269,3 +304,64 @@ export function drawMinimap() {
   mm.fillText('N', S / 2 - 4, 13);
 }
 
+
+// 群系边界:相邻两格主群系不同就沿公共边描一道细线(按 16m 格缓存主群系)
+const _biomeCache = new Map();
+function biomeAt(x, z, cell) {
+  const ix = Math.floor(x / cell), iz = Math.floor(z / cell);
+  const key = ix * 100003 + iz + cell * 7;
+  let b = _biomeCache.get(key);
+  if (b === undefined) {
+    b = dominantBiome(ix * cell + cell / 2, iz * cell + cell / 2);
+    if (_biomeCache.size > 40000) _biomeCache.clear();
+    _biomeCache.set(key, b);
+  }
+  return b;
+}
+function biomeEdges(g, x0, z0, x1, z1, cell, toXY, color) {
+  g.strokeStyle = color;
+  g.lineWidth = 1;
+  g.beginPath();
+  for (let x = Math.floor(x0 / cell) * cell; x < x1; x += cell) {
+    for (let z = Math.floor(z0 / cell) * cell; z < z1; z += cell) {
+      const b = biomeAt(x, z, cell);
+      if (biomeAt(x + cell, z, cell) !== b) {
+        const [ax, az] = toXY(x + cell, z), [bx, bz] = toXY(x + cell, z + cell);
+        g.moveTo(ax, az); g.lineTo(bx, bz);
+      }
+      if (biomeAt(x, z + cell, cell) !== b) {
+        const [ax, az] = toXY(x, z + cell), [bx, bz] = toXY(x + cell, z + cell);
+        g.moveTo(ax, az); g.lineTo(bx, bz);
+      }
+    }
+  }
+  g.stroke();
+}
+// 地物标记:荒野区块里的营地/匪窝/断塔/遗迹/巨岩 + 篝火/温泉/小教堂(小地图与大地图共用)
+function drawMarks(g, V, toXY, s) {
+  const marks = wildMarks();
+  for (const sp of V.wildSpots || []) marks.push({ kind: sp.type, x: sp.x, z: sp.z });
+  for (const m of marks) {
+    const [x, y] = toXY(m.x, m.z);
+    if (x < -8 || y < -8 || x > g.canvas.width + 8 || y > g.canvas.height + 8) continue;
+    g.lineWidth = 1.2 * s;
+    g.strokeStyle = 'rgba(20,12,6,0.9)';
+    if (m.kind === 'camp' || m.kind === 'bandit') { // 帐篷:三角
+      g.fillStyle = m.kind === 'bandit' ? '#c8382c' : '#d39a4a';
+      g.beginPath(); g.moveTo(x, y - 5 * s); g.lineTo(x + 4.5 * s, y + 3.5 * s); g.lineTo(x - 4.5 * s, y + 3.5 * s); g.closePath();
+      g.fill(); g.stroke();
+    } else if (m.kind === 'tower') {
+      g.fillStyle = '#b8b0a2';
+      g.fillRect(x - 3 * s, y - 4.5 * s, 6 * s, 9 * s); g.strokeRect(x - 3 * s, y - 4.5 * s, 6 * s, 9 * s);
+    } else if (m.kind === 'ruin' || m.kind === 'chapel') { // 遗迹/小教堂:十字
+      g.strokeStyle = '#efe6d2'; g.lineWidth = 2 * s;
+      g.beginPath(); g.moveTo(x, y - 4.5 * s); g.lineTo(x, y + 4.5 * s); g.moveTo(x - 3 * s, y - 1.5 * s); g.lineTo(x + 3 * s, y - 1.5 * s); g.stroke();
+    } else if (m.kind === 'spring') {
+      g.fillStyle = '#6ab8d8'; g.beginPath(); g.arc(x, y, 3.5 * s, 0, 6.28); g.fill(); g.stroke();
+    } else if (m.kind === 'campfire') {
+      g.fillStyle = '#ff9a3a'; g.beginPath(); g.arc(x, y, 2.8 * s, 0, 6.28); g.fill(); g.stroke();
+    } else if (m.kind === 'rock') {
+      g.fillStyle = 'rgba(60,56,50,0.75)'; g.beginPath(); g.arc(x, y, 2.4 * s, 0, 6.28); g.fill();
+    }
+  }
+}

@@ -315,6 +315,7 @@ export function setVegetationDensity(d) {
   cellCache.clear();
   lastX = 1e9;
 }
+export function getVegetationDensity() { return density; }
 export function setVegetationSeason(seasonIdx) {
   const T = [[1, 1.02, 0.96], [0.96, 1, 0.88], [1.18, 0.96, 0.66], [1.02, 1.06, 1.14]];
   uniforms.uSeason.value.setRGB(...T[seasonIdx] || T[0]);

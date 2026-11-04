@@ -419,6 +419,32 @@ function unloadChunk(key) {
   chunks.delete(key);
 }
 
+// 地图用:已加载区块里的兴趣点(营地/匪窝/断塔/遗迹/大地标),按区块缓存;只读,不碰构建流程
+const MARK_OF = { Campfire: 'camp', Tent: 'camp', TentDark: 'bandit', Banner: 'bandit', BrokenTower: 'tower',
+  Ruin: 'ruin', Shrine: 'ruin', Mesa: 'rock', Spires: 'rock', IceRock: 'rock', Cart: 'camp' };
+const _marks = new WeakMap();
+export function wildMarks() {
+  const out = [];
+  for (const c of chunks.values()) {
+    let m = _marks.get(c.group);
+    if (!m) {
+      m = [];
+      const seen = new Set();
+      for (const o of c.group.children) {
+        const kind = o.userData.isProp && o.children[0] ? MARK_OF[o.children[0].name] : null;
+        if (!kind) continue;
+        const key = kind + Math.round(o.position.x / 6) + ',' + Math.round(o.position.z / 6);
+        if (seen.has(key)) continue; // 同一处营地的帐篷/篝火/旗只标一次
+        seen.add(key);
+        m.push({ kind, x: o.position.x, z: o.position.z });
+      }
+      _marks.set(c.group, m);
+    }
+    for (const k of m) out.push(k);
+  }
+  return out;
+}
+
 // 每帧调用:围绕玩家维护区块窗口(每帧最多生成 1 块)
 // 玩家没跨区块边界且窗口已齐时直接空转,零分配零扫描
 let lastPcx = 1e9, lastPcz = 1e9, wildPending = true;

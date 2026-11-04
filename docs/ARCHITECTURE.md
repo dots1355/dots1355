@@ -13,8 +13,9 @@
 | `src/core/ctx.js` | 共享上下文:main.js 启动时登记玩家/世界/碰撞体与少量回调,拆出的系统模块经它访问(带安全缺省值) |
 | `src/systems/camera.js` | 相机:跟随、锁定越肩、防穿墙/穿岩、震屏与速度感视野;共享镜头状态 `cam` |
 | `src/systems/sky.js` | 天空与昼夜:日月星辰、天穹、远山环、雾与光照随时间变化;群系氛围平滑过渡;视距跟随雾距;`clock.time` 是一天的进度 |
-| `src/ui/maps.js` | 小地图与 M 键王国全图;动态数据每次绘制经 `ctx.mapView()` 取快照,本身不持有玩法状态 |
-| `src/systems/weather.js` | 天气轮换、雷电、雨/雪线段粒子、地面扬尘 |
+| `src/ui/hud.js` | HUD 图标:统一风格的内联 SVG(红心/金币/技能栏/装备/日期时辰天气),`iconHTML` 兼容旧 emoji 键;按键提示开局 12 秒后淡出 |
+| `src/ui/maps.js` | 小地图与 M 键王国全图(在荒野里换成以玩家为中心的荒野图);群系边界线、荒野营地/匪窝/断塔/遗迹/温泉标记(`wilderness.wildMarks()` + `mapView().wildSpots`);动态数据每次绘制经 `ctx.mapView()` 取快照,本身不持有玩法状态 |
+| `src/systems/weather.js` | 天气轮换;雷电(`weather.flash` 交给 sky.js 照亮天光与雾 + 天边一道闪电);实例化雨丝面片(着色器里下落/风斜/循环,冬季变雪花,数量随画质档位)、地面水花与水面涟漪;地面湿润度 `weather.wet` → `gfx/surface.js` 的 uWet(压暗、降粗糙度、平地水洼倒映天色);地面扬尘 |
 | `src/core/timers.js` | 游戏时钟定时器 `later(sec, fn)`:按游戏 dt 结算,暂停即冻结 |
 | `src/core/rng.js` | 可设种子的 `rand()`;玩法与世界生成的随机都走它,测试可复现 |
 | `src/waterbodies.js` | 水体布局(纯数据 + 解析函数):湖岸噪声轮廓、样条河道、沼泽水塘、冰湖;`waterBasin` 给地形挖盆地(栈桥/木桥下垫土埂),`waterProx` 供岸边配色、禁草与芦苇 |

@@ -20,6 +20,7 @@ import { cam, updateCamera } from './systems/camera.js';
 import { weather, setWeather, updateWeather, updateRain, spawnDust, updateDust } from './systems/weather.js';
 import { clock, sun, lantern, vistaFar, vistaNear, updateDayNight, updateEnvIntensity, fitViewDistance } from './systems/sky.js';
 import { mapState, toggleBigMap, drawMinimap } from './ui/maps.js';
+import { iconHTML, heartsHTML, weatherHTML, manaHTML, svgIcon } from './ui/hud.js';
 import { ctx } from './core/ctx.js';
 import { LIGHT_POOL, lightPool, initLightPool, addLightSource, removeLightSource, updateLightPool, pooledMat, releaseMat } from './gfx/pools.js';
 import { mergeGeometries } from '../lib/jsm/utils/BufferGeometryUtils.js';
@@ -4374,7 +4375,7 @@ function updateActionBar() {
     if (L.show !== show) { L.show = show; sl.el.style.display = show ? 'block' : 'none'; }
     if (!show) continue;
     const icon = sl.icon();
-    if (L.icon !== icon) { L.icon = icon; sl.iconEl.textContent = icon; }
+    if (L.icon !== icon) { L.icon = icon; sl.iconEl.innerHTML = iconHTML(icon); }
     const nm = typeof sl.name === 'function' ? sl.name() : sl.name;
     if (L.name !== nm) { L.name = nm; sl.nameEl.textContent = nm; }
     const cdv = sl.cd ? Math.round(Math.min(1, sl.cd()) * 20) * 5 : 0;
@@ -8591,26 +8592,18 @@ function updatePlayer(dt) {
     if (wasAirborne && fallSpeed < -6) spawnDust(player.pos.x, 0.06, player.pos.z, 6, 0.9, 1.5);
   }
 
-  // “?”砖块(从下方顶)
-  if (player.vy > 0) {
-    for (const b of world.qBlocks) {
-      if (b.used) continue;
-      const headY = player.pos.y + 1.55;
-      if (Math.abs(player.pos.x - b.x) < 0.85 && Math.abs(player.pos.z - b.z) < 0.85 &&
-          headY > b.y - 0.5 && headY < b.y + 0.2) {
-        b.used = true;
-        b.bump = 0.25;
-        b.mesh.material.emissiveIntensity = 0; // 符文熄灭,只剩一块旧石头
-        b.mesh.material.color.setHex(0x8f8a80);
-        magBurst(b.x, b.y, b.z);
-        player.vy = -1;
-        sfx.block();
-        for (let i = 0; i < 5; i++) {
-          const a = rand() * 6.28;
-          addPickup('coin', b.x + Math.cos(a) * 1.2, b.z + Math.sin(a) * 1.2, 30);
-        }
-        callout('符文碎光 +5 金币', 'blue', { x: b.x, y: b.y - 1.2, z: b.z });
+  // 符文立石:出招时劈中身前的立石(world.runeStrike 轮询出招状态),符文碎光化作金币
+  {
+    const b = world.runeStrike(player);
+    if (b) {
+      magBurst(b.x, b.y, b.z);
+      sfx.block();
+      cam.shake = Math.max(cam.shake, 0.15);
+      for (let i = 0; i < 5; i++) {
+        const a = rand() * 6.28;
+        addPickup('coin', b.x + Math.cos(a) * 1.4, b.z + Math.sin(a) * 1.4, 30);
       }
+      callout('符文碎光 +5 金币', 'blue', { x: b.x, y: b.y + 1.2, z: b.z });
     }
   }
 
@@ -9019,18 +9012,19 @@ function updateHUD() {
   const key = hearts + '|' + player.coins + '|' + player.weapon + player.armor + (player.relic ? 'R' : '') + '|' + stars + '|' + missionText + '|' + timer + '|' + promptText + '|' + wIcon + phaseIcon + calText + '|' + bossHp + '|' + Math.floor(player.mp) + player.spellIdx + player.spells.length;
   if (key === hudCache) return;
   hudCache = key;
-  weatherEl.textContent = `${calText} ${phaseIcon} ${wIcon}`;
-  heartsEl.textContent = hearts;
-  coinsEl.textContent = `🪙 ${player.coins}`;
+  weatherEl.innerHTML = weatherHTML(seasonIdx(), `${SEASONS[seasonIdx()]}·${seasonDay()}日${sp ? '·' + sp.name : ''}`,
+    dayPhase(), weather.state, isWinter() && raining);
+  heartsEl.innerHTML = heartsHTML(full, half, heartsMax - full - half);
+  coinsEl.innerHTML = `${svgIcon('coin')}<span>${player.coins}</span>`;
   wantedEl.textContent = stars;
   wantedEl.style.display = wanted > 0 ? 'block' : 'none';
   missionEl.textContent = missionText;
   const wDef = WEAPONS[player.weapon];
-  equipEl.textContent = // 法术/冷却改由底部技能栏显示,这里只留装备与法力
-    `${wDef.icon} ${wDef.name}${player.swordLv >= 2 ? '+1' : ''}${player.relic ? '·☀️' : ''}` +
-    (player.armor ? ` · 🛡️ ${ARMORS[player.armor].name}` : '') +
+  equipEl.innerHTML = // 法术/冷却改由底部技能栏显示,这里只留装备与法力(统一 SVG 图标)
+    `${iconHTML(wDef.icon, 'ico-s')}<span>${wDef.name}${player.swordLv >= 2 ? '+1' : ''}</span>${player.relic ? svgIcon('relic', 'ico-s') : ''}` +
+    (player.armor ? `<span class="eq-sep">·</span>${svgIcon('armor', 'ico-s')}<span>${ARMORS[player.armor].name}</span>` : '') +
     (player.spells.length
-      ? ` · 法力 ${'🔹'.repeat(Math.floor(player.mp))}${'▫'.repeat(player.maxMp - Math.floor(player.mp))}` : '');
+      ? `<span class="eq-sep">·</span><span>法力</span>${manaHTML(Math.floor(player.mp), player.maxMp)}` : '');
   promptEl.textContent = promptText;
   promptEl.style.display = promptText ? 'block' : 'none';
   // Boss 血条(仅 Boss 战期间)
@@ -9910,12 +9904,9 @@ function tick(dt, now) {
   world.underlay.position.z = Math.round(player.pos.z / 64) * 64;
   updateCamera(dt);
 
-  // 风车与砖块动画
+  // 风车与符文立石动画
   for (const w of world.windmills) w.rotation.x += dt * 0.9;
-  for (const b of world.qBlocks) {
-    if (b.bump > 0) { b.bump -= dt; b.mesh.position.y = b.y + Math.sin((0.25 - b.bump) / 0.25 * Math.PI) * 0.3; }
-    else if (!b.used) b.mesh.rotation.y += dt * 0.8;
-  }
+  world.animRunes(dt); // 符文立石:符文呼吸 / 劈中时一晃
   for (const c of world.chests) {
     if (c.opened && c.lid.rotation.x > -1.9) c.lid.rotation.x -= dt * 5;
   }
@@ -9960,7 +9951,7 @@ ctx.toast = toast;
 ctx.mood = () => workspace.mood.v;
 ctx.inDungeon = inDungeon;
 // 地图快照:地图模块只读这些,不碰玩法状态
-ctx.mapView = () => ({ guards, bandits, horses, wanted, warband, beacon, beaconRouted, questGiver: exGroup.visible });
+ctx.mapView = () => ({ guards, bandits, horses, wanted, warband, beacon, beaconRouted, questGiver: exGroup.visible, wildSpots });
 // ---- 点光入池:场景里现有的火把/篝火/地窖烛台点光全部改为登记,由点光池代为发光 ----
 {
   scene.updateMatrixWorld(true);

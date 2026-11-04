@@ -9,6 +9,7 @@
 // (核心 ±512 米一块,荒野每个区块一块),运行时不做任何噪声计算。
 import * as THREE from 'three';
 import { waterBasin, waterProx } from './waterbodies.js';
+import { surfaceUniforms, NOISE_GLSL, PUDDLE_GLSL } from './gfx/surface.js';
 
 // ---------------- 整数哈希值噪声 ----------------
 function hash2(ix, iz) {
@@ -459,11 +460,39 @@ export function getGroundMaterial(normalMap) {
   groundMat.userData.uSnow = { value: 0 };
   groundMat.onBeforeCompile = (sh) => {
     sh.uniforms.uSnow = groundMat.userData.uSnow;
+    sh.uniforms.uWet = surfaceUniforms.uWet;
+    sh.uniforms.uSfTime = surfaceUniforms.uTime;
+    sh.uniforms.uRainK = surfaceUniforms.uRainK;
+    sh.uniforms.uSkyCol = surfaceUniforms.uSkyCol;
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vSfW;')
+      .replace('#include <project_vertex>', '#include <project_vertex>\nvSfW = (modelMatrix * vec4(transformed, 1.0)).xyz;');
     sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', '#include <common>\nuniform float uSnow;')
+      .replace('#include <common>', `#include <common>
+        uniform float uSnow, uWet, uSfTime, uRainK;
+        uniform vec3 uSkyCol;
+        varying vec3 vSfW;
+        ${NOISE_GLSL}
+        ${PUDDLE_GLSL}`)
       .replace('#include <color_fragment>', `#include <color_fragment>
         float snowK = uSnow * smoothstep(0.82, 0.96, normalize(vNormal).y);
-        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.86, 0.9, 0.95), snowK);`);
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.86, 0.9, 0.95), snowK);
+        // 雨天:泥土整体压暗,平地上积出水洼(几乎镜面,有雨点涟漪)
+        float sfPud = sfPuddle(vSfW, vNormal) * (1.0 - snowK);
+        diffuseColor.rgb *= 1.0 - 0.24 * uWet;
+        diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * 0.38 + vec3(0.012, 0.016, 0.02), sfPud);`)
+      .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
+        roughnessFactor = mix(roughnessFactor, 0.42, uWet * 0.7);
+        roughnessFactor = mix(roughnessFactor, 0.04, sfPud);`)
+      .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+        if (sfPud > 0.01) {
+          vec3 upV = normalize((viewMatrix * vec4(0.0, 1.0, 0.0, 0.0)).xyz);
+          vec2 rp = sfRipple(vSfW.xz, uSfTime) * uRainK * 0.35;
+          vec3 rw = normalize((viewMatrix * vec4(rp.x, 0.0, rp.y, 0.0)).xyz + upV);
+          normal = normalize(mix(normal, rw, sfPud));
+        }`)
+      .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+        totalEmissiveRadiance += uSkyCol * pow(1.0 - max(dot(normal, normalize(vViewPosition)), 0.0), 3.0) * sfPud * 0.55;`);
   };
   return groundMat;
 }
