@@ -10503,7 +10503,8 @@ ctx.toast = toast;
 ctx.mood = () => workspace.mood.v;
 ctx.inDungeon = inDungeon;
 // 地图快照:地图模块只读这些,不碰玩法状态
-ctx.mapView = () => ({ guards, bandits, horses, wanted, warband, beacon, beaconRouted, questGiver: exGroup.visible });
+ctx.mapView = () => ({ guards, bandits, horses, wanted, warband, beacon, beaconRouted,
+  questGiver: exGroup.visible ? { x: steward.pos.x, z: steward.pos.z } : null });
 // ---- 点光入池:场景里现有的火把/篝火/地窖烛台点光全部改为登记,由点光池代为发光 ----
 {
   scene.updateMatrixWorld(true);

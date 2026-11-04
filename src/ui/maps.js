@@ -67,9 +67,9 @@ function drawBigMap() {
     const [x, z] = at(b.pos.x, b.pos.z);
     g.fillStyle = '#e03030'; g.beginPath(); g.arc(x, z, b.warlord ? 4 : 2.5, 0, 6.28); g.fill();
   }
-  if (V.questGiver) {
-    const [x, z] = at(ctx.world.questGiverPos.x, ctx.world.questGiverPos.z);
-    g.fillStyle = '#ffd83d'; g.font = 'bold 18px sans-serif'; g.fillText('!', x, z + 6);
+  if (V.questGiver) { // 埃隆所在(白天广场、夜里城堡):金底圆章 + 黑色"!",大地图上一眼找得到
+    const [x, z] = at(V.questGiver.x, V.questGiver.z);
+    questMark(g, x, z, 11);
   }
   if (V.beacon.visible) {
     const bx = V.beaconRouted ? V.beaconRouted.x : V.beacon.position.x, bz = V.beaconRouted ? V.beaconRouted.z : V.beacon.position.z;
@@ -101,6 +101,17 @@ export function toggleBigMap(force) {
   if (mapState.open) { drawBigMap(); bigMapTimer = setInterval(drawBigMap, 250); }
 }
 // ================= 小地图 =================
+// 委托人标记:金色圆章 + 深色描边 + 黑色叹号
+function questMark(g, x, z, r) {
+  g.save();
+  g.beginPath(); g.arc(x, z, r, 0, Math.PI * 2);
+  g.fillStyle = '#ffd83d'; g.fill();
+  g.lineWidth = Math.max(1.5, r * 0.22); g.strokeStyle = 'rgba(40,24,6,0.9)'; g.stroke();
+  g.fillStyle = '#2a1a06'; g.font = `bold ${Math.round(r * 1.5)}px sans-serif`;
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText('!', x, z + r * 0.06);
+  g.restore();
+}
 export const MM_COLS = {
   wall: '#9d9486', tower: '#8d8476', keep: '#7d7466', house: '#a3703f',
   tree: '#295c33', water: '#3f8fc4', field: '#9a7444', plaza: '#cdb891',
@@ -201,10 +212,8 @@ export function drawMinimap() {
   }
   // 任务标记
   if (V.questGiver) {
-    const [mx, mz] = toMap(ctx.world.questGiverPos.x, ctx.world.questGiverPos.z);
-    mm.fillStyle = '#ffd83d';
-    mm.font = 'bold 14px sans-serif';
-    mm.fillText('!', mx - 2, mz + 5);
+    const [mx, mz] = toMap(V.questGiver.x, V.questGiver.z);
+    questMark(mm, mx, mz, 7);
   }
   if (V.beacon.visible) {
     const bdx = V.beacon.position.x - px, bdz = V.beacon.position.z - pz;
