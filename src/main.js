@@ -1,11 +1,8 @@
 // 《侠盗猎马人:中世纪王国》主逻辑
 import * as THREE from 'three';
 import { buildWorld } from './world.js';
-import {
-  makeHumanoid, resolveCollisions, angleLerp, dist2, setHumanModel, setFaunaModel, setWeaponModels,
-} from './entities.js';
-import { INTRO, DIALOGS, LORE } from './story.js';
-import { initAudio, sfx, startMusic } from './audio.js';
+import { makeHumanoid, resolveCollisions, setHumanModel, setFaunaModel, setWeaponModels } from './entities.js';
+import { LORE } from './story.js';
 import { preloadAIAssets, generateRemoteAITextures } from './textures.js';
 import { updateWilderness, CORE, LANDMARKS, BIG_PROP } from './wilderness.js';
 import { GLTFLoader } from '../lib/jsm/loaders/GLTFLoader.js';
@@ -15,20 +12,20 @@ import { buildMasks, buildCoreGround, getGroundMaterial, groundH, maskAt, vegAll
 import { initVegetation, updateVegetation } from './vegetation.js';
 import { staticBatch, registerSmallProps } from './batch.js';
 import { updateTimers, pendingTimers, simNow } from './core/timers.js';
-import { hitStop, scaleDt } from './core/timefx.js';
-import { rand, seed as seedRng } from './core/rng.js';
+import { scaleDt } from './core/timefx.js';
+import { seed as seedRng } from './core/rng.js';
 import { initAmbient, updateAmbient } from './ambient.js';
 import { cam, updateCamera } from './systems/camera.js';
-import { weather, setWeather, updateWeather, updateRain, spawnDust, updateDust } from './systems/weather.js';
+import { weather, setWeather, updateWeather, updateRain, updateDust } from './systems/weather.js';
 import {
   clock, lantern, vistaFar, vistaNear, updateDayNight, updateEnvIntensity, fitViewDistance,
 } from './systems/sky.js';
-import { mapState, toggleBigMap, drawMinimap } from './ui/maps.js';
+import { mapState, drawMinimap } from './ui/maps.js';
 import { facetKind } from './gfx/facet.js';
 import { ctx } from './core/ctx.js';
 import { frame } from './core/frame.js';
-import { world, colliders, player, started, bindWorld, bindPlayer, markStarted } from './core/state.js';
-import { EPITAPHS, COMEDY_LINES } from './content-packs.js';
+import { initTitle, loadLocalTitleArt, setTitleArt } from './ui/title.js';
+import { world, colliders, player, started, bindWorld, bindPlayer } from './core/state.js';
 import { LIGHT_POOL, lightPool, initLightPool, addLightSource, updateLightPool } from './gfx/pools.js';
 import {
   renderer, scene, camera, composer, bloom, gradePass, STYLE_PRESETS, styleKey, applyStyle,
@@ -37,53 +34,46 @@ import {
 import {
   awakenDragon, damageDragon, dragonRT, telegraphArea, updateDragon,
 } from './systems/dragon.js';
-import { prologue, skipPrologue, startPrologue, updatePrologue, whistleHorse } from './systems/prologue.js';
+import { prologue, skipPrologue, startPrologue, updatePrologue } from './systems/prologue.js';
 import {
   DRAGON_SKULL, SKILL_DEFS, SPELLS, castBigFire, castSpell, cycleSpell, doShout, dragonAim,
-  explodeAt, frostPatches, frostSlow, learnShout, learnSpell, shout, skillLv, skillXp, sneakFactor,
+  explodeAt, frostPatches, frostSlow, learnShout, learnSpell, shout, skillXp, sneakFactor,
   spellDown, spellUp, spendSta, toggleSneak, updateFrostPatches, updateMagic,
 } from './systems/magic.js';
 import { toast, toastQueue, updateToast } from './ui/toast.js';
+import { achUnlocked, stats } from './systems/achievements.js';
 import {
-  AI_TEXT_OFF, aiBusy, aiLine,
-} from './core/aitext.js';
-import { achUnlocked, stats, unlockAch } from './systems/achievements.js';
-import {
-  SEASONS, SEASON_ICON, applySeason, calendar, composeLetter, dayPhase, isWinter, newDay, seasonDay,
-  seasonIdx, sleepToMorning, startSpecialDay, todaySpecial, updateAmbience, updateCalendar,
+  applySeason, calendar, composeLetter, isWinter, newDay, seasonDay, seasonIdx, sleepToMorning,
+  todaySpecial, updateAmbience, updateCalendar,
 } from './systems/calendar.js';
 import {
-  MIND, MIND_WISHES, MIRROR_POS, archetype, chronicle, chronicleDeeds, consolidate, habitFactor,
-  idle, initMirror, mindFavorite, mindMakeWish, mindReport, mindSave, mindTick, mirrorTalk,
-  moodWord, recallLine, remember, updateIdle, updateWorkspace, workspace, wsReport,
+  MIND, MIND_WISHES, MIRROR_POS, archetype, chronicle, consolidate, habitFactor, idle, initMirror,
+  mindFavorite, mindMakeWish, mindReport, mindSave, mindTick, mirrorTalk, moodWord, remember,
+  updateIdle, updateWorkspace, workspace, wsReport,
 } from './systems/mind.js';
-import {
-  addHorse, animHorseLegs, animateLimbs, bandits, guards, horses, initActors, meleeSwing,
-  villagers, wolves,
-} from './systems/actors.js';
+import { addHorse, bandits, guards, horses, initActors, villagers, wolves } from './systems/actors.js';
 import {
   EVO, evolveLegends, evolveTactics, growCorpus, legendText, mutateLegend, seedLegend,
 } from './systems/evo.js';
+import { WEAPONS, cycleWeapon, openShop, refreshShop, setArmorVisual, setWeaponVisual } from './systems/gear.js';
 import {
-  WEAPONS, cycleWeapon, openShop, recomputeMaxHp, refreshShop, setArmorVisual, setWeaponVisual,
-  shopOpen,
-} from './systems/gear.js';
+  damagePlayer, doRoll, enforceDeepWater, recomputeMaxHp, recomputeMaxSta, tryRob, updateBuffs,
+  updatePlayer, updateRegen, updateSquash,
+} from './systems/player.js';
 import { hireMerc, mercs, payMercs, updateMercs } from './systems/mercs.js';
 import { arrows, updateArrows } from './systems/projectiles.js';
 import {
-  callout, flashing, hitFX, registerKill, updateCombo, updateDamageNums, updateFalls,
-  updateFlashes, updateKnockback, updateLowHp, whiteHot,
+  callout, flashing, registerKill, updateCombo, updateDamageNums, updateFalls, updateFlashes,
+  updateKnockback, updateLowHp, whiteHot,
 } from './ui/feedback.js';
 import {
-  chickens, deers, frostfang, initFauna, mushrooms, pokeChicken, respawnMushrooms, revengeT,
-  tameFrostfang, updateChickens, updateDeers, updateFrostfang,
+  chickens, deers, frostfang, initFauna, mushrooms, respawnMushrooms, revengeT, updateChickens,
+  updateDeers, updateFrostfang,
 } from './systems/fauna.js';
 import {
-  BOAT_ISLE, BOAT_PIER, CHORE_POS, DGN, FISH_SPOT, FISH_SPOT_ISLE, NOTICE_POS, TRIAL_FLAG,
-  blessedToday, choreBoard, choreProgress, choreReady, composeProclaimOffline, endTrial,
-  enterDungeon, exitDungeon, fishing, fishingReel, inDungeon, initActivities, lakeBlessed,
-  loreRead, loreStones, nearestSpot, openJournal, prayAltar, prayAtChapel, proclaimText,
-  queueDream, readLore, refreshProclaim, rowTo, sideQuest, startFishing, startTrial, takeRelic,
+  BOAT_ISLE, BOAT_PIER, CHORE_POS, DGN, FISH_SPOT_ISLE, choreBoard, choreProgress, enterDungeon,
+  exitDungeon, fishing, inDungeon, initActivities, loreRead, loreStones, nearestSpot, openJournal,
+  prayAltar, proclaimText, queueDream, refreshProclaim, rowTo, sideQuest, startTrial, takeRelic,
   togglePhoto, trialRT, updateAltarGlow, updateCryptLights, updateFishing, updateRideMileage,
   updateSprings, updateTrial, wildSpots,
 } from './systems/activities.js';
@@ -91,53 +81,47 @@ import {
   updateVendetta, vendetta, vendettaLetter, vendettaRead,
 } from './systems/vendetta.js';
 import {
-  beacon, beaconRouted, canAcceptRemotely, completeMission, exGroup, initQuests, missions, quest,
-  questRT, talkQuestGiver, updateQuest,
+  beacon, beaconRouted, completeMission, exGroup, initQuests, missions, quest, questRT,
+  talkQuestGiver, updateQuest,
 } from './systems/quests.js';
 import {
   HOME, fireflyMesh, homeInteract, homeRT, initHome, refreshTrophies, updateFirefly, updateHome,
 } from './systems/home.js';
 import {
-  HOST_LINES, arenaHost, arenaRT, bountyRT, initEvents, startArenaWave, streetEvent, takeBounty,
-  trySpawnStreetEvent, updateArena, updateBounty, updateStreetEvent, wantedPosterSpeaker,
+  arenaHost, arenaRT, bountyRT, initEvents, startArenaWave, streetEvent, takeBounty,
+  trySpawnStreetEvent, updateArena, updateBounty, updateStreetEvent,
 } from './systems/events.js';
 import {
   DIRECTOR_EVENTS, director, updateDirector,
 } from './systems/director.js';
 import {
-  EXTRA_NPCS, armPress, armRT, armWrestle, bardSong, fountainWish, funnyNPCs, gamble, initNPCs,
-  namedNPCs, steward, tellStory, updateArm, updateNPCs,
+  armPress, armRT, armWrestle, funnyNPCs, initNPCs, namedNPCs, steward, tellStory, updateArm,
+  updateNPCs,
 } from './systems/npcs.js';
-import {
-  NPC_DESC_EN, VILLAGER_DESC_EN, advanceDialog, dbLine, deepTalk, dialog, dismissDialog, npcTalk,
-  openDialog, showBubble, updateBubble, updateDialogRange, villagerChatter, witchFortune,
-} from './ui/dialog.js';
-import { toggleHint, updateActionBar, updateHUD, updateHintFade, updateRegion } from './ui/hudview.js';
-import { autoQuality, initQuality, nextStyle, qualityIdx, updateEntityLOD } from './gfx/quality.js';
-import {
-  paused, setPaused,
-} from './ui/pause.js';
-import {
-  FRESH_START, SAVE_KEY, loadGame, saveBlocked, saveGame,
-} from './core/save.js';
-import { addPickup, crestsFound, dropCoins, initPickups, updateCoinInstances, updatePickups } from './systems/pickups.js';
-import { clearWanted, crime, downGuard, lawlessT, updateLawless, updateWanted, wanted } from './systems/law.js';
+import { advanceDialog, dialog, updateBubble, updateDialogRange, villagerChatter, witchFortune } from './ui/dialog.js';
+import { updateActionBar, updateHUD, updateHintFade, updateRegion } from './ui/hudview.js';
+import { autoQuality, initQuality, qualityIdx, updateEntityLOD } from './gfx/quality.js';
+import { paused } from './ui/pause.js';
+import { loadGame, saveBlocked, saveGame } from './core/save.js';
+import { addPickup, crestsFound, initPickups, updateCoinInstances, updatePickups } from './systems/pickups.js';
+import { crime, downGuard, lawlessT, updateLawless, updateWanted, wanted } from './systems/law.js';
 import {
   WARLORD_TAUNTS, spawnWarband, updateWarband, warband,
 } from './systems/warband.js';
 import {
   applyDamage, banditSlain, combatCalmT, dangerFX, dangerMat, faceNearestFoe, flinch, foeName,
-  frightenBandits, initCombat, killWolf, lockFoe, lockMark, magBurstGeo, magBurstMat, meleeSweep,
-  setLockFoe, slayBandit, swingTrail, telegraphFlash, toggleLock, trailFX, trailMat,
-  updateCombatMusic, updateDanger, updateLock, updateTrails,
+  frightenBandits, initCombat, killWolf, lockFoe, lockMark, magBurstGeo, magBurstMat, slayBandit,
+  telegraphFlash, toggleLock, trailFX, trailMat, updateCombatMusic, updateDanger, updateLock,
+  updateTrails,
 } from './systems/combat.js';
-import {
-  attackDown, attackUp, cancelCharge, endAttack, heavyAttack, initAttack, playerShield,
-  strikePending, tryAttack, updateAttackInput,
-} from './systems/attack.js';
+import { attackDown, attackUp, heavyAttack, initAttack, tryAttack, updateAttackInput } from './systems/attack.js';
 import {
   updateBandits, updateGuards, updateHorses, updateVillagers, updateWolves,
 } from './systems/ai.js';
+import {
+  computePrompt, initInteract, promptText, tryInteract, updateInteractMarker, updatePrompt,
+} from './systems/interact.js';
+import { drainInput, initInput, keys } from './systems/input.js';
 
 // ================= 基础渲染 =================
 initLightPool(scene); // 固定数量的点光池(火把/篝火等光源只登记,由它代为发光)
@@ -177,18 +161,7 @@ try {
       res();
     }, () => res()))));
 } catch (e) { console.warn('树模型解析失败,回退程序化树:', e); }
-// 本地标题键艺术优先(assets/ai/title.jpg,可选)
-let localTitleArt = false;
-if (location.protocol !== 'file:') fetch('./assets/ai/title.jpg').then((r) => {
-  if (r.ok) r.blob().then((b) => {
-    localTitleArt = true;
-    const t = document.getElementById('title');
-    t.style.backgroundImage =
-      `linear-gradient(rgba(10,6,20,0.55), rgba(10,6,20,0.75)), url(${URL.createObjectURL(b)})`;
-    t.style.backgroundSize = 'cover';
-    t.style.backgroundPosition = 'center';
-  });
-}).catch(() => {});
+loadLocalTitleArt(); // 本地标题键艺术优先(assets/ai/title.jpg,可选)
 
 const preWorldTops = new Set(scene.children);
 bindWorld(buildWorld(scene)); // world / colliders 登记进 core/state.js,系统模块从那里读
@@ -304,19 +277,6 @@ if (hasNature()) {
 
 // ---- 运行时 AI 贴图生成(玩家浏览器联网时,后台生成照片级贴图并热替换)----
 const aiStatusEl = document.getElementById('ai-status');
-let titleArtURL = null;
-function setTitleArt(bitmap) {
-  if (localTitleArt) return;
-  const c = document.createElement('canvas');
-  c.width = bitmap.width; c.height = bitmap.height;
-  c.getContext('2d').drawImage(bitmap, 0, 0);
-  titleArtURL = c.toDataURL('image/jpeg', 0.9);
-  const t = document.getElementById('title');
-  t.style.backgroundImage =
-    `linear-gradient(rgba(10,6,20,0.5), rgba(10,6,20,0.72)), url(${titleArtURL})`;
-  t.style.backgroundSize = 'cover';
-  t.style.backgroundPosition = 'center';
-}
 generateRemoteAITextures({
   onStatus(state, done, total) {
     if (!aiStatusEl) return;
@@ -339,10 +299,6 @@ generateRemoteAITextures({
   onTitle: setTitleArt,
 }).catch(() => {});
 
-// ================= HUD 引用 =================
-const $ = (id) => document.getElementById(id);
-const flashEl = $('flash'), titleEl = $('title'),
-  gameoverEl = $('gameover'), gameoverText = $('gameover-text');
 
 // ================= 玩家 =================
 bindPlayer({
@@ -397,15 +353,8 @@ initQuality();
 
 
 
-// ================= 交互目标标记(头顶金色小箭头) =================
-const interactMarker = new THREE.Mesh(new THREE.ConeGeometry(0.15, 0.3, 4),
-  new THREE.MeshBasicMaterial({ color: 0xffd83d, transparent: true, opacity: 0.85 }));
-interactMarker.rotation.x = Math.PI;
-interactMarker.visible = false;
-scene.add(interactMarker);
-let promptTargetPos = null;
 
-// ================= 命中反馈:白闪 + 击退 =================
+initInteract(); // 交互目标标记进场景(原位调用)
 
 
 
@@ -423,27 +372,7 @@ const hasSave = loadGame();
 world.crestSpots.forEach(([x, z], i) => {
   if (!crestsFound.includes(i)) addPickup('crest', x, z, Infinity, i);
 });
-// 标题画面:世界观开场 + 存档信息
-document.getElementById('lore').textContent = INTRO;
-if (hasSave) {
-  document.getElementById('save-info').textContent =
-    `💾 检测到存档:委托 ${Math.min(quest.idx + 1, missions.length)}/${missions.length} · ` +
-    `${player.coins} 金币 · 纹章 ${crestsFound.length}/${world.crestSpots.length}(按 Delete 键清除存档重新开始)`;
-  // 清档要按两次(3 秒内):手滑一下不该把几个小时的进度抹掉
-  let delArmT = -1e9;
-  window.addEventListener('keydown', (e) => {
-    if (e.code !== 'Delete' || started) return;
-    const el = document.getElementById('save-info');
-    if (performance.now() - delArmT > 3000) {
-      delArmT = performance.now();
-      el.textContent = '⚠️ 真的要清除存档吗?3 秒内再按一次 Delete 确认(进度无法恢复)';
-      el.style.color = '#ff8a6a';
-      return;
-    }
-    localStorage.removeItem(SAVE_KEY);
-    location.reload();
-  });
-}
+initTitle(hasSave); // 标题画面:世界观开场、存档信息、Delete 清档、点击开局
 // 读档后应用升级效果
 setWeaponVisual(player.weapon);
 // 基础魔法与生俱来:老档也补上魔光弹
@@ -451,9 +380,7 @@ if (!player.spells.includes('spark')) player.spells.unshift('spark');
 // 通关之星:completeMission 存档发生在生成星星之前,读档时没领过就补一颗在广场
 if (quest.idx >= missions.length && !stats.starTaken) addPickup('star', 0, 13);
 // 体力上限由技能总等级 + 军旗战利品重算(maxSta 不入档,防旧档字段缺失)
-player.maxSta = Math.min(180, 100 + 3 *
-  Object.values(player.skills || {}).reduce((n, s) => n + Math.max(0, (s.lv || 1) - 1), 0) +
-  5 * (stats.banners || 0));
+recomputeMaxSta();
 player.sta = player.maxSta;
 setArmorVisual(player.armor);
 applySeason();
@@ -462,781 +389,13 @@ if (player.royalHorse) {
   rh.fast = true;
 }
 
-// ================= 输入 =================
-// 玩法动作先入队,在 tick 开头统一消费:动作总在模拟步内、按发生顺序生效(不再在两帧之间
-// 偷偷改状态);暂停/看地图时清空,测试也可以直接往队列里注入。界面操作(对话翻页、菜单)仍即时。
-const inputQ = [];
-function queueInput(fn) { if (started && !paused && !mapState.open) inputQ.push(fn); }
-function drainInput() {
-  while (inputQ.length) {
-    const fn = inputQ.shift();
-    try { fn(); } catch (err) { console.error(err); }
-  }
-}
-const keys = {};
-let locked = false;
-window.addEventListener('keydown', (e) => {
-  if (e.code === 'Space' || e.code === 'Tab') e.preventDefault(); // Tab 别把焦点切走
-  idle.t = 0; // 有输入,世界收回它的注视
-  if (e.repeat) return; // 忽略系统按键自动重复,防止长按空格吞掉二段跳/长按 E 反复上下马
-  if (paused || shopOpen) return;
-  keys[e.code] = true;
-  if (e.code === 'KeyE') {
-    if (armRT.active) queueInput(armPress); // 掰手腕中:E 是发力,不是交互
-    else if (dialog.open) advanceDialog();
-    else queueInput(() => tryInteract());
-  }
-  if (e.code === 'KeyF' && !dialog.open) queueInput(attackDown);
-  if (e.code === 'KeyM' && started) toggleBigMap(); // M=地图(音乐开关在暂停菜单)
-  if (e.code === 'KeyP' && started) togglePhoto();
-  if (e.code === 'KeyJ' && started && !dialog.open) openJournal();
-  if (e.code === 'KeyT' && dialog.open) deepTalk();
-  if (e.code === 'KeyH') toggleHint();
-  if (e.code === 'KeyK') { // 画风随手切:写实/油画/卡通/水墨/像素/版画/电影/复古
-    toast(`🎨 画风:${nextStyle()}(K 键继续切换)`, 1.6);
-  }
-  if (e.code === 'KeyQ') queueInput(cycleWeapon);
-  // 施法键做冗余判定:部分输入法/键盘布局下 e.code 会被吞,补上 e.key 兜底
-  if ((e.code === 'KeyR' || e.key === 'r' || e.key === 'R') && !dialog.open && !e.repeat) queueInput(spellDown);
-  if (e.code === 'KeyV' && !dialog.open) queueInput(cycleSpell);
-  if (e.code === 'KeyZ' && !dialog.open) queueInput(toggleSneak);
-  if (e.code === 'KeyX' && !dialog.open) queueInput(doShout);
-  if (/^Digit[1-4]$/.test(e.code) && !dialog.open) {
-    const idx = +e.code.slice(5) - 1;
-    if (idx < player.spells.length && idx !== player.spellIdx) {
-      player.fireChargeT = 0; // 换法术=松开引导
-      player.spellIdx = idx;
-      sfx.equip();
-      toast(`${SPELLS[player.spells[idx]].icon} ${SPELLS[player.spells[idx]].name}`, 1.2);
-    }
-  }
-  if ((e.code === 'KeyC' || e.code === 'ControlLeft') && !dialog.open) queueInput(doRoll);
-  if (e.code === 'Tab' && !dialog.open) queueInput(toggleLock);
-  if (e.code === 'KeyO' && prologue.on) skipPrologue();
-  if (e.code === 'KeyG' && !dialog.open) queueInput(tryRob);
-  if (e.code === 'KeyB' && started && !dialog.open) queueInput(whistleHorse);
-});
-// 右键格挡(按住)
-renderer.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
-// 只记"按着没有";真正举不举得起盾由 updateBlock 每帧判定(刀没落下/蓄力/翻滚/踉跄时举不起,条件一满足自动举起)
-window.addEventListener('mousedown', (e) => { if (e.button === 2) player.blockHeld = true; });
-window.addEventListener('mouseup', (e) => {
-  if (e.button === 0) queueInput(attackUp);
-  if (e.button === 2) { player.blockHeld = false; player.blocking = false; }
-  if (e.button === 1) { midHeld = false; queueInput(spellUp); }
-});
-window.addEventListener('blur', () => { player.blockHeld = false; player.blocking = false; });
-let midHeld = false;
-window.addEventListener('keyup', (e) => {
-  keys[e.code] = false;
-  if (e.code === 'KeyF') queueInput(attackUp);
-  if (e.code === 'KeyR') queueInput(spellUp);
-});
-renderer.domElement.addEventListener('mousedown', (e) => {
-  if (!started) return;
-  if (dialog.open) { advanceDialog(); return; }
-  if (!locked) renderer.domElement.requestPointerLock();
-  else if (e.button === 0) queueInput(attackDown);
-  else if (e.button === 1) { e.preventDefault(); midHeld = true; queueInput(spellDown); } // 中键施法:左手不用离开 WASD
-});
-document.addEventListener('pointerlockchange', () => {
-  locked = document.pointerLockElement === renderer.domElement;
-  // ESC 解锁鼠标 → 弹出暂停菜单(GTA 式)
-  if (!locked && started && !player.dead && !dialog.open && !shopOpen) setPaused(true);
-});
-document.addEventListener('mousemove', (e) => {
-  if (!locked) return;
-  cam.yaw -= e.movementX * 0.0028;
-  cam.pitch = Math.max(-0.1, Math.min(1.15, cam.pitch + e.movementY * 0.0028));
-});
 
-titleEl.addEventListener('click', () => {
-  initAudio();
-  startMusic();
-  titleEl.style.display = 'none';
-  markStarted();
-  if (FRESH_START) startPrologue(); // 新档:黎明狼袭序章
-  refreshProclaim(); // 今日公告(联网时由 AI 现写)
-  const sp0 = todaySpecial();
-  if (sp0) {
-    startSpecialDay(sp0.key); // 读档正逢节庆:补上当日的节庆效果
-    toast(`${SEASON_ICON[seasonIdx()]} 今日${sp0.name}:${sp0.desc}`, 5);
-  }
-  renderer.domElement.requestPointerLock();
-  // 序章里不催你去找管家(和"打狼"打架);序章结束再说
-  if (!prologue.on) toast('欢迎来到艾尔德里亚!去喷泉广场找管家埃隆接取委托吧(按 E 互动)', 5);
-});
+initInput();
 
 
 
-// ================= 交互 =================
-let promptText = '';
-// E 键交互的唯一来源:同一套判定既执行动作,也给出提示文字与目标位置。
-// probe=true 时只"试运行":命中哪条就返回 { text, x, z, h },不改任何状态(computePrompt 用它显示提示)。
-// 以前提示与交互是两份手抄的判定,顺序和条件早已分叉(比如单挑没有提示);现在不可能再对不上。
-// 能骑的坐骑:2.65 米内最近的一匹;任务马(雪影)在场时优先它
-function nearestMountable() {
-  let best = null, bd = 7;
-  for (const h of horses) {
-    const d = dist2(player.pos.x, player.pos.z, h.pos.x, h.pos.z) - (h === questRT.specialHorse ? 3 : 0);
-    if (d < bd) { bd = d; best = h; }
-  }
-  return best;
-}
-// 身边最近一个能说话的人(具名 NPC / 村民 / 趣味 NPC)的距离平方
-function nearestTalkerD2() {
-  let d = Infinity;
-  for (const n of namedNPCs) d = Math.min(d, dist2(player.pos.x, player.pos.z, n.pos.x, n.pos.z));
-  for (const v of villagers) if (!(v.downT > 0) && !v.sleeping) d = Math.min(d, dist2(player.pos.x, player.pos.z, v.pos.x, v.pos.z));
-  for (const f of funnyNPCs) if (f && f.pos) d = Math.min(d, dist2(player.pos.x, player.pos.z, f.pos.x, f.pos.z));
-  return d;
-}
-function mountHorse(h, probe, P) {
-  if (probe) {
-    return P(h.sheep ? '按 E 骑羊(为什么不呢)' : h.playerHorse ? '按 E 骑上你的马'
-      : h.owned && !h.stolen ? '按 E 偷马 (会引来通缉!)' : '按 E 骑马', h.pos.x, h.pos.z, h.sheep ? 1.4 : 2.7);
-  }
-  if (player.carrying) { player.carrying.state = 'idle'; player.carrying = null; }
-  player.mounted = h;
-  player.jumps = 0;
-  if (h.sheep) remember('骑上了一头羊。羊没同意', 'firstsheep');
-  else if (h.chunk) {
-    remember('在无尽荒野驯服了一匹无主的野马', 'wildhorse');
-    if (!h.aiName && !AI_TEXT_OFF) {
-      h.aiName = true;
-      aiLine('给一匹中世纪奇幻世界里刚被驯服的野马起一个两字中文名,只输出名字,不要引号和解释。', null, 6000)
-        .then((t) => {
-          if (t && t.trim().length <= 4) {
-            const nm = t.trim();
-            toast(`🐴 你给它取名「${nm}」。它甩了甩鬃毛,大概是同意了。`, 3.5);
-            remember(`给驯服的野马取名「${nm}」`);
-          }
-        });
-    }
-  } else remember('第一次翻身上马', 'firstride');
-  if (h.sheep) {
-    sfx.baa();
-    toast(rand() < 0.4 ? `🐑 ${COMEDY_LINES[Math.floor(rand() * COMEDY_LINES.length)]}` : '🐑 咩?!(它似乎认命了)', 2.5);
-  } else {
-    sfx.mount();
-  }
-  if (h.owned && !h.stolen) {
-    h.stolen = true;
-    crime(1, '你偷了一匹马!卫兵被惊动了!');
-  }
-}
-function tryInteract(probe = false) {
-  if (!started || player.dead) return null;
-  const P = (text, x, z, h) => ({ text, x, z, h });
-  // 阵前单挑:攻城时冲到枭首面前按 E 应战
-  if (warband.active && warband.siege && !warband.duelOn) {
-    const lead = warband.members.find((b) => b.warlord && !b.dead);
-    if (lead && dist2(player.pos.x, player.pos.z, lead.pos.x, lead.pos.z) < 81) {
-      if (probe) return P('按 E 向枭首发起单挑(赢了他带人撤走)', lead.pos.x, lead.pos.z, 2.6);
-      warband.duelOn = true;
-      for (const b of warband.members) if (!b.warlord) b._truce = true;
-      setLockFoe(lead); // 镜头直接咬住对手
-      toast('⚔️ 枭首狞笑:「有胆!就你我二人——赢了,我带人走;输了,城归我!」', 5);
-      sfx.wanted();
-      return;
-    }
-  }
-  // 信使送来的委托书:完成一单后 12 秒内按 E 原地接下一单(不计时的委托)
-  if (canAcceptRemotely() && !player.mounted) {
-    if (probe) return P(`按 E 接下一单:${missions[quest.idx].title}(信使送来的委托书)`);
-    quest.offerT = 0;
-    talkQuestGiver(true);
-    return;
-  }
-  // 钓鱼中:收杆
-  if (fishing.active) {
-    if (probe) return P(fishing.phase === 'bite' ? '‼️ 咬钩了!按 E 收杆!!' : '🎣 等鱼上钩……(走动收竿)');
-    fishingReel();
-    return;
-  }
-  // 扔鸡(抱着鸡时 E 投掷)
-  if (player.carrying) {
-    if (probe) return P('按 E 扔鸡!');
-    const c = player.carrying;
-    player.carrying = null;
-    c.state = 'thrown';
-    c.pos.set(player.pos.x, player.pos.y + 1.9, player.pos.z);
-    c.vel.set(Math.sin(player.yaw) * 8, 3.5, Math.cos(player.yaw) * 8);
-    sfx.cluck();
-    choreProgress('throw');
-  if (++stats.thrown >= 10) unlockAch('chucker');
-    return;
-  }
-  // 下马
-  if (player.mounted) {
-    if (probe) return P(player.mounted.sheep ? '按 E 下羊(它松了口气)' : '按 E 下马');
-    const h = player.mounted;
-    player.mounted = null;
-    player.pos.set(h.pos.x + Math.cos(h.yaw) * 1.3, 0, h.pos.z - Math.sin(h.yaw) * 1.3);
-    resolveCollisions(player.pos, 0.45, colliders);
-    return;
-  }
-  // 上马优先:自己的马/任务马在 2.6 米内、而且比身边能说话的人更近——E 就是上马(限时委托中闲聊一律让位)
-  {
-    const mh = nearestMountable();
-    if (mh) {
-      const hd = dist2(player.pos.x, player.pos.z, mh.pos.x, mh.pos.z);
-      const mine = mh.playerHorse || mh === questRT.specialHorse;
-      const timed = quest.active && (quest.timer || 0) > 0;
-      const legal = !(mh.owned && !mh.stolen) && !mh.sheep; // 别因为赶时间顺手偷了马厩的马
-      if ((mine || (timed && legal)) && (timed || hd < nearestTalkerD2())) return mountHorse(mh, probe, P);
-    }
-  }
-  // 具名 NPC(委托/商店/领主/故事对话)
-  for (const n of namedNPCs) {
-    if (dist2(player.pos.x, player.pos.z, n.pos.x, n.pos.z) > 7) continue;
-    const NP = (text) => P(text, n.pos.x, n.pos.z, 2.15);
-    // 管家埃隆:委托优先;没读过的人物章节先讲(讲完接着派委托)
-    if (n.key === 'steward' && quest.idx < missions.length) {
-      if (probe) return NP(quest.active ? `按 E 与管家埃隆交谈(进行中:${missions[quest.idx].title})` : '按 E 与管家埃隆交谈(接委托)');
-      const d = DIALOGS.steward;
-      const arcIdx = d ? d.arcs.reduce((best, a, i) => (quest.idx >= a.min ? i : best), -1) : -1;
-      if (!quest.active && arcIdx >= 0 && !(n.readArcs && n.readArcs.has(arcIdx))) {
-        npcTalk(n, () => talkQuestGiver());
-        return;
-      }
-      talkQuestGiver();
-      return;
-    }
-    // 未读的故事章节优先
-    const d = DIALOGS[n.key];
-    if (d) {
-      const arcIdx = d.arcs.reduce((best, a, i) => (quest.idx >= a.min ? i : best), -1);
-      if (arcIdx >= 0 && !(n.readArcs && n.readArcs.has(arcIdx))) {
-        if (probe) return NP(n.key === 'king' && quest.idx >= missions.length && !n.rewarded ? '按 E 领取领主的重赏' : `按 E 听${n.def.name}说说心里话`);
-        n.readArcs = n.readArcs || new Set();
-        // 领主终章附带赏金
-        const grantKing = n.key === 'king' && quest.idx >= missions.length && !n.rewarded;
-        npcTalk(n, grantKing ? () => {
-          n.rewarded = true;
-          player.coins += 100;
-          sfx.fanfare();
-          toast('💰 领主赏赐 100 金币!', 4);
-          saveGame();
-        } : null);
-        return;
-      }
-    }
-    // 商店行为
-    if (n.key === 'blacksmith') {
-      if (probe) return NP(wanted > 0 ? '按 E 找铁匠(他不和通缉犯做生意)' : '按 E 打开铁匠铺(武器/护甲)');
-      if (wanted > 0) { openDialog(['格罗姆:(把铁钳一横)通缉犯?我不做黑生意。洗白了再来。']); return; }
-      openShop();
-      return;
-    }
-    if (n.key === 'trader' && !player.royalHorse) {
-      if (probe) return NP('按 E 找马贩瑟尔玛(皇家骏马 80 金币)');
-      if (wanted > 0) { openDialog(['瑟尔玛:(挡在马厩前)带着通缉令买马?马会被连坐充公的,快走!']); return; }
-      if (player.coins >= 80) {
-        player.coins -= 80;
-        player.royalHorse = true;
-        const rh = addHorse(world.stablePos.x - 3, world.stablePos.z - 3, 0xe8d9b0, false);
-        rh.fast = true;
-        rh.home.set(world.stablePos.x - 3, 0, world.stablePos.z - 3);
-        sfx.fanfare();
-        openDialog(['瑟尔玛:「疾风」交给你了。记住,喂它苹果时手要摊平——好了去吧,它等你等得直刨蹄子。']);
-        saveGame();
-      } else {
-        openDialog(['瑟尔玛:80 金币,皇家骏马。分期?马又不能分期长大。']);
-      }
-      return;
-    }
-    if (n.key === 'innkeep' && calendar.letter && !player.home) { // 有房后信直接寄到家门口信箱
-      if (probe) return NP('按 E 取信(有人写给你的)');
-      const L = calendar.letter;
-      calendar.letter = null;
-      stats.letters = (stats.letters || 0) + 1;
-      if (stats.letters >= 3) unlockAch('penpal');
-      remember(`收到了${L.from}的一封信`);
-      openDialog([
-        '罗莎:(在围裙上擦了擦手,从兜里掏出一封信)喏,有人留给你的。',
-        `(${L.from}的信)${L.text}`,
-      ], null, { key: 'innkeep', name: '老板娘罗莎', desc: NPC_DESC_EN.innkeep, ent: n });
-      if (L.from === '黑石兄弟会') vendettaRead();
-      return;
-    }
-    if (n.key === 'innkeep' && player.venison > 0) {
-      if (probe) return NP(`按 E 卖鹿肉 ×${player.venison}(每块 5 金币)`);
-      const pay = player.venison * 5;
-      openDialog([`罗莎:(眼睛一亮)新鲜鹿肉?!今晚炖肉管够了!${player.venison} 块,一共 ${pay} 金币,拿好!`]);
-      player.coins += pay;
-      player.venison = 0;
-      sfx.coin();
-      return;
-    }
-    if (n.key === 'innkeep' && (player.hp < player.maxHp || dayPhase() === 'night')) {
-      if (probe) return NP(player.hp < player.maxHp ? '按 E 住店休息,回满生命(10 金币)' : '按 E 住店过夜,睡到天亮(10 金币)');
-      if (wanted > 0) { openDialog(['罗莎:(压低声音)后门快走!卫兵刚搜过一轮,我可藏不住你。']); return; }
-      if (player.coins >= 10) {
-        player.coins -= 10;
-        sfx.heart();
-        sleepToMorning();
-        queueDream();
-        openDialog(['罗莎:(掀开门帘)天亮了,汤在灶上。伤都歇利索了吧?路上小心。']);
-      } else {
-        openDialog(['罗莎:住店 10 金币……先坐着喝口水吧,看你风尘仆仆的。']);
-      }
-      return;
-    }
-    if (n.key === 'innkeep' && player.drunkT <= 0) {
-      if (probe) return NP('按 E 来一杯麦酒(2 金币)');
-      // 满血就来一杯?
-      if (player.coins >= 2) {
-        player.coins -= 2;
-        player.drunkT = 25;
-        sfx.hiccup();
-        if (++stats.drunks >= 3) unlockAch('drunkard');
-        openDialog(['罗莎:(推来一大杯麦酒)自家酿的,后劲儿足——哎哎哎,你别一口闷啊!']);
-      } else {
-        openDialog(['罗莎:麦酒 2 金币。赊账?上一个赊账的还在后院劈柴呢。']);
-      }
-      return;
-    }
-    if (n.key === 'witch') {
-      if (probe) {
-        return NP(!player.spells.includes('fire') && player.coins >= 30 ? '按 E 买《火球术》卷轴(30 金币)'
-          : player.loot > 0 ? `按 E 销赃 ×${player.loot}(每件 8 金币,不问来路)`
-          : player.hp < player.maxHp ? '按 E 买回魂汤(8 金币)'
-          : player.herbs > 0 ? `按 E 卖蘑菇 ×${player.herbs}(每朵 3 金币)`
-          : player.coins >= 5 ? '按 E 求一卦(5 金币,她真算得准)' : '按 E 与沼泽女巫玛尔戈交谈');
-      }
-      if (!player.spells.includes('fire') && player.coins >= 30) {
-        player.coins -= 30;
-        sfx.chest();
-        openDialog(['玛尔戈:(从袖子里抽出一卷焦边的羊皮纸)《火球术》。三十金币,童叟无欺。',
-          '玛尔戈:念的时候手别抖——上一个手抖的,眉毛长了半年。'],
-        () => learnSpell('fire'));
-        return;
-      }
-      if (player.loot > 0) { // 销赃:她掂了掂,不问来路
-        const pay = player.loot * 8;
-        stats.fenced = (stats.fenced || 0) + player.loot;
-        if (stats.fenced >= 10) unlockAch('blackmkt');
-        player.coins += pay;
-        sfx.coin();
-        openDialog([`玛尔戈:(把${player.loot}件东西逐一对着月光掂了掂,金币从袖口滑出来)${pay} 枚。东西哪来的,我不问;钱哪去了,你也别说。`]);
-        player.loot = 0;
-        saveGame();
-        return;
-      }
-      if (player.hp < player.maxHp) {
-        if (player.coins >= 8) {
-          player.coins -= 8;
-          player.hp = player.maxHp;
-          sfx.heart();
-          openDialog(['玛尔戈:(舀了一勺冒泡的绿汤)喝。别问是什么,问了就不灵了。……看,好全了吧?']);
-        } else {
-          openDialog(['玛尔戈:一勺回魂汤,8 个金币。穷?那就去湖里洗把脸,精神精神。']);
-        }
-      } else if (player.herbs > 0) {
-        const pay = player.herbs * 3;
-        openDialog([`玛尔戈:(扒拉着你的蘑菇篓)成色不错……${player.herbs} 朵,${pay} 金币。别问进了哪口锅。`]);
-        player.coins += pay;
-        player.herbs = 0;
-        sfx.coin();
-      } else if (player.coins >= 5 && !aiBusy.fortune) {
-        witchFortune(n);
-      } else {
-        openDialog([`玛尔戈:${EXTRA_NPCS.witch.lines[n.lineIdx++ % EXTRA_NPCS.witch.lines.length]}`], null,
-          { key: null, name: '沼泽女巫玛尔戈', desc: NPC_DESC_EN.witch, ent: n });
-      }
-      return;
-    }
-    // 闲聊
-    if (probe) return NP(n.key === 'king' ? '按 E 谒见领主' : `按 E 与${n.def.name}交谈`);
-    npcTalk(n);
-    return;
-  }
-  // 神秘商人
-  if (director.mystic && dist2(player.pos.x, player.pos.z, director.mystic.pos.x, director.mystic.pos.z) < 6) {
-    if (probe) return P('按 E 与兜帽商人交易(灵药 5 金币)', director.mystic.pos.x, director.mystic.pos.z, 2.15);
-    if (player.hp < player.maxHp && player.coins >= 5) {
-      player.coins -= 5;
-      player.hp = player.maxHp;
-      sfx.heart();
-      openDialog(['兜帽商人:(递来一小瓶)喝吧。别问来路,好东西都没有来路。(生命全满)']);
-    } else if (player.hp < player.maxHp) {
-      openDialog(['兜帽商人:灵药 5 枚金币。没钱?缘分未到。']);
-    } else {
-      openDialog(['兜帽商人:你气色好得很,不需要我。有缘再会。(他朝虚空看了一眼)']);
-    }
-    return;
-  }
-  // 智慧牛:提问
-  if (director.cow && dist2(player.pos.x, player.pos.z, director.cow.pos.x, director.cow.pos.z) < 8) {
-    if (probe) return P(`按 E 向牛提问(还能问 ${Math.max(0, 5 - director.cow.asked)} 次)`, director.cow.pos.x, director.cow.pos.z, 1.8);
-    const cow = director.cow;
-    cow.asked++;
-    cow.nodT = 1.4;
-    cow.nodYes = rand() < 0.5;
-    const lines = [cow.nodYes ? '「哞——」它缓缓地、郑重地点了点头。' : '「哞?」它把头摇得像磨坊的风车。'];
-    if (cow.asked === 1) lines.unshift('(你凑到牛耳边,问了一个藏在心里的问题)');
-    if (cow.asked === 3) lines.push('农夫汉克远远喊道:「别信它!上回它点头说不下雨,结果淹了我半亩地!」');
-    if (cow.asked >= 5) lines.push('牛嚼了口草,似乎不打算再回答任何问题了。');
-    openDialog(lines);
-    return;
-  }
-  // 许愿池捞币人
-  if (director.thief && dist2(player.pos.x, player.pos.z, director.thief.pos.x, director.thief.pos.z) < 6) {
-    if (probe) return P('按 E 咳嗽一声', director.thief.pos.x, director.thief.pos.z, 2.15);
-    player.coins += 2;
-    sfx.coin();
-    openDialog([
-      '你重重咳嗽了一声。捞币人吓得原地蹦起,塞给你 2 枚湿漉漉的金币:「嘘——我在帮湖神清点!对,清点!」',
-      '(他一步三滑地溜进了夜色。喷泉里的愿望们松了口气。)',
-    ]);
-    if (director.handle) director.handle.t = Math.min(director.handle.t, 0.01);
-    return;
-  }
-  // 事件鸡优先(金鸡/越狱鸡:比旅店人群的交互更贴身优先)
-  for (const c of chickens) {
-    if (!c.extra || c.state === 'thrown' || c === player.carrying) continue;
-    if (dist2(player.pos.x, player.pos.z, c.pos.x, c.pos.z) < 3.5) {
-      if (probe) return P(c.golden ? '按 E 抱住金鸡!!' : '按 E 抱住它!', c.pos.x, c.pos.z, 1.0);
-      player.carrying = c;
-      c.state = 'carried';
-      sfx.cluck();
-      toast('你一把抱住了它!', 2);
-      return;
-    }
-  }
-  // 竞技场主持人
-  if (!arenaRT.active && dist2(player.pos.x, player.pos.z, arenaHost.pos.x, arenaHost.pos.z) < 7) {
-    if (probe) return P(`按 E 参加角斗(最佳纪录:${stats.arenaBest || 0} 波)`, arenaHost.pos.x, arenaHost.pos.z, 2.15);
-    openDialog([
-      `血牙:${HOST_LINES[arenaHost.lineIdx++ % HOST_LINES.length]}`,
-      '血牙:想下场?站进沙圈,我一声锣响就开打。每清一波,赏金翻着涨。',
-    ], () => {
-      arenaRT.active = true;
-      arenaRT.wave = 0;
-      arenaRT.betweenT = 1.2;
-      toast('🏟️ 角斗开始!站稳了!', 2.5);
-    });
-    return;
-  }
-  // 搞笑 NPC
-  for (const n of funnyNPCs) {
-    if (dist2(player.pos.x, player.pos.z, n.pos.x, n.pos.z) > 7) continue;
-    if (probe) {
-      return P({
-        gambler: '按 E 掷骰子(赌 10 金币)',
-        bard: '按 E 点一首《你自己的歌》',
-        prophet: '按 E 听老糊涂的预言(?)',
-        quixote: '按 E 与风车骑士交谈',
-        storyteller: '按 E 听苟叔说书',
-        strongman: `按 E 掰手腕(赌 15 赢 30${stats.arms ? `,战绩 ${stats.arms} 胜` : ''})`,
-        merccap: `按 E 雇佣剑士(40 金币+每日 5 饷,随行 ${mercs.length}/2)`,
-      }[n.key] || `按 E 与${n.def.name}交谈`, n.pos.x, n.pos.z, 2.15);
-    }
-    if (n.key === 'gambler') { gamble(); return; }
-    if (n.key === 'strongman') { armWrestle(); return; }
-    if (n.key === 'merccap') { hireMerc(); return; }
-    if (n.key === 'bard') { bardSong(); return; }
-    if (n.key === 'storyteller') { tellStory(); return; }
-    if (n.key === 'prophet') {
-      if (aiBusy.prophet) return;
-      aiBusy.prophet = true;
-      const fb = n.def.idle[n.lineIdx++ % n.def.idle.length];
-      const seen = recallLine();
-      aiLine(
-        '你是中世纪疯预言家老糊涂,总说些打破第四面墙的怪话(比如怀疑世界是个游戏)。' +
-        (seen ? `你还"看见"了眼前这人的过去:${seen}。` : '') + wsReport() +
-        '用中文说一句50字以内的疯预言,可以拿以上内容做文章。只输出预言本身。', fb, 5000)
-        .then((line) => {
-          aiBusy.prophet = false;
-          if (!dialog.open && !player.dead) openDialog([`疯子老糊涂:${line}`]);
-        });
-      return;
-    }
-    openDialog([`${n.def.name}:${n.def.idle[n.lineIdx++ % n.def.idle.length]}`], null,
-      { key: null, name: n.def.name, desc: NPC_DESC_EN[n.key], ent: n });
-    return;
-  }
-  // 自家信箱:有信时优先取信
-  if (player.home && calendar.letter && dist2(player.pos.x, player.pos.z, HOME.x + 3.4, HOME.z + 3.2) < 5) {
-    if (probe) return P('按 E 开信箱(小红旗立着——有信!)', HOME.x + 3.4, HOME.z + 3.2, 1.8);
-    const L = calendar.letter;
-    calendar.letter = null;
-    stats.letters = (stats.letters || 0) + 1;
-    if (stats.letters >= 3) unlockAch('penpal');
-    remember(`在自家信箱收到了${L.from}的一封信`);
-    sfx.chest();
-    openDialog(['(你掀开自家信箱的盖子,把小红旗放平——里面躺着一封信)', `(${L.from}的信)${L.text}`]);
-    if (L.from === '黑石兄弟会') vendettaRead();
-    return;
-  }
-  // 龙骨之地的龙颅:习得战吼
-  if (dist2(player.pos.x, player.pos.z, DRAGON_SKULL.x, DRAGON_SKULL.z) < 9) {
-    if (probe) return P(shout.learned ? '(龙颅无话可教了。去吼吧——X 键)' : '按 E 把手放上龙颅', DRAGON_SKULL.x, DRAGON_SKULL.z, 2.5);
-    learnShout();
-    return;
-  }
-  // 湖畔小屋:买房 / 回家安眠
-  if (dist2(player.pos.x, player.pos.z, HOME.doorX, HOME.doorZ) < 6) {
-    if (probe) {
-      return P(!player.home
-        ? (player.coins >= HOME.price ? `按 E 买下湖畔小屋(${HOME.price} 金币)` : `(出售)湖畔小屋 ${HOME.price} 金币,还差 ${HOME.price - player.coins}`)
-        : player.homeDay === calendar.day ? '(安眠中:移动 +8%。明天再睡)' : '按 E 回屋睡一觉(安眠:移动 +8%)', HOME.x, HOME.z, 3.2);
-    }
-    homeInteract();
-    return;
-  }
-  // 悬赏板
-  if (dist2(player.pos.x, player.pos.z, 8, 46) < 8) {
-    if (probe) {
-      return P(wanted > 0 ? `按 E 缴罚金撤销通缉(${wanted * 20} 金币)` : bountyRT.target ? '按 E 查看悬赏令' : '按 E 揭悬赏令(赏金 30)', 8, 46, 2.4);
-    }
-    if (wanted > 0) {
-      const fine = wanted * 20;
-      if (player.coins >= fine) {
-        player.coins -= fine;
-        clearWanted();
-        sfx.clear();
-        openDialog([`(你把 ${fine} 枚金币塞进告示板下的罚金箱)卫兵把你的通缉令撕了下来。你自由了——暂时。`]);
-      } else {
-        openDialog([`(告示板)你的通缉罚金是 ${fine} 金币,兜里不够。要么凑钱,要么躲风头。`]);
-      }
-      return;
-    }
-    if (bountyRT.target) openDialog([`(告示板)悬赏令仍在追缉中——「${bountyRT.name}」,${bountyRT.crime ? `罪状:${bountyRT.crime}` : '生死不论'}。`], null, wantedPosterSpeaker());
-    else if (bountyRT.cooldown > 0) openDialog(['(告示板)新的悬赏令还没贴出来,过一会儿再来看看。']);
-    else takeBounty();
-    return;
-  }
-  // 王国公告牌(每日 AI 撰写;日期对不上就重写,防陈旧)
-  if (dist2(player.pos.x, player.pos.z, NOTICE_POS.x, NOTICE_POS.z) < 6) {
-    if (probe) return P('按 E 看今日王国公告', NOTICE_POS.x, NOTICE_POS.z, 2.2);
-    if (!proclaimText || !proclaimText.includes(`第 ${seasonDay()} 日`)) refreshProclaim();
-    openDialog([proclaimText || composeProclaimOffline()]);
-    return;
-  }
-  // 村务板(无限支线)
-  if (dist2(player.pos.x, player.pos.z, CHORE_POS.x, CHORE_POS.z) < 6) {
-    if (probe) {
-      return P(!sideQuest.active ? '按 E 接一桩村务(无限)'
-        : choreReady() ? '按 E 交差领赏!' : `按 E 看村务进度(${sideQuest.giver})`, CHORE_POS.x, CHORE_POS.z, 2.2);
-    }
-    choreBoard();
-    return;
-  }
-  // 世界观铭文
-  for (const s of loreStones) {
-    if (dist2(player.pos.x, player.pos.z, s.def.x, s.def.z) < 8) {
-      if (probe) {
-        return P(loreRead.includes(LORE.indexOf(s.def))
-          ? `按 E 重读铭文《${s.def.title}》` : `按 E 阅读铭文(${loreRead.length}/${LORE.length})`, s.def.x, s.def.z, 2.0);
-      }
-      readLore(s);
-      return;
-    }
-  }
-  // 王室地窖:暗门进出与圣坛
-  if (dist2(player.pos.x, player.pos.z, DGN.hatch.x, DGN.hatch.z) < 6) {
-    if (probe) return P('按 E 掀开暗门(被封印的地窖)', DGN.hatch.x, DGN.hatch.z, 1.2);
-    enterDungeon();
-    return;
-  }
-  if (inDungeon()) {
-    if (dist2(player.pos.x, player.pos.z, DGN.exit.x, DGN.exit.z) < 6) {
-      if (probe) return P('按 E 爬回地面', DGN.exit.x, DGN.exit.z, 1.2);
-      exitDungeon();
-      return;
-    }
-    if (dist2(player.pos.x, player.pos.z, DGN.relic.x, DGN.relic.z) < 6) {
-      if (probe) return P(player.relic ? '(空了的圣坛)' : '按 E 请下「先王战徽」', DGN.relic.x, DGN.relic.z, 1.6);
-      takeRelic();
-      return;
-    }
-  }
-  // 湖上摆渡与月光祭坛
-  if (dist2(player.pos.x, player.pos.z, BOAT_PIER.x, BOAT_PIER.z) < 8) {
-    if (probe) return P('按 E 划船去湖心岛', BOAT_PIER.x, BOAT_PIER.z, 1.2);
-    rowTo({ x: -100, z: 102.5 }, '🏝️ 湖心岛。断柱与祭坛都在水声里等你。');
-    return;
-  }
-  if (dist2(player.pos.x, player.pos.z, BOAT_ISLE.x, BOAT_ISLE.z) < 6) {
-    if (probe) return P('按 E 划船回栈桥', BOAT_ISLE.x, BOAT_ISLE.z, 1.2);
-    rowTo({ x: -99.4, z: 83 }); // 落在栈桥桥面上(桥面宽 2.2m,两侧是水)
-    return;
-  }
-  if (dist2(player.pos.x, player.pos.z, -100, 100.5) < 5) {
-    if (probe) return P(lakeBlessed ? '(祭坛记得你)' : '按 E 触碰月光祭坛', -100, 100.5, 1.6);
-    prayAltar();
-    return;
-  }
-  // 栈桥垂钓 / 湖心岛深水垂钓
-  if (!player.mounted && dist2(player.pos.x, player.pos.z, FISH_SPOT.x, FISH_SPOT.z) < 10) {
-    if (probe) return P('按 E 垂钓', FISH_SPOT.x, FISH_SPOT.z, 1.6);
-    startFishing();
-    return;
-  }
-  if (!player.mounted && dist2(player.pos.x, player.pos.z, FISH_SPOT_ISLE.x, FISH_SPOT_ISLE.z) < 7) {
-    if (probe) return P('按 E 深水垂钓(岛边的鱼更肥)', FISH_SPOT_ISLE.x, FISH_SPOT_ISLE.z, 1.4);
-    startFishing(true);
-    return;
-  }
-  // 赛马计时赛
-  if (dist2(player.pos.x, player.pos.z, TRIAL_FLAG.x, TRIAL_FLAG.z) < 8) {
-    if (probe) {
-      return P(trialRT.active ? '按 E 放弃计时赛'
-        : `按 E 开始赛马计时赛${stats.raceBest ? `(纪录 ${stats.raceBest.toFixed(1)}s)` : ''}`, TRIAL_FLAG.x, TRIAL_FLAG.z, 3.0);
-    }
-    if (trialRT.active) endTrial(false);
-    else startTrial();
-    return;
-  }
-  // 白狼霜牙:喂鹿肉驯服
-  if (!frostfang.tamed && frostfang.wary &&
-      dist2(player.pos.x, player.pos.z, frostfang.wary.pos.x, frostfang.wary.pos.z) < 26) {
-    if (probe) {
-      return P(player.venison > 0 ? `按 E 喂鹿肉给白狼(驯服 ${frostfang.feed}/3)` : '🐺 白狼想要鹿肉(去猎一头鹿)',
-        frostfang.wary.pos.x, frostfang.wary.pos.z, 1.3);
-    }
-    if (player.venison > 0) {
-      player.venison--;
-      frostfang.feed++;
-      sfx.heart();
-      if (frostfang.feed >= 3) tameFrostfang();
-      else toast(`🐺 白狼叼走了鹿肉,退开两步,眼神软了一点(${frostfang.feed}/3)`, 3.5);
-    } else {
-      toast('🐺 白狼盯着你的手——它想要的是鹿肉。', 2.5);
-    }
-    return;
-  }
-  // 篝火烤肉
-  {
-    const cf = nearestSpot('campfire', 30);
-    if (cf && player.venison > 0) {
-      if (probe) return P(`按 E 烤鹿肉(回 ❤×1.5,剩 ×${player.venison})`, cf.x, cf.z, 1.2);
-      player.venison--;
-      player.hp = Math.min(player.maxHp, player.hp + 3);
-      sfx.heart();
-      stats.cooked = (stats.cooked || 0) + 1;
-      choreProgress('cook');
-      if (stats.cooked >= 5) unlockAch('chef');
-      toast(`🍖 烤鹿肉滋滋作响……回复 ❤×1.5(剩余鹿肉 ×${player.venison})`, 3);
-      return;
-    }
-  }
-  // 遗迹教堂:祈祷得庇佑(每日一次)
-  {
-    const ch = nearestSpot('chapel', 30);
-    if (ch) {
-      if (probe) return P(!blessedToday() ? '按 E 在石坛前祈祷(获得庇佑)' : '(神明今日已听过你的祷告)', ch.x, ch.z, 2.0);
-      prayAtChapel();
-      return;
-    }
-  }
-  // 回响之镜:与世界的意识对话
-  if (dist2(player.pos.x, player.pos.z, MIRROR_POS.x, MIRROR_POS.z) < 9) {
-    if (probe) return P('按 E 凝视回响之镜', MIRROR_POS.x, MIRROR_POS.z, 2.3);
-    mirrorTalk();
-    return;
-  }
-  // 采蘑菇
-  for (const m of mushrooms) {
-    if (!m.picked && dist2(player.pos.x, player.pos.z, m.x, m.z) < 4) {
-      if (probe) return P('按 E 采蘑菇', m.x, m.z, 0.8);
-      m.picked = true;
-      m.group.visible = false;
-      player.herbs++;
-      stats.mushrooms = (stats.mushrooms || 0) + 1;
-      if (stats.mushrooms >= 15) unlockAch('forager');
-      sfx.coin();
-      toast(`🍄 采到一朵伞菇(篓里 ×${player.herbs},女巫玛尔戈按 3 金币收)`, 2.5);
-      return;
-    }
-  }
-  // 抱鸡(半径小,贴身优先)
-  for (const c of chickens) {
-    if (c.state === 'thrown') continue;
-    if (dist2(player.pos.x, player.pos.z, c.pos.x, c.pos.z) < 3.5) {
-      if (probe) return P('按 E 抱起鸡(为什么?)', c.pos.x, c.pos.z, 1.0);
-      player.carrying = c;
-      c.state = 'carried';
-      sfx.cluck();
-      toast(rand() < 0.4 ? `🐔 ${COMEDY_LINES[Math.floor(rand() * COMEDY_LINES.length)]}` : '你抱起了一只鸡。它一脸问号。', 2.5);
-      return;
-    }
-  }
-  // 村民对话(优先 100 万字对话库,按情境选行;AI 情境台词后台预取,下次开口就用)
-  for (const v of villagers) {
-    if (v.downT > 0 || v.sleeping) continue;
-    if (dist2(player.pos.x, player.pos.z, v.pos.x, v.pos.z) > 5.5) continue;
-    if (probe) return P(`按 E 与${v.id.name}交谈`, v.pos.x, v.pos.z, 2.05);
-    const l1 = v.aiNext || dbLine(v.dbKey) || v.id.lines[v.lineIdx++ % v.id.lines.length];
-    v.aiNext = null;
-    // 你的事迹在村里口口相传(编年史)
-    const deed = recallLine();
-    let l2;
-    const deedsV = v.dbKey === 'v11' ? chronicleDeeds() : [];
-    if (deedsV.length && rand() < 0.4) {
-      // 抄写员薇拉:你的事迹被写进编年史正文(同一套白名单,只录你亲手做的事)
-      const m = deedsV[Math.floor(rand() * deedsV.length)];
-      l2 = `(翻开编年史,蘸了蘸墨)「历第 ${m.d} 日,绿衣游侠林恩${m.t}。」——已录入正史,后人会读到的。`;
-    } else if (EVO.legends.length && rand() < 0.3) {
-      // 传说演化:村民复述最热的那条(复述本身就是传播 → 热度自增,被自然选择留下)
-      const l = EVO.legends.reduce((b, x) => (x.heat > b.heat ? x : b));
-      l.heat++;
-      l2 = `街坊传得有鼻子有眼:「${legendText(l)}」——这话都传到第 ${l.gen} 种说法了,越传越神。`;
-    } else {
-      l2 = deed && rand() < 0.25
-        ? ['听说你', '有人瞧见你', '街坊都在传,说你'][Math.floor(rand() * 3)] + deed + '。真有你的。'
-        : dbLine(v.dbKey) || v.id.lines[v.lineIdx++ % v.id.lines.length];
-    }
-    openDialog([`${v.id.name}:${l1}`, `${v.id.name}:${l2}`], null,
-      { key: v.dbKey, name: v.id.name, desc: VILLAGER_DESC_EN[villagers.indexOf(v)] || 'villager', ent: v });
-    if (!AI_TEXT_OFF && !v.aiPending && rand() < 0.35) {
-      v.aiPending = true;
-      const sp = todaySpecial();
-      aiLine(
-        `你是中世纪王国的村民「${v.id.name}」。现在是${SEASONS[seasonIdx()]}季` +
-        `${sp ? '·' + sp.name : ''},${{ dawn: '清晨', day: '白天', dusk: '黄昏', night: '夜里' }[dayPhase()]},` +
-        `天气${{ clear: '晴', cloudy: '多云', rain: '下雨', storm: '雷暴' }[weather.state]}。` +
-        (workspace.current ? `眼前这位客人的近况:${workspace.current.t}。` : '') +
-        '用中文说一句40字以内、符合你身份的闲聊,口语化,不要引号不要名字前缀。', null, 9000,
-      ).then((t) => { v.aiPending = false; if (t) v.aiNext = t; });
-    }
-    return;
-  }
-  // 喷泉许愿
-  if (player.coins > 0 && dist2(player.pos.x, player.pos.z, 0, 5) < 20) {
-    if (probe) return P('按 E 向喷泉许愿(1 金币)', 0, 5, 3);
-    fountainWish();
-    return;
-  }
-  // 宝箱
-  for (const c of world.chests) {
-    if (!c.opened && dist2(player.pos.x, player.pos.z, c.x, c.z) < 5) {
-      if (probe) return P('按 E 打开宝箱', c.group.position.x, c.group.position.z, 1.5);
-      c.opened = true;
-      sfx.chest();
-      const wx = c.group.position.x, wz = c.group.position.z;
-      for (let i = 0; i < 8; i++) {
-        const a = rand() * 6.28;
-        addPickup('coin', wx + Math.cos(a) * (1 + rand() * 1.5), wz + Math.sin(a) * (1 + rand() * 1.5), 40);
-      }
-      addPickup('heart', wx, wz + 1.2, 40);
-      toast('打开了宝箱!', 2);
-      return;
-    }
-  }
-  // 上马
-  const best = nearestMountable();
-  // 墓园漫步:读一块墓志铭(最低优先级,别挡着上马;AI 后台补写新碑文)
-  if (!best && dist2(player.pos.x, player.pos.z, -40, -120) < 400) {
-    if (probe) return P('按 E 读一块墓志铭');
-    readEpitaph();
-    return;
-  }
-  if (best) return mountHorse(best, probe, P);
-  return null;
-}
+
+
 
 
 
@@ -1248,609 +407,18 @@ function tryInteract(probe = false) {
 initCombat();
 
 initAttack();
-// ================= 玩家更新 =================
-const _moveFwd = new THREE.Vector2();
-const _moveRight = new THREE.Vector2();
-const _moveVec = new THREE.Vector2();
-function updatePlayer(dt) {
-  if (player.dead) return;
-  player.invulnT = Math.max(0, player.invulnT - dt);
-
-  // 醉酒:打嗝 + 清醒判定
-  if (player.drunkT > 0) {
-    player.drunkT -= dt;
-    player.hiccupT -= dt;
-    if (player.hiccupT <= 0) {
-      player.hiccupT = 3 + rand() * 3;
-      sfx.hiccup();
-      cam.shake = Math.max(cam.shake, 0.12);
-    }
-    if (player.drunkT <= 0) toast('你清醒过来了……头好痛。', 2.5);
-  }
-
-  // 攻击动画(三段式:蓄力→劈砍→收势)
-  if (player.attackT > 0) {
-    player.attackT -= dt;
-    const t = 1 - player.attackT / (player.attackDur || 0.35);
-    const from = player._animFrom || 0; // 重击从蓄力举剑位接着播
-    player.parts._attackAnim = true;
-    meleeSwing(player.parts, Math.min(1, from + (1 - from) * t), player._stance);
-    if (player.attackT <= 0) endAttack();
-  }
-
-  const f = _moveFwd.set(-Math.sin(cam.yaw), -Math.cos(cam.yaw));
-  const r = _moveRight.set(-f.y, f.x);
-  let ix = 0, iz = 0;
-  if (keys['KeyW'] || keys['ArrowUp']) iz += 1;
-  if (keys['KeyS'] || keys['ArrowDown']) iz -= 1;
-  if (keys['KeyD'] || keys['ArrowRight']) ix += 1;
-  if (keys['KeyA'] || keys['ArrowLeft']) ix -= 1;
-  const mv = _moveVec.set(f.x * iz + r.x * ix, f.y * iz + r.y * ix);
-  const moving = mv.lengthSq() > 0;
-  if (moving) mv.normalize();
-  // 醉酒:走路画龙
-  if (moving && player.drunkT > 0) {
-    const wob = Math.sin(performance.now() * 0.0012) * 0.7;
-    const cw = Math.cos(wob), sw = Math.sin(wob);
-    mv.set(mv.x * cw - mv.y * sw, mv.x * sw + mv.y * cw);
-  }
-
-  if (player.mounted) {
-    const h = player.mounted;
-    const speed = h.sheep
-      ? (keys['ShiftLeft'] || keys['ShiftRight'] ? 4.6 : 3.2)
-      : (keys['ShiftLeft'] || keys['ShiftRight'] ? 17 : 11) * (h.fast ? 1.2 : 1) *
-        (1 + 0.02 * (skillLv('riding') - 1)); // 骑术:人马合一
-    player._rideSpeed = moving ? speed : 0; // 冲量记账:马上挥刀按马速加成
-    // 骑砍冲锋践踏:疾驰状态撞上敌人,连人带马把他掀翻
-    if (!h.sheep && speed >= 16 && moving) {
-      for (const list of [bandits, wolves]) {
-        for (const e of list) {
-          if (e.dead || e.downT > 0 || (e._trampleCd || 0) > 0) continue;
-          if (dist2(h.pos.x, h.pos.z, e.pos.x, e.pos.z) > 3.2) continue;
-          e._trampleCd = 2.5;
-          // 践踏只把人撞个趔趄(0.5 秒、不扣血、不开处决):冲阵要靠马上那一刀,不是自动清场
-          if (e.stunT !== undefined) { e.stunT = Math.max(e.stunT || 0, 0.5); e.stunSrc = 'bash'; }
-          hitFX(e, 2.2);
-          callout('撞翻!', 'gold', e.pos);
-          sfx.hoof();
-          cam.shake = Math.max(cam.shake, 0.25);
-          skillXp('riding', 2);
-        }
-      }
-    }
-    if (moving) {
-      // 坡度:马能爬缓坡,陡坡明显吃力,悬崖上不去;下坡略快
-      const hg0 = groundH(h.pos.x, h.pos.z);
-      const hg1 = groundH(h.pos.x + mv.x * 1.2, h.pos.z + mv.y * 1.2);
-      const hGrade = (hg1 - hg0) / 1.2;
-      const hSlope = hGrade > 0 ? Math.max(0.1, 1 - Math.max(0, hGrade - 0.3) * 1.25) : Math.min(1.1, 1 - hGrade * 0.12);
-      h.pos.x += mv.x * speed * hSlope * dt;
-      h.pos.z += mv.y * speed * hSlope * dt;
-      h.yaw = angleLerp(h.yaw, Math.atan2(mv.x, mv.y), dt * 6);
-      h.walkT += dt * speed * 1.6;
-      if (h.sheep) {
-        stats.sheepDist += speed * dt;
-        if (stats.sheepDist >= 100) unlockAch('shepherd');
-      }
-    }
-    // 骑乘跳跃
-    if (keys['Space'] && player.onGround) {
-      player.vy = 8;
-      player.onGround = false;
-      sfx.jump();
-      keys['Space'] = false;
-    }
-    const horseAirborne = !player.onGround;
-    player.vy -= 22 * dt;
-    player.pos.y += player.vy * dt;
-    if (player.pos.y <= 0) {
-      player.pos.y = 0;
-      player.vy = 0;
-      player.onGround = true;
-      if (horseAirborne) spawnDust(h.pos.x, 0.1, h.pos.z, 7, 1.4, 1.8);
-    }
-    // 马蹄声与扬尘(节奏随速度)
-    if (moving && player.onGround) {
-      h.stepT = (h.stepT || 0) - dt;
-      if (h.stepT <= 0) {
-        h.stepT = (keys['ShiftLeft'] || keys['ShiftRight']) ? 0.17 : 0.32;
-        if (h.sheep) { if (rand() < 0.22) sfx.baa(); }
-        else sfx.hoof();
-        spawnDust(h.pos.x - Math.sin(h.yaw) * 1.1, 0.08, h.pos.z - Math.cos(h.yaw) * 1.1,
-          (keys['ShiftLeft'] || keys['ShiftRight']) ? 3 : 1, 0.8, 1.3);
-      }
-    }
-    resolveCollisions(h.pos, 0.85, colliders);
-    h.pos.y = player.pos.y;
-    h.group.position.copy(h.pos);
-    h.group.rotation.y = h.yaw;
-    const galloping = moving && (keys['ShiftLeft'] || keys['ShiftRight']);
-    animHorseLegs(h, moving ? (galloping ? 1.6 : 1.0) : 0);
-    cam.moveState = moving ? (galloping ? 3 : 2) : 0;
-    player.pos.x = h.pos.x;
-    player.pos.z = h.pos.z;
-    player.yaw = h.yaw;
-    // 骑手随马起伏,疾驰时前倾(骑羊时……贴地飞行)
-    player.group.position.set(h.pos.x, h.pos.y + (h.sheep ? 0.72 : 1.35) + (h.visBob || 0), h.pos.z);
-    player.group.rotation.y = h.yaw;
-    player.parts.legL.rotation.x = -1.1;
-    player.parts.legR.rotation.x = -1.1;
-    player.parts.body.rotation.x = galloping ? 0.3 : 0.1;
-    player.parts.armL.rotation.x = -0.55;
-    if (!player.parts._attackAnim) player.parts.armR.rotation.x = -0.55;
-    return;
-  }
-
-  // 翻滚接管本帧
-  if (player.rollCd > 0) player.rollCd -= dt;
-  if (player.rollT > 0) {
-    player.rollT -= dt;
-    player.pos.x += player.rollDir.x * 13 * dt;
-    player.pos.z += player.rollDir.y * 13 * dt;
-    resolveCollisions(player.pos, 0.45, colliders);
-    player.group.position.copy(player.pos);
-    player.group.rotation.y = player.yaw;
-    player.group.rotation.x = -(1 - Math.max(0, player.rollT) / 0.38) * Math.PI * 2;
-    if (player.rollT <= 0) player.group.rotation.x = 0;
-    cam.moveState = 2;
-    return;
-  }
-  // 疾跑吃体力:跑干了就只能小步喘(骑砍的腿);出招与蓄力时不能疾跑
-  const committed = player.attackT > 0 && !(player.lungeT > 0); // 出招有承诺:脚下收住
-  const canSprint = (keys['ShiftLeft'] || keys['ShiftRight']) && player.sta > 0.5 && player.gaspT <= 0 &&
-    !committed && !player.charging;
-  const speed = (canSprint ? 8.4 : 5.0) * (player.blocking ? 0.45 : 1) *
-    (committed ? 0.3 : 1) * (player.charging ? 0.5 : 1) *
-    (player.blessT > 0 ? 1.15 : 1) * // 教堂庇佑:脚下生风
-    (player.homeDay === calendar.day ? 1.08 : 1) * // 在自家床上睡过:安眠增益
-    (player.sneaking ? 0.5 : 1) * // 潜行:压着步子
-    (player.gaspT > 0 ? 0.75 : 1) * (player.staggerT > 0 ? 0.35 : 1); // 喘气/踉跄拖腿
-  const prevYaw = player.yaw;
-  if (moving) {
-    // 坡度:上坡越陡越慢(陡崖几乎爬不动),下坡略快——山才像山
-    const h0 = groundH(player.pos.x, player.pos.z);
-    const h1 = groundH(player.pos.x + mv.x * 0.8, player.pos.z + mv.y * 0.8);
-    const grade = (h1 - h0) / 0.8;
-    const slopeMul = grade > 0 ? Math.max(0.12, 1 - Math.max(0, grade - 0.25) * 1.15) : Math.min(1.12, 1 - grade * 0.15);
-    player.pos.x += mv.x * speed * slopeMul * dt;
-    player.pos.z += mv.y * speed * slopeMul * dt;
-    // 出招中不跟着脚步转身(刀已出手);蓄力时只能慢慢调整朝向
-    if (!lockFoe && !committed) player.yaw = angleLerp(player.yaw, Math.atan2(mv.x, mv.y), dt * (player.charging ? 4 : 12));
-    player.walkT += dt * speed * 2.2;
-    if (canSprint) player.sta = Math.max(0, player.sta - 7 * dt);
-  }
-  // 锁定中:身体始终朝着目标,移动变成环绕侧步
-  if (lockFoe) {
-    player.yaw = angleLerp(player.yaw,
-      Math.atan2(lockFoe.pos.x - player.pos.x, lockFoe.pos.z - player.pos.z), dt * 14);
-  }
-  cam.moveState = moving ? (speed > 5 ? 2 : 1) : 0;
-  if (fishing.active && moving) {
-    fishing.active = false;
-    toast('收竿了。', 1.5);
-  }
-  // 疾跑扬尘
-  if (moving && player.onGround && speed > 5) {
-    player.stepT = (player.stepT || 0) - dt;
-    if (player.stepT <= 0) {
-      player.stepT = 0.22;
-      spawnDust(player.pos.x, 0.05, player.pos.z, 1, 0.35, 1.0);
-    }
-  }
-  // 转向侧倾
-  let dyaw = (player.yaw - prevYaw) % (Math.PI * 2);
-  if (dyaw > Math.PI) dyaw -= Math.PI * 2;
-  if (dyaw < -Math.PI) dyaw += Math.PI * 2;
-  player.lean = (player.lean || 0) * 0.86 + Math.max(-0.16, Math.min(0.16, -dyaw * 1.6)) * 0.14;
-
-  // 跳跃(二段跳)
-  if (keys['Space']) {
-    if (player.onGround) {
-      player.vy = 8.2; player.onGround = false; player.jumps = 1; sfx.jump();
-    } else if (player.jumps === 1) {
-      player.vy = 7.4; player.jumps = 2; sfx.jump();
-    }
-    keys['Space'] = false;
-  }
-  const wasAirborne = !player.onGround;
-  const fallSpeed = player.vy;
-  player.vy -= 22 * dt;
-  // 抱着鸡:扑腾缓降(塞尔达欠我们的)
-  if (player.carrying && player.vy < -2.4) player.vy = -2.4;
-  player.pos.y += player.vy * dt;
-  if (player.pos.y <= 0) {
-    player.pos.y = 0;
-    player.vy = 0;
-    // 先重置着地状态,再判定踩踏——checkStomp 的弹跳(onGround=false)才能保留,支持连环踩踏
-    player.onGround = true;
-    player.jumps = 0;
-    if (player.plunging) {
-      // 跳劈落地:全方位冲击波
-      player.plunging = false;
-      const def = WEAPONS[player.weapon];
-      sfx.stomp();
-      cam.shake = Math.max(cam.shake, 0.4);
-      hitStop(0.05);
-      spawnDust(player.pos.x, 0.1, player.pos.z, 14, 2.4, 2);
-      swingTrail(3.4, Math.PI * 2);
-      meleeSweep(def.dmg + (player.swordLv >= 2 ? 1 : 0) + (player.relic ? 1 : 0) + 1, 3.4, -1.01, def.knock * 1.6);
-      stats.plunges = (stats.plunges || 0) + 1;
-    }
-    if (wasAirborne && fallSpeed < -3) checkStomp();
-    if (wasAirborne && fallSpeed < -4) player.squashT = 0.16; // 落地挤压
-    if (wasAirborne && fallSpeed < -10) cam.shake = 0.22;
-    if (wasAirborne && fallSpeed < -6) spawnDust(player.pos.x, 0.06, player.pos.z, 6, 0.9, 1.5);
-  }
-
-  resolveCollisions(player.pos, 0.45, colliders);
-  pushCrowd();
-  player.group.position.copy(player.pos);
-  player.group.rotation.y = player.yaw;
-  player.group.rotation.z = player.lean || 0;
-  // 受伤闪烁
-  player.group.visible = player.invulnT > 0 ? Math.floor(performance.now() / 80) % 2 === 0 : true;
-  animateLimbs(player.parts, player.walkT, moving, player.group, speed / 7.6);
-  // 格挡姿势:有盾就把左臂的圆盾横在身前、剑收在腰侧;巨剑没盾,横剑挡
-  playerShield.visible = player.weapon !== 'bow' && player.weapon !== 'greatsword';
-  const hasShield = playerShield.visible;
-  if (player.blocking && !player.parts._attackAnim) {
-    if (hasShield) {
-      player.parts.armL.rotation.x = -1.3;
-      player.parts.armL.rotation.z = 0.55;
-      player.parts.armR.rotation.x = -0.45;
-      player.parts.armR.rotation.z = -0.2;
-    } else {
-      player.parts.armR.rotation.x = -1.35;
-      player.parts.armR.rotation.z = -0.5;
-    }
-  } else if (!player.parts._attackAnim) {
-    player.parts.armR.rotation.z = 0;
-  }
-  if (!player.blocking) player.parts.armL.rotation.z = 0;
-  playerShield.rotation.y = player.blocking ? -1.1 : 0; // 举盾时盾面转向正前
-  // 施法:抬手前推(火球聚能时一直举着)
-  if ((player.castPoseT > 0 || player.fireCharging) && !player.parts._attackAnim && !player.blocking) {
-    player.parts.armR.rotation.x = -1.45;
-    player.parts.armR.rotation.z = 0.15;
-    player.parts.armL.rotation.x = -1.1;
-  }
-  // 挨打:身子一缩、往后一仰(0.3 秒硬直)
-  if (player.hurtT > 0) {
-    player.hurtT -= dt;
-    player.parts.body.rotation.x = -0.3 * Math.min(1, player.hurtT / 0.15);
-  }
-  // 抱鸡:高举过头,鸡随身,空中扑腾
-  if (player.carrying) {
-    const c = player.carrying;
-    c.pos.set(player.pos.x, player.pos.y + 1.78, player.pos.z);
-    c.group.position.copy(c.pos);
-    c.group.rotation.y = player.yaw;
-    c.walkT += dt * (player.onGround ? 4 : 26);
-    c.parts.body.position.y = 0.26 + (!player.onGround ? Math.abs(Math.sin(c.walkT)) * 0.07 : 0);
-    if (!player.parts._attackAnim) {
-      player.parts.armL.rotation.x = Math.PI * 0.92;
-      player.parts.armR.rotation.x = Math.PI * 0.92;
-    }
-  }
-}
-
-function checkStomp() {
-  const tryStomp = (list, isGuard) => {
-    for (const e of list) {
-      if (e.downT > 0 || e.dead || e.stunT > 0) continue;
-      if (dist2(player.pos.x, player.pos.z, e.pos.x, e.pos.z) < 1.3) {
-        e.stunT = 5; e.stunSrc = 'other';
-        player.vy = 7.5;
-        player.onGround = false;
-        player.jumps = 1;
-        sfx.stomp();
-        const nowS = performance.now() / 1000;
-        if (nowS - stats.lastStomp < 2) unlockAch('bouncer');
-        stats.lastStomp = nowS;
-        spawnDust(e.pos.x, 0.3, e.pos.z, 6, 0.8, 1.6);
-        toast(isGuard ? '踩晕了卫兵!' : '踩晕了敌人!', 1.5);
-        if (isGuard) crime(1);
-        return true;
-      }
-    }
-    return false;
-  };
-  // 踩到鸡:弹起 + 拉仇恨
-  for (const c of chickens) {
-    if (c === player.carrying || c.state === 'thrown') continue;
-    if (dist2(player.pos.x, player.pos.z, c.pos.x, c.pos.z) < 1.1) {
-      pokeChicken(c);
-      player.vy = 7.5;
-      player.onGround = false;
-      player.jumps = 1;
-      sfx.stomp();
-      return true;
-    }
-  }
-  return tryStomp(guards, true) || tryStomp(bandits, false) || tryStomp(wolves, false);
-}
-
-function doRoll() {
-  if (!started || player.dead || player.mounted || player.carrying ||
-      player.rollCd > 0 || player.rollT > 0 || !player.onGround || player.staggerT > 0) return;
-  if (!spendSta(15)) return;
-  player.lastRollAt = simNow(); // 序章"真的躲开了"的判定要用
-  const fx = -Math.sin(cam.yaw), fz = -Math.cos(cam.yaw);
-  const rx = -fz, rz = fx;
-  let ix = 0, iz = 0;
-  if (keys['KeyW'] || keys['ArrowUp']) iz += 1;
-  if (keys['KeyS'] || keys['ArrowDown']) iz -= 1;
-  if (keys['KeyD'] || keys['ArrowRight']) ix += 1;
-  if (keys['KeyA'] || keys['ArrowLeft']) ix -= 1;
-  let dx = fx * iz + rx * ix, dz = fz * iz + rz * ix;
-  if (dx === 0 && dz === 0) { dx = Math.sin(player.yaw); dz = Math.cos(player.yaw); }
-  const d = Math.hypot(dx, dz);
-  player.rollDir.set(dx / d, dz / d);
-  player.yaw = Math.atan2(dx, dz);
-  player.rollT = 0.38;
-  player.rollCd = 0.95;
-  player.invulnT = Math.max(player.invulnT, 0.45); // 无敌帧
-  sfx.roll();
-  spawnDust(player.pos.x, 0.05, player.pos.z, 4, 0.5, 1);
-}
-
-function tryRob() {
-  if (!started || player.dead || player.mounted) return;
-  // 扒窃(天际式):潜行状态从背后下手——无声取财;失手立刻炸锅
-  if (player.sneaking) {
-    for (const v of villagers) {
-      if (v.sleeping || v.downT > 0 || (v.robbedT || 0) > 0) continue;
-      if (dist2(player.pos.x, player.pos.z, v.pos.x, v.pos.z) > 6.5) continue;
-      const dx = player.pos.x - v.pos.x, dz = player.pos.z - v.pos.z;
-      const d = Math.hypot(dx, dz) || 1;
-      const behind = (dx * Math.sin(v.yaw) + dz * Math.cos(v.yaw)) / d < -0.1; // 站在其背后
-      const chance = Math.min(0.92, (behind ? 0.55 : 0.25) + 0.05 * (skillLv('sneak') - 1));
-      v.robbedT = 90;
-      if (rand() < chance) {
-        skillXp('sneak', 3);
-        stats.pockets = (stats.pockets || 0) + 1;
-        if (stats.pockets >= 5) unlockAch('cutpurse');
-        if (rand() < 0.4) { // 摸到的不是钱,是赃物——城里没人敢收
-          player.loot = (player.loot || 0) + 1;
-          sfx.chest();
-          const item = ['一支银簪', '一块怀表', '一只铜烛台', '一枚刻名的戒指', '半串珍珠'][Math.floor(rand() * 5)];
-          toast(`🫲 摸到${item}(赃物 ×${player.loot})。城里没人敢收——听说沼泽那位不问来路。`, 3.5);
-        } else {
-          const take = 2 + Math.floor(rand() * 5);
-          player.coins += take;
-          sfx.coin();
-          toast(`🤫 得手!从${v.id.name}兜里摸走 ${take} 金币。(没人看见……吧?)`, 2.5);
-        }
-      } else {
-        v.fleeT = 6;
-        showBubble(v, v.id.name, '有贼!我的钱袋!!', 3);
-        crime(1, '🫲 扒窃失手,被当场抓包!');
-      }
-      return;
-    }
-    toast('附近没有下手的对象。(蹲着走过去,贴到背后)', 2);
-    return;
-  }
-  for (const v of villagers) {
-    if (v.sleeping || v.downT > 0 || (v.robbedT || 0) > 0) continue;
-    if (dist2(player.pos.x, player.pos.z, v.pos.x, v.pos.z) > 6) continue;
-    v.robbedT = 60;
-    v.fleeT = 6;
-    dropCoins(v.pos, 3 + Math.floor(rand() * 4));
-    showBubble(v, v.id.name, '救命!抢劫啦——!!', 3);
-    crime(2, '💰 你抢劫了村民!');
-    return;
-  }
-  toast('附近没有可以抢的人。(你在想什么?)', 2);
-}
-function pushCrowd() {
-  const softly = (list, r) => {
-    for (const e of list) {
-      if (e.downT > 0 || e.dead || e.sleeping || e === player.mounted) continue;
-      const dx = player.pos.x - e.pos.x, dz = player.pos.z - e.pos.z;
-      const dd = dx * dx + dz * dz;
-      if (dd < r * r && dd > 1e-6) {
-        const d = Math.sqrt(dd), pv = r - d;
-        player.pos.x += (dx / d) * pv * 0.6;
-        player.pos.z += (dz / d) * pv * 0.6;
-        e.pos.x -= (dx / d) * pv * 0.35;
-        e.pos.z -= (dz / d) * pv * 0.35;
-      }
-    }
-  };
-  softly(villagers, 0.75);
-  softly(guards, 0.75);
-  softly(namedNPCs, 0.8);
-  softly(bandits, 0.75);
-  softly(wolves, 0.7);
-  softly(horses, 1.05);
-}
-// 挨打硬直:打断自己正在出的刀(判定帧未到的作废)、散掉蓄力与火球聚能,身子后仰一下
-function playerHitStagger(t) {
-  player.staggerT = Math.max(player.staggerT || 0, t);
-  player.hurtT = 0.3;
-  if (strikePending()) { player.strike = null; endAttack(); }
-  player.atkBufT = 0;
-  cancelCharge();
-  if (player.fireCharging) { player.fireCharging = false; player.fireChargeT = 0; }
-}
-function damagePlayer(n, attacker = null, pierce = false) {
-  if (player.invulnT > 0 || player.dead) return;
-  player.lastHitBy = attacker ? (wolves.includes(attacker) ? 'wolf' : guards.includes(attacker) ? 'guard' : 'bandit')
-    : (dragonRT.on ? 'dragon' : 'other');
-  // 盾只护正面:从侧后方来的刀挡不住(绕背、包夹才有意义)
-  let blockOk = player.blocking && player.rollT <= 0;
-  if (blockOk && attacker && attacker.pos) {
-    const dx = attacker.pos.x - player.pos.x, dz = attacker.pos.z - player.pos.z;
-    const d = Math.hypot(dx, dz) || 1;
-    if ((Math.sin(player.yaw) * dx + Math.cos(player.yaw) * dz) / d < -0.15) {
-      blockOk = false;
-      callout('身后中招!盾只护正面', 'red');
-    }
-  }
-  if (blockOk) {
-    // 完美弹反:出手前 0.25 秒内举盾 → 攻击者踉跄 2 秒 + 时停
-    if (attacker && attacker.stunT !== undefined &&
-        simNow() - (player.blockStart ?? -1e9) < 250) {
-      attacker.stunT = Math.max(attacker.stunT || 0, 2.2); attacker.stunSrc = 'parry';
-      hitStop(0.14);
-      cam.shake = Math.max(cam.shake, 0.25);
-      sfx.clank();
-      sfx.clear();
-      callout('完美弹反!快还击', 'gold');
-      if (prologue.on) { prologue.flags.blocked = true; prologue.flags.parried = true; }
-      stats.parries = (stats.parries || 0) + 1;
-      if (stats.parries >= 5) unlockAch('parry');
-      player.invulnT = 0.5;
-      player.riposteT = 1.5; // 还击窗口
-      player.sta = Math.min(player.maxSta, player.sta + 10); // 完美弹反回气:精准的奖赏
-      return;
-    }
-    if (pierce) { // 紫圈重击:格挡被砸碎,硬吃一记减伤——早该翻滚的
-      sfx.clank();
-      sfx.hurt();
-      cam.shake = Math.max(cam.shake, 0.4);
-      callout('格挡被砸碎!紫圈要翻滚', 'red');
-      player.hp -= 1;
-      player.invulnT = 0.7;
-      playerHitStagger(0.4);
-      flashEl.style.opacity = 0.45;
-      setTimeout(() => (flashEl.style.opacity = 0), 120);
-      if (player.hp <= 0) gameOver();
-      return;
-    }
-    // 格挡也要花力气:每挡一下 -14 体力(一直举盾不是万能的),挡空了盾会被砸开
-    sfx.clank();
-    if (prologue.on) prologue.flags.blocked = true;
-    player.sta = Math.max(0, player.sta - 14);
-    if (player.sta <= 0) {
-      player.blocking = false;
-      player.staggerT = 0.9;
-      player.gaspT = 1.2;
-      cam.shake = Math.max(cam.shake, 0.35);
-      callout('力竭!盾被砸开', 'red');
-      sfx.hiccup();
-      player.invulnT = 0.5;
-      return;
-    }
-    cam.shake = Math.max(cam.shake, 0.15);
-    player.invulnT = 0.35;
-    return;
-  }
-  player.hp -= n;
-  player.invulnT = 0.7;
-  cam.shake = 0.45;
-  playerHitStagger(0.3); // 挨打有代价:手里这刀作废、蓄力散掉、0.3 秒缓不过劲
-  fishing.active = false;
-  sfx.hurt();
-  flashEl.style.opacity = 0.45;
-  setTimeout(() => (flashEl.style.opacity = 0), 120);
-  if (player.hp <= 0) gameOver();
-}
-function gameOver() {
-  if (prologue.on) skipPrologue(true); // 序章里倒下:直接放行,别卡教学
-  if (warband.duelOn) { // 单挑落败:誓约解除,攻城继续
-    warband.duelOn = false;
-    warband.members.forEach((b) => { b._truce = false; });
-  }
-  dismissDialog(); // 人都倒了,话就别说了
-  player.fireChargeT = 0;
-  player.dead = true;
-  player.hp = 0;
-  player.drunkT = 0;
-  if (player.carrying) { player.carrying.state = 'idle'; player.carrying = null; }
-  sfx.gameover();
-  if (trialRT.active) endTrial(false);
-  stats.deaths = (stats.deaths || 0) + 1;
-  // 它眼睁睁看着他倒下:这颗心的重大事件——心境重击、惊讶拉满、记进长期记忆
-  workspace.mood.v = Math.max(-1, workspace.mood.v - 0.5);
-  workspace.mood.a = Math.min(1, workspace.mood.a + 0.5);
-  MIND.surprise = Math.max(MIND.surprise, 0.8);
-  remember(`它眼睁睁看着他倒下了(第 ${stats.deaths} 次)`, `death-${calendar.day}`);
-  player.jailed = wanted > 0;
-  // 按死因给标题:被抓、葬身狼口、倒在匪刃下、霜龙之怒……
-  const cause = wanted > 0 ? ['通缉终结', '你被王国卫兵抓住了!关进地牢,罚没一半金币。']
-    : player.lastHitBy === 'wolf' ? ['葬身狼口', '狼群把你拖倒了……']
-    : player.lastHitBy === 'dragon' ? ['霜龙之怒', '冰息吞没了你……幸存者把你抬回了王都。']
-    : player.lastHitBy === 'bandit' ? ['倒在匪刃下', '盗贼搜走了你一半的金币。']
-    : ['你倒下了', '眼前一黑……'];
-  gameoverEl.querySelector('h1').textContent = cause[0];
-  gameoverText.textContent = cause[1];
-  if (titleArtURL) {
-    gameoverEl.style.backgroundImage =
-      `linear-gradient(rgba(70,0,0,0.72), rgba(30,0,0,0.85)), url(${titleArtURL})`;
-    gameoverEl.style.backgroundSize = 'cover';
-    gameoverEl.style.backgroundPosition = 'center';
-  }
-  gameoverEl.style.display = 'flex';
-  setTimeout(() => {
-    if (player.jailed) player.pos.set(13, 0, -28);
-    else player.pos.copy(world.playerSpawn);
-    player.hp = player.maxHp;
-    player.coins = Math.floor(player.coins / 2);
-    player.mounted = null;
-    player.vy = 0;
-    clearWanted();
-    player.dead = false;
-    gameoverEl.style.display = 'none';
-    if (player.jailed && player.loot > 0) { player.loot = 0; } // 赃物人赃并获,全数充公
-    const lostHow = player.lastHitBy === 'bandit' ? '盗贼搜走了你一半的金币'
-      : player.lastHitBy === 'wolf' ? '赶狼的牧人把你背了回来,一半金币算作谢礼'
-        : player.lastHitBy === 'dragon' ? '幸存者把你抬回了王都,一半金币付了药钱'
-          : '一半金币不知丢在了哪里';
-    toast(player.jailed
-      ? '⛓️ 你在王都地牢蹲了一夜,罚没一半金币后被踢了出来。' + (player.loot === 0 ? '(兜里的赃物也被搜走了)' : '')
-      : stats.deaths >= 3
-        ? `你第 ${stats.deaths} 次在喷泉旁醒来(${lostHow})。水声轻得……像是有谁悄悄调小了。`
-        : `你在喷泉旁醒来——${lostHow}。`, 4);
-  }, 2600);
-}
 
 
 
 
-// ================= 相机 =================
 
 
-function computePrompt() {
-  promptText = '';
-  promptTargetPos = null;
-  if (!started || player.dead || dialog.open) return; // 对话/手账开着时 E 是翻页,不显示交互提示
-  if (armRT.active) { // 掰手腕:状态条而不是交互
-    const filled = Math.round(Math.max(0, Math.min(1, armRT.meter)) * 10);
-    promptText = `💪 ${'█'.repeat(filled)}${'░'.repeat(10 - filled)} 狂按 E!!`;
-    return;
-  }
-  if (dialog.open && !fishing.active) return;
-  // 与 E 键共用同一套判定:试运行 tryInteract,命中哪条就显示哪条
-  const it = tryInteract(true);
-  if (it) {
-    promptText = it.text;
-    if (it.x !== undefined) promptTargetPos = { x: it.x, y: it.h || 2, z: it.z };
-    return;
-  }
-  // 兜底:视角未锁定时提示
-  if (!locked) promptText = '点击画面锁定视角 · H 查看操作';
-}
+
 
 // ================= 主循环 =================
 // 调试/自动化测试句柄
 
 // ================= 内容包注入(24 个创作代理的产出,tools/content-packs.json 同源) =================
-// 墓园墓志铭:按序轮读,AI 在后台补写下一条
-let epitaphIdx = Math.floor(rand() * EPITAPHS.length);
-let epitaphAI = null; // AI 补写的下一条墓志铭
-function readEpitaph() {
-  const text = epitaphAI || EPITAPHS[epitaphIdx++ % EPITAPHS.length];
-  epitaphAI = null;
-  openDialog(['(你拂去一块墓碑上的落叶)', `「${text}」`]);
-  if (!AI_TEXT_OFF && !aiBusy.epitaph) {
-    aiBusy.epitaph = true;
-    aiLine('为中世纪村庄墓园写一条墓志铭,15~40字,可庄重可幽默可温柔,只输出铭文本身,不要引号。', null, 9000)
-      .then((t) => { aiBusy.epitaph = false; if (t) epitaphAI = t; });
-  }
-}
 
 
 
@@ -1937,7 +505,6 @@ window.__gtm = {
 
 let last = performance.now();
 let lastFrameNow = last;
-let frameNo = 0;
 // ================= 贴地:逻辑里的 y 都是离地高度,渲染前统一加上地面高度 =================
 // 顶层物体在"更新前取消、渲染前加上"地面偏移;位置没动就复用上次的高度,几乎零开销。
 // 绝对坐标的东西(地表网格、天空、粒子缓冲)标 userData.noSnap 跳过。
@@ -1987,48 +554,15 @@ function tick(dt, now) {
   updateFlashes(dt);
   updateTimers(dt);
 
-  // 交互目标标记
-  if (promptTargetPos && !dialog.open) {
-    interactMarker.visible = true;
-    interactMarker.position.set(
-      promptTargetPos.x,
-      promptTargetPos.y + 0.35 + Math.sin(now * 0.005) * 0.1,
-      promptTargetPos.z);
-    interactMarker.rotation.y += dt * 3;
-  } else {
-    interactMarker.visible = false;
-  }
+  updateInteractMarker(dt, now);
 
   updatePlayer(dt);
-  // 脱战回血:离开战斗几秒后,每 2.5 秒回半颗心(不必非得找旅店或死一次)
-  if (!player.dead && combatCalmT <= 0 && player.hp < player.maxHp && !inDungeon()) {
-    player.regenT = (player.regenT || 0) + dt;
-    if (player.regenT >= 2.5) { player.regenT = 0; player.hp = Math.min(player.maxHp, player.hp + 1); }
-  } else player.regenT = 0;
+  updateRegen(dt);
   updateAttackInput(dt); // 按下=轻击、按住=蓄力(光效)→松手重击;出招中的按键进缓冲
   updateKnockback(dt);
-  if (player.blessT > 0) player.blessT -= dt;
+  updateBuffs(dt);
   updateRideMileage();
-  // 深水规则:银月湖面不可徒步——栈桥走廊(|x+100|<1.3 即桥面宽,且 z<92)与湖心岛(距岛心<6.8)除外。
-  // 每帧检查,步幅远小于缓冲带宽,冲刺也蹚不过去;上岛只能靠小船。
-  {
-    const ldx = player.pos.x + 100, ldz = player.pos.z - 100;
-    const lakeD = Math.hypot(ldx, ldz);
-    if (lakeD < 28.5 && lakeD > 6.8 &&
-        !(Math.abs(ldx) < 1.3 && player.pos.z < 92)) {
-      const push = 28.5 / (lakeD || 1);
-      player.pos.x = -100 + ldx * push;
-      player.pos.z = 100 + ldz * push;
-      if (player.mounted) { // 马也不会凫水:连人带马一起退回来
-        player.mounted.pos.x = player.pos.x;
-        player.mounted.pos.z = player.pos.z;
-      }
-      if ((loop._wadeT || 0) < now - 4000) {
-        loop._wadeT = now;
-        toast('湖水一下子深了,你退了回来。(想上岛?栈桥边有小船)', 3);
-      }
-    }
-  }
+  enforceDeepWater(now);
   updateFrostfang(dt);
   updateSprings(dt);
   updateTrial(dt);
@@ -2068,11 +602,7 @@ function tick(dt, now) {
   updateWarband(dt);
   updateDragon(dt);
   updateCombatMusic(dt);
-  if (player.squashT > 0) {   // 落地挤压回弹
-    player.squashT = Math.max(0, player.squashT - dt);
-    const base = player.sneaking ? 0.8 : 1;
-    player.group.scale.y = base * (1 - 0.18 * (player.squashT / 0.16));
-  }
+  updateSquash(dt);
   updateMercs(dt);
   updateVendetta();
   updateWeather(dt);
@@ -2125,10 +655,10 @@ function tick(dt, now) {
   updateLowHp(dt, now);
   updateCoinInstances(now);
   updateEntityLOD();
-  if (frameNo % 3 === 0 || fishing.active || player.carrying || player.mounted) computePrompt();
+  updatePrompt();
   updateHUD();
   updateActionBar();
-  if (frameNo++ % 2 === 0) drawMinimap(); // 小地图 30Hz 足够
+  if (frame.n++ % 2 === 0) drawMinimap(); // 小地图 30Hz 足够
   gradePass.uniforms.uTime.value = now * 0.00025; // 胶片颗粒的抖动时钟
 }
 // ---- 共享上下文:拆出去的系统模块(相机等)从这里拿活对象 ----
@@ -2215,7 +745,3 @@ ctx.mapView = () => ({ guards, bandits, horses, wanted, warband, beacon, beaconR
 }
 requestAnimationFrame(loop);
 
-// ==== 供拆出的系统模块使用的绑定 ====
-export {
-  damagePlayer, inputQ, keys, midHeld, promptText,
-};

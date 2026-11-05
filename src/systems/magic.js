@@ -20,11 +20,12 @@ import { calendar, dayPhase } from './calendar.js';
 import { cam } from './camera.js';
 import { applyDamage, faceNearestFoe } from './combat.js';
 import { awakenDragon, dragonRT } from './dragon.js';
+import { keys, midHeld } from './input.js';
 import { remember } from './mind.js';
+import { recomputeMaxSta } from './player.js';
 import { arrows } from './projectiles.js';
 import { prologue } from './prologue.js';
 import { spawnDust, weather } from './weather.js';
-import { keys, midHeld } from '../main.js';
 
 // ================= 魔法系统 =================
 // 四门法术分别来自四处地标:女巫卖火球、教堂授治愈、湖心祭坛赠冰霜、回响之镜予闪现。
@@ -338,7 +339,7 @@ export function skillXp(k, n) {
     sfx.fanfare();
     // 技艺磨炼身体:每次升级体力上限 +3(封顶 160)——练什么都算锻炼
     if (player.maxSta < 180) {
-      player.maxSta = Math.min(180, player.maxSta + 3);
+      recomputeMaxSta();
       player.sta = player.maxSta; // 升级瞬间气也回满,爽快些
     }
     toast(`${SKILL_DEFS[k].icon} ${SKILL_DEFS[k].name}提升到 ${s.lv} 级!(${SKILL_DEFS[k].perk};体力上限 ${player.maxSta})`, 3.5);

@@ -9,8 +9,7 @@ import { getWeaponModel, lambert } from '../entities.js';
 import { renderer } from '../gfx/core.js';
 import { callout } from '../ui/feedback.js';
 import { toast } from '../ui/toast.js';
-import { stats } from './achievements.js';
-import { lakeBlessed } from './activities.js';
+import { recomputeMaxHp } from './player.js';
 
 // ================= 武器与护甲系统 =================
 export const WEAPONS = {
@@ -118,13 +117,6 @@ export function setArmorVisual(level) {
   vest.position.y = 0.8;
   player.group.add(vest);
   player.armorMesh = vest;
-}
-// 生命上限只在这里计算:护甲 + 湖神恩赐 + 屠龙者,读档/买甲/奇遇都走这一处
-export function recomputeMaxHp() {
-  player.maxHp = 10 + ((ARMORS[player.armor] && ARMORS[player.armor].bonus) || 0) +
-    (lakeBlessed ? 2 : 0) + (stats.dragonSlain ? 2 : 0);
-  player.hp = Math.min(player.hp, player.maxHp);
-  return player.maxHp;
 }
 function applyArmor(level) {
   player.armor = level;

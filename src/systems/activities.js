@@ -21,13 +21,13 @@ import { SEASONS, calendar, dayPhase, seasonDay, seasonIdx, todaySpecial } from 
 import { wolfKills } from './combat.js';
 import { EVO, legendText } from './evo.js';
 import { frostfang } from './fauna.js';
-import { recomputeMaxHp } from './gear.js';
 import { SKILL_DEFS, learnSpell, shout } from './magic.js';
 import { mercs } from './mercs.js';
 import {
   archetype, chronicle, dayTopSurprise, dayTopThought, recallLine, remember, workspace,
 } from './mind.js';
 import { crestsFound } from './pickups.js';
+import { recomputeMaxHp } from './player.js';
 import { missions, quest, stewardWhere } from './quests.js';
 import { spawnDust, weather } from './weather.js';
 

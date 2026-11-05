@@ -21,11 +21,11 @@ import { streetEvent } from './events.js';
 import { EVO } from './evo.js';
 import { resetEvade, wanted } from './law.js';
 import { sneakFactor } from './magic.js';
+import { damagePlayer } from './player.js';
 import { prologue } from './prologue.js';
 import { questRT } from './quests.js';
 import { warband } from './warband.js';
 import { spawnDust } from './weather.js';
-import { damagePlayer } from '../main.js';
 
 // ================= 实体更新 =================
 

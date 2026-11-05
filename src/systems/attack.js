@@ -20,10 +20,10 @@ import { bandits, guards, meleeSwing, wolves } from './actors.js';
 import { cam } from './camera.js';
 import { faceNearestFoe, lockFoe, meleeSweep, swingTrail, swingTrailV } from './combat.js';
 import { WEAPONS } from './gear.js';
+import { keys } from './input.js';
 import { arrowBonus, dragonAim, meleeBonus, skillLv, skillXp, spendSta } from './magic.js';
 import { arrowGeo, arrowMat, arrows, shootArrow, wetSpread } from './projectiles.js';
 import { spawnDust } from './weather.js';
-import { keys } from '../main.js';
 
 // ================= 出招输入与判定帧 =================
 // 按下 F/左键:即出轻击(不等松手);按住超过 0.2 秒、这一刀已经落下,就收住余势转入蓄力——

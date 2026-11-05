@@ -17,11 +17,10 @@ import { toast } from '../ui/toast.js';
 import { stats, unlockAch } from './achievements.js';
 import { cam } from './camera.js';
 import { dangerFX, dangerMat } from './combat.js';
-import { recomputeMaxHp } from './gear.js';
 import { DRAGON_SKULL, addFrostPatch, explodeAt } from './magic.js';
 import { remember } from './mind.js';
+import { damagePlayer, recomputeMaxHp } from './player.js';
 import { spawnDust } from './weather.js';
-import { damagePlayer } from '../main.js';
 
 // ================= 霜龙苏醒(龙骨之地终局 Boss)=================
 // 学会战吼后,夜里再触龙颅——骨翼重聚血肉。空中盘旋/俯冲/三段吐息;掉血落地喘息时才能近战。

@@ -28,6 +28,7 @@ import { refreshTrophies } from './home.js';
 import { crime, downGuard, wanted } from './law.js';
 import { remember } from './mind.js';
 import { addPickup, dropCoins } from './pickups.js';
+import { recomputeMaxSta } from './player.js';
 import { prologue, setTutor } from './prologue.js';
 import { completeMission, dismissMinions, missions, quest } from './quests.js';
 import { warband } from './warband.js';
@@ -265,7 +266,7 @@ export function banditSlain(b) {
   // 阵斩枭首:夺军旗——永久体力上限 +5(封顶 180),外加一把赏金
   if (b && b.warlord) {
     stats.banners = (stats.banners || 0) + 1;
-    player.maxSta = Math.min(180, player.maxSta + 5);
+    recomputeMaxSta();
     player.sta = player.maxSta;
     dropCoins(b.pos, 10);
     sfx.chest();

@@ -19,8 +19,8 @@ import {
 import { applyDamage } from './combat.js';
 import { crime } from './law.js';
 import { remember } from './mind.js';
+import { damagePlayer } from './player.js';
 import { spawnDust } from './weather.js';
-import { damagePlayer } from '../main.js';
 
 // ================= 鸡(惹不起的存在) =================
 export const chickens = [];
