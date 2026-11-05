@@ -5,7 +5,8 @@
 import * as THREE from 'three';
 import { lambert, addCircles, removeCircles } from './entities.js';
 import { buildTree, buildPine, buildDeadTree, buildCactus, buildRock, buildBush, natureProp, natureSpec,
-  buildNatureInstances, releaseNatureInstances, warmNatureTemplate, NIGHT_GLOW } from './flora.js';
+  buildNatureInstances, releaseNatureInstances, warmNatureTemplate, NIGHT_GLOW, standingStoneGeo } from './flora.js';
+import { mergeGeometries } from '../lib/jsm/utils/BufferGeometryUtils.js';
 import { dominantBiome, groundH, buildGroundMesh, getGroundMaterial, GRID, vnoise } from './terrain.js';
 import { waterMesh, polarWaterGeo } from './gfx/water.js';
 import { plainStandard, vpbrMaterial, bakeVPBRSteps } from './gfx/vpbr.js';
@@ -54,6 +55,44 @@ const BIOME_NAMES = {
 export function wildRegionName(x, z) {
   const dir = Math.abs(x) > Math.abs(z) ? (x > 0 ? '东境' : '西境') : (z > 0 ? '南境' : '北境');
   return `${dir}·${BIOME_NAMES[biomeAt(x, z)] || '荒野'}`;
+}
+
+// ---- 兴趣点的小件几何(全场共享,区块卸载时不释放) ----
+// 立石:和王国里的符文立石/先祖石环同一画法(六棱收分、斜顶、半埋碎石),按高宽分档缓存
+const _steleGeo = new Map();
+function steleGeo(h, w) {
+  const hk = Math.round(h * 4) / 4, wk = Math.round(w * 10) / 10;
+  const key = hk + '|' + wk;
+  let g = _steleGeo.get(key);
+  if (!g) {
+    g = standingStoneGeo(1000 + _steleGeo.size * 7919, { w: wk, h: hk, rubble: 4 });
+    g.deleteAttribute('color'); // 颜色交给材质:兴趣点烘进区块的顶点色网格
+    g.deleteAttribute('uv');
+    g.userData.shared = true;
+    _steleGeo.set(key, g);
+  }
+  return g;
+}
+// 水晶簇:五根带尖的六棱晶柱,高低错落、向外斜开
+let _crystalGeo = null;
+function crystalGeo() {
+  if (_crystalGeo) return _crystalGeo;
+  const parts = [];
+  const spec = [[0, 0, 1.9, 0.26, 0], [0.32, 0.1, 1.2, 0.18, 0.35], [-0.28, 0.18, 1.4, 0.2, -0.3], [0.12, -0.3, 0.9, 0.15, 0.4], [-0.2, -0.22, 0.7, 0.13, -0.45]];
+  for (const [x, z, h, r, tilt] of spec) {
+    const body = new THREE.CylinderGeometry(r, r * 1.08, h * 0.78, 6).translate(0, h * 0.39, 0);
+    const tip = new THREE.ConeGeometry(r, h * 0.22, 6).translate(0, h * 0.78 + h * 0.11, 0);
+    for (const g of [body, tip]) {
+      g.rotateZ(tilt).rotateY(Math.atan2(z, x || 0.01)).translate(x, 0, z);
+      const n = g.toNonIndexed();
+      n.deleteAttribute('uv');
+      parts.push(n);
+    }
+  }
+  _crystalGeo = mergeGeometries(parts);
+  _crystalGeo.computeVertexNormals();
+  _crystalGeo.userData.shared = true;
+  return _crystalGeo;
 }
 
 // ---- 植被/道具(flora 库:共享几何/材质,区块卸载时不释放) ----
@@ -231,9 +270,9 @@ function* chunkJob(cx, cz) {
   const spawned = []; // 交给主系统托管的实体(狼/盗贼/马/羊)
   const px = centerX + (rng() - 0.5) * 50, pz = centerZ + (rng() - 0.5) * 50;
   const roll = rng();
-  const stone = (x, z, h2, w2 = 1) => {
-    const st = new THREE.Mesh(new THREE.BoxGeometry(w2, h2, w2 * 0.7), lambert(0x8a857e, { roughness: 0.95 }));
-    st.position.set(x, h2 / 2, z);
+  const stone = (x, z, h2, w2 = 1) => { // 风化立石(与王国的先祖石环同一画法)
+    const st = new THREE.Mesh(steleGeo(h2, w2), lambert(0x8a857e, { roughness: 0.95 }));
+    st.position.set(x, -0.08, z);
     st.rotation.y = rng() * 3;
     st.castShadow = true;
     g.add(st);
@@ -349,12 +388,12 @@ function* chunkJob(cx, cz) {
     }
     dropH(px, pz);
   } else if (roll < 0.5) {
-    // 群系水晶/仙人掌花:装饰 + 两枚金币
-    const c = new THREE.Mesh(new THREE.ConeGeometry(0.5, 1.8, 5),
+    // 群系水晶簇:装饰 + 两枚金币
+    const c = new THREE.Mesh(crystalGeo(),
       lambert(biome === 'snow' ? 0xbfe4f2 : biome === 'desert' ? 0xe8b84a : 0x9adcc8,
         { roughness: 0.25, metalness: 0.3 }));
-    c.position.set(px, 0.9, pz);
-    c.rotation.z = (rng() - 0.5) * 0.4;
+    c.position.set(px, -0.05, pz);
+    c.rotation.y = (rng() - 0.5) * 6;
     c.castShadow = true;
     g.add(c);
     drop(px + 1, pz);
@@ -367,16 +406,20 @@ function* chunkJob(cx, cz) {
     }
     for (let i = 0; i < 4; i++) drop(px + (rng() - 0.5) * 3, pz + (rng() - 0.5) * 3);
   } else if (roll < 0.585 && (biome === 'forest' || biome === 'snow')) {
-    // 温泉:站进去慢慢回血
-    const pool = new THREE.Mesh(new THREE.CircleGeometry(2.6, 14),
-      new THREE.MeshStandardMaterial({ color: 0x7ad4d8, emissive: 0x1a5a5e, emissiveIntensity: 0.4, roughness: 0.15 }));
-    pool.rotation.x = -Math.PI / 2;
-    pool.position.set(px, 0.03, pz);
+    // 温泉:站进去慢慢回血。一汪顺着地面铺的青绿热水(统一水着色器),一圈大小不一的卵石围着
+    const springGeo = polarWaterGeo(px, pz, (a) => 2.6 * (1 + 0.08 * Math.sin(3 * a + px) + 0.05 * Math.sin(5 * a)), { margin: 0, rings: 4, segs: 28 });
+    const sp = springGeo.attributes.position;
+    for (let i = 0; i < sp.count; i++) sp.setY(i, groundH(sp.getX(i), sp.getZ(i)) + 0.06);
+    const pool = waterMesh(springGeo, 'fountain', { depth: 0.55 });
+    pool.userData.isGround = true; // 顶点已是绝对高度
     g.add(pool);
-    for (let i = 0; i < 7; i++) {
-      const a = (i / 7) * Math.PI * 2;
-      const st = new THREE.Mesh(new THREE.IcosahedronGeometry(0.35, 0), lambert(0x8a857e));
-      st.position.set(px + Math.cos(a) * 2.8, 0.22, pz + Math.sin(a) * 2.8);
+    for (let i = 0; i < 11; i++) {
+      const a = (i / 11) * Math.PI * 2 + Math.sin(i * 2.3) * 0.15;
+      const s = 0.26 + 0.16 * (0.5 + 0.5 * Math.sin(i * 5.1 + px));
+      const st = new THREE.Mesh(new THREE.IcosahedronGeometry(s, 0), lambert(i % 3 ? 0x8a857e : 0x6f6b64));
+      st.scale.set(1.25, 0.6, 1);
+      st.rotation.y = a;
+      st.position.set(px + Math.cos(a) * 2.85, s * 0.25, pz + Math.sin(a) * 2.85);
       g.add(st);
     }
     hooks.registerSpot('spring', px, pz, key);

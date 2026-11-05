@@ -315,11 +315,11 @@ function applyHumanProps(g, parts, opts) {
     head.add(new THREE.Mesh(clothCapGeo(), hatMat(col)));
   } else if (hood) {
     // 斗篷兜帽(盗贼/猎户/守墓人/采药婆):与游侠同款造型,深色粗呢
-    const wool = hatMat(mask ? 0x2c2c32 : 0x4a4436, { side: THREE.DoubleSide });
+    const wool = hatMat(mask ? 0x3b3238 : 0x4a4436, { side: THREE.DoubleSide }); // 盗贼:深梅灰(配锈红蒙面,头部不再是一团黑)
     const h = new THREE.Mesh(hoodGeo(), wool);
     h.castShadow = true;
     head.add(h);
-    head.add(new THREE.Mesh(hoodRimGeo(), hatMat(mask ? 0x1e1e22 : 0x3a3428)));
+    head.add(new THREE.Mesh(hoodRimGeo(), hatMat(mask ? 0x2a2427 : 0x3a3428)));
   } else {
     const st = hairStyleOf(opts);
     const hm = hatMat(hair, { roughness: 0.95 });
@@ -327,7 +327,7 @@ function applyHumanProps(g, parts, opts) {
     if (st.beard) head.add(new THREE.Mesh(beardGeo(), hm));
   }
   if ((cap || straw || helmet) && hairStyleOf(opts).beard) head.add(new THREE.Mesh(beardGeo(), hatMat(hair, { roughness: 0.95 })));
-  if (mask) head.add(new THREE.Mesh(maskGeo(), hatMat(0x3a2a28, { side: THREE.DoubleSide }))); // 蒙面
+  if (mask) head.add(new THREE.Mesh(maskGeo(), hatMat(0x7a3b2a, { side: THREE.DoubleSide }))); // 蒙面:锈红布巾
   if (sword) {
     const swordGroup = new THREE.Group();
     const real = getWeaponModel('Sword');

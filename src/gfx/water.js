@@ -77,7 +77,8 @@ const FRAG = `
     float fres = 0.03 + 0.97 * pow(1.0 - ndv, 5.0);
     vec3 R = reflect(-V, N);
     vec3 sky = mix(uSkyHor, uSkyTop, pow(clamp(R.y, 0.0, 1.0), 0.6));
-    float dk = 1.0 - exp(-depth * uMurk);
+    // 水色随深度加深;深浅再按 ~20m 的大斑块浮动(水草、淤泥):圆湖从高处看不再是一圈圈的靶心
+    float dk = 1.0 - exp(-depth * uMurk * (0.75 + 0.5 * wNoise(p * 0.05 + 3.0)));
     vec3 light = uSkyHor * 0.42 + uSkyTop * 0.18 + uSunCol * max(uSunDir.y, 0.0) * 0.5;
     // 浅水底:细沙纹 + 斑驳(水下不再透出 4m 地形网格的三角明暗)
     vec3 shallowC = uShallow * (0.86 + 0.22 * wNoise(p * 1.6 + flow * 0.2) + 0.08 * sin(p.x * 3.1 + wNoise(p * 0.7) * 6.0));
@@ -90,7 +91,7 @@ const FRAG = `
     // 浮萍:成片的小绿点
     float duck = uDuck * smoothstep(0.52, 0.64, wNoise(p * 0.32 + 4.0)) * smoothstep(0.42, 0.72, wNoise(p * 4.3)) * (0.75 + 0.25 * wNoise(p * 11.0));
     col = mix(col, vec3(0.16, 0.21, 0.07) * light * 1.15, duck);
-    float alpha = smoothstep(0.0, 0.32, depth) * mix(0.8, 0.95, dk);
+    float alpha = smoothstep(0.0, 0.32, depth) * mix(0.8, 1.0, dk * dk); // 深处不透:看不见盆底的坡与台阶
     alpha = max(alpha, fres * 0.9 * smoothstep(0.0, 0.12, depth));
     alpha = max(alpha, max(duck, foam * 0.7) * smoothstep(0.0, 0.05, depth));
     // 冰面:不透明的蓝白冰,浅色裂纹与积雪斑

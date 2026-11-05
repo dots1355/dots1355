@@ -114,12 +114,13 @@ function buildBigBase() {
     if (drawShaped(g, f, (x, z) => [(x + BIG_R) * k, (z + BIG_R) * k], k)) continue;
     g.fillRect(mx - (f.w * k) / 2, mz - (f.h * k) / 2, Math.max(1.5, f.w * k), Math.max(1.5, f.h * k));
   }
-  g.font = 'bold 13px sans-serif';
+  // 全图画布 720px,小窗口下只显示一半大小:地名按 19/22px 画,960×540 下看到的仍有 10~12px,描边加粗
+  g.font = 'bold 19px sans-serif';
   g.textAlign = 'center';
   for (const r of REGIONS) {
     if (r.r < 18) continue; // 小地名留给小地图
     const mx = (r.x + BIG_R) * k, mz = (r.z + BIG_R) * k;
-    g.lineWidth = 3;
+    g.lineWidth = 4.5;
     g.strokeStyle = 'rgba(20,14,8,0.85)';
     g.strokeText(r.name, mx, mz);
     g.fillStyle = '#f3e7cc';
@@ -135,13 +136,13 @@ function buildWildBase(cx, cz) {
   const g = c.getContext('2d');
   const k = 720 / (BIG_R * 2);
   g.drawImage(terrainCanvas(cx, cz), 0, 0);
-  g.font = 'bold 13px sans-serif';
+  g.font = 'bold 22px sans-serif';
   g.textAlign = 'center';
   for (let x = -BIG_R + 130; x < BIG_R; x += 260) { // 群系地名
     for (let z = -BIG_R + 130; z < BIG_R; z += 260) {
       const name = wildRegionName(cx + x, cz + z);
       const mx = (x + BIG_R) * k, mz = (z + BIG_R) * k;
-      g.lineWidth = 3; g.strokeStyle = 'rgba(20,14,8,0.8)'; g.strokeText(name, mx, mz);
+      g.lineWidth = 5; g.strokeStyle = 'rgba(20,14,8,0.8)'; g.strokeText(name, mx, mz);
       g.fillStyle = '#efe2c4'; g.fillText(name, mx, mz);
     }
   }
