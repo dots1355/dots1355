@@ -7,7 +7,7 @@ import { sfx } from '../audio.js';
 import { saveGame } from '../core/save.js';
 import { player, world } from '../core/state.js';
 import { angleLerp, dist2, lambert, makeHumanoid } from '../entities.js';
-import { scene } from '../gfx/core.js';
+import { camera, scene } from '../gfx/core.js';
 import { MISSIONS } from '../story.js';
 import { openDialog } from '../ui/dialog.js';
 import { dropQuestToasts, toast, toastQuest } from '../ui/toast.js';
@@ -34,9 +34,32 @@ const exBar = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.5, 0.14),
   new THREE.MeshLambertMaterial({ color: 0xffd83d, emissive: 0x886600 }));
 const exDot = new THREE.Mesh(new THREE.BoxGeometry(0.15, 0.15, 0.15),
   new THREE.MeshLambertMaterial({ color: 0xffd83d, emissive: 0x886600 }));
-// 目标光柱
-export const beacon = new THREE.Mesh(new THREE.CylinderGeometry(1.2, 1.2, 40, 10, 1, true),
-  new THREE.MeshBasicMaterial({ color: 0xffd83d, transparent: true, opacity: 0.3, side: THREE.DoubleSide, depthWrite: false }));
+// 目标光柱:一道细细的竖直柔光——面向镜头的面片,贴图横向是亮芯 + 柔边、竖向贴地渐显往上渐隐,加性混合
+// (只提亮、不遮挡画面);镜头走近时整道淡出(animateBeacon)
+function beamTexture() {
+  const c = document.createElement('canvas');
+  c.width = 64; c.height = 256;
+  const g = c.getContext('2d');
+  const img = g.createImageData(64, 256);
+  for (let y = 0; y < 256; y++) {
+    const h = 1 - (y + 0.5) / 256; // 0 = 底(贴地)→ 1 = 顶
+    const vert = Math.min(1, h / 0.015) * Math.pow(1 - h, 1.7);
+    for (let x = 0; x < 64; x++) {
+      const u = ((x + 0.5) / 64) * 2 - 1;
+      const a = (Math.exp(-u * u * 70) + Math.exp(-u * u * 7) * 0.3) * vert;
+      const i = (y * 64 + x) * 4;
+      img.data[i] = img.data[i + 1] = img.data[i + 2] = Math.min(255, a * 255);
+      img.data[i + 3] = 255;
+    }
+  }
+  g.putImageData(img, 0, 0);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+export const beacon = new THREE.Mesh(new THREE.PlaneGeometry(1.6, 40),
+  new THREE.MeshBasicMaterial({ color: 0xffcf5a, map: beamTexture(), transparent: true, opacity: 0.85,
+    blending: THREE.AdditiveBlending, side: THREE.DoubleSide, depthWrite: false }));
 
 
 function clearRaceRings() {
@@ -388,8 +411,10 @@ function updateQuestTarget(dt) {
 // 委托人与目标光柱立进场景(启动装配原位调用)
 // 目标光柱:自转并一明一暗地呼吸(位置由 updateQuest 摆)
 export function animateBeacon(dt, now) {
-  beacon.rotation.y += dt;
-  beacon.material.opacity = 0.22 + Math.sin(now * 0.004) * 0.1;
+  const dx = camera.position.x - beacon.position.x, dz = camera.position.z - beacon.position.z;
+  beacon.rotation.y = Math.atan2(dx, dz); // 面片始终正对镜头
+  const near = Math.min(1, Math.max(0, (Math.hypot(dx, dz) - 4) / 10)); // 走到跟前就淡掉,不挡人
+  beacon.material.opacity = (0.7 + Math.sin(now * 0.004) * 0.15) * near;
 }
 export function initQuests() {
   questGiver = makeHumanoid({ shirt: 0xc9a227, pants: 0x6a5a2a, hair: 0xd8d8d8 });

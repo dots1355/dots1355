@@ -25,7 +25,8 @@ container.appendChild(renderer.domElement);
 export const scene = new THREE.Scene();
 scene.fog = new THREE.Fog(0x99a8b2, 90, 390); // 北境雾:灰蓝厚重,远山半隐在大气里
 
-export const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 1600);
+// 近裁剪面 0.3m(镜头离人 6m,0.3 足够):远处深度精度高一截,远山上不再出 AO 横纹与 z 冲突
+export const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.3, 1600);
 
 // PBR 环境反射
 export const pmrem = new THREE.PMREMGenerator(renderer);
@@ -46,6 +47,12 @@ composer.addPass(new RenderPass(scene, camera));
 export const gtao = new GTAOPass(scene, camera, window.innerWidth, window.innerHeight);
 gtao.setGBuffer(composer.readBuffer.depthTexture); // 只给深度:法线由深度重建,跳过 G-buffer 重画
 gtao.updateGtaoMaterial({ radius: 0.35, distanceExponent: 1.5, thickness: 1.2, scale: 0.85, samples: 12 });
+// AO 只管近处的接触阴影:55~80m 渐隐为 0,80m 外的像素直接跳过采样(远山上不再有大片暗斑与横纹,远景也省一大截)
+gtao.gtaoMaterial.fragmentShader = gtao.gtaoMaterial.fragmentShader
+  .replace('vec3 viewNormal = getViewNormal(vUv);',
+    'if (-viewPos.z > 80.0) { float ao = 1.0; gl_FragColor = FRAGMENT_OUTPUT; return; }\n\t\t\tvec3 viewNormal = getViewNormal(vUv);')
+  .replace('ao = pow(ao, scale);', 'ao = pow(ao, scale);\n\t\t\tao = mix(ao, 1.0, smoothstep(55.0, 80.0, -viewPos.z));');
+gtao.gtaoMaterial.needsUpdate = true;
 // AO 与降噪在半分辨率算,混合时双线性放大(深度仍按全分辨率采样)
 gtao.setSize = (w, h) => GTAOPass.prototype.setSize.call(gtao, Math.max(1, Math.round(w / 2)), Math.max(1, Math.round(h / 2)));
 {
