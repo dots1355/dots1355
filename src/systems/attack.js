@@ -35,7 +35,8 @@ const CHARGE_START = 0.2, CHARGE_FULL = 1.0, ATK_BUFFER = 0.35;
 const HEAVY_MIN = 0.3;
 // 跳劈:离地 ≥1m 或滞空 ≥0.25 秒才砸得下去(早按的进缓冲,够高了自动出手);体力 22(起跳另耗 8)。
 // 出手先在半空顿住 0.12 秒、把剑举过头顶(看得见的前摇),再砸下去;
-// 落地后 0.6 秒硬直(跳不起、滚不了、举不起盾);正前 180° 内 2 伤、身后 1 伤,最多砸中两人(player.js 落地结算)
+// 落地后 0.6 秒硬直(跳不起、滚不了、举不起盾);正前方最近的一人 2 伤,冲击波溅开 2.6 米(旁人、身后 1 伤),
+// 最多砸中两人(player.js 落地结算)
 const PLUNGE_MIN_H = 1.0, PLUNGE_MIN_AIR = 0.25, PLUNGE_STA = 22;
 const PLUNGE_HANG = 0.12;
 export const plungeReady = () => player.pos.y >= PLUNGE_MIN_H || (player.airT || 0) >= PLUNGE_MIN_AIR;

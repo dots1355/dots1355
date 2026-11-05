@@ -45,8 +45,8 @@ const flashEl = document.getElementById('flash'),
 const _moveFwd = new THREE.Vector2();
 const _moveRight = new THREE.Vector2();
 const _moveVec = new THREE.Vector2();
-// 跳劈落地硬直(秒)、起跳体力;翻滚:无敌帧只覆盖前段(滚到后半程照样挨打),判定帧前按的翻滚进缓冲
-const PLUNGE_LAG = 0.6, JUMP_STA = 8;
+// 跳劈落地硬直(秒)、冲击波半径、起跳体力;翻滚:无敌帧只覆盖前段(滚到后半程照样挨打),判定帧前按的翻滚进缓冲
+const PLUNGE_LAG = 0.6, PLUNGE_R = 2.6, JUMP_STA = 8;
 const ROLL_T = 0.38, ROLL_IFRAMES = 0.25, ROLL_STA = 20, ROLL_BUFFER = 0.4;
 export function updatePlayer(dt) {
   if (player.dead) return;
@@ -276,7 +276,8 @@ export function updatePlayer(dt) {
     player.onGround = true;
     player.jumps = 0;
     if (player.plunging) {
-      // 跳劈落地:一圈冲击波——正前 180° 内吃满(+1),身后只溅到 1 点;最多砸中两人;落地 0.6 秒硬直
+      // 跳劈落地:正前方最近的那一人吃实打实的一砸(+1),冲击波溅开 2.6 米(旁人、身后只吃基础伤害);
+      // 最多砸中两人;落地 0.6 秒硬直
       player.plunging = false;
       player.landLagT = PLUNGE_LAG;
       const def = WEAPONS[player.weapon];
@@ -285,8 +286,8 @@ export function updatePlayer(dt) {
       cam.shake = Math.max(cam.shake, 0.4);
       hitStop(0.05);
       spawnDust(player.pos.x, 0.1, player.pos.z, 14, 2.4, 2);
-      swingTrail(3.4, Math.PI * 2);
-      meleeSweep(base + 1, 3.4, -1.01, def.knock * 1.6, { maxHits: 2, rearDmg: Math.max(1, base) });
+      swingTrail(PLUNGE_R, Math.PI * 2);
+      meleeSweep(base + 1, PLUNGE_R, -1.01, def.knock * 1.6, { maxHits: 2, splashDmg: base });
       stats.plunges = (stats.plunges || 0) + 1;
     } else if (wasAirborne && fallSpeed < -3) checkStomp(); // 跳劈自带冲击,不再叠一次踩踏
     if (wasAirborne && fallSpeed < -4) player.squashT = 0.16; // 落地挤压

@@ -618,7 +618,8 @@ function banditMelee(b, h) {
 // 处决封顶:精英/首领一次处决最多掉最大血量的 35%——Boss 战至少要两三次弹反或破防
 const EXEC_ELITE_CAP = 0.35;
 // 近战横扫判定:普通挥击与蓄力重击共用(dmg/范围/角度/击退可调),在出招的判定帧调用。
-// opts.rearDmg:身后半圈的目标只吃这么多(跳劈的冲击波:正面吃满、背后溅到);opts.kind:'light'|'heavy'(序章练刀计数);
+// opts.splashDmg:只有正面最近的那一人吃满 dmg,其余(身后的、旁边溅到的)只吃这么多(跳劈:砸中一人、冲击波溅开);
+// opts.kind:'light'|'heavy'(序章练刀计数);
 // opts.stun:撞个踉跄(盾击:不开处决窗口),先于结算挂上
 export function meleeSweep(dmg, range, arcDot, knock, opts = {}) {
   if (dmg > 0) strikeRuneStones(range, arcDot);
@@ -626,8 +627,7 @@ export function meleeSweep(dmg, range, arcDot, knock, opts = {}) {
   const maxHits = opts.maxHits ?? 3;
   const heavy = !!opts.heavy;
   const execBase = opts.execBase || dmg; // 处决基准:出招方带入的无乘区伤害(不含偷袭乘区)
-  const rearOf = (e) => opts.rearDmg !== undefined &&
-    ((e.pos.x - player.pos.x) * fx + (e.pos.z - player.pos.z) * fz) < 0;
+  const rearOf = (e) => ((e.pos.x - player.pos.x) * fx + (e.pos.z - player.pos.z) * fz) < 0;
   // 这一刀的结算上下文。gb:'full' 满蓄重击必破防(可处决);'counter' 下劈/半蓄砸在起手中或举盾的人身上才破架。
   // 处决:只对"弹反"或"满蓄重击破防"造成的踉跄出手 = ×5 终结,一刀只处决一人;处决用掉这次踉跄
   // (一次弹反只换一次处决)。盾击/冰霜/战吼/下劈破架的踉跄只是空档,不开处决
@@ -641,7 +641,11 @@ export function meleeSweep(dmg, range, arcDot, knock, opts = {}) {
         const n = execBase * 5;
         return isElite(e) ? Math.min(n, Math.max(1, Math.round((e.maxHp || e.hp) * EXEC_ELITE_CAP))) : n;
       }
-      const base = rearOf(e) ? Math.min(dmg, opts.rearDmg) : dmg;
+      let base = dmg;
+      if (opts.splashDmg !== undefined) { // 候选按远近排好:第一个正面目标挨的是实打实的一砸,其余是溅开的冲击
+        if (h.slammed || rearOf(e)) base = Math.min(dmg, opts.splashDmg);
+        else h.slammed = true;
+      }
       const bs = base > 0 ? backstabMul(e) : 1;
       if (bs > 1) callout('背刺 ×1.5', 'gold', e.pos);
       return Math.round(base * bs);

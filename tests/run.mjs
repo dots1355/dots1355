@@ -383,7 +383,8 @@ const TESTS = {
     if (!(r.stagger > 0)) throw new Error('挨打没有硬直');
     if (!r.parried) throw new Error('举盾当刻挨刀没有判成弹反');
   },
-  // 招式规则:跳劈要跳够高(早按进缓冲)、落地 0.6 秒硬直(跳不起滚不了)、正面 2 伤背后 1 伤最多两人、起跳 8 + 跳劈 22 体力;
+  // 招式规则:跳劈要跳够高(早按进缓冲)、半空顿一下再砸、挨打作废、落地 0.6 秒硬直(跳不起滚不了)、
+  // 正面最近一人 2 伤其余溅 1(2.6 米、最多两人)、起跳 8 + 跳劈 22 体力;
   // 不锁定时 S/A/D+F 砍向正前方的目标(出刀后不再跟着脚步转身);判定帧前按翻滚进缓冲(刀照样落下),无敌帧 0.25 秒、翻滚 20 体力
   async moveset(page) {
     await boot(page);
@@ -434,6 +435,16 @@ const TESTS = {
       while (!P.onGround && pq < 150) { g.step(1); pq++; }
       g.step(2);
       out.plungeHitCancel = { dmg: 50 - pf.hp, lag: P.landLagT, plunging: P.plunging };
+      // 跳劈的冲击:正面两人只有最近的那个吃 2(实打实的一砸),另一个溅到 1;冲击波 2.6 米,再远够不着
+      A.reset();
+      const [s1, s2, s3] = A.foes(3);
+      A.place(s1, -0.6, 1.4); A.place(s2, 0.7, 1.9); A.place(s3, 0, -3.0);
+      P.sta = 100;
+      g.keys['Space'] = true; g.step(1);
+      g.attackDown(); g.attackUp();
+      for (let i = 0; i < 150 && !P.onGround; i++) g.step(1);
+      g.step(2);
+      out.splash = [50 - s1.hp, 50 - s2.hp, 50 - s3.hp];
       // 2) 不锁定:按住 S/A/D 再按 F,砍正前方 1.8m 的目标
       out.facing = {};
       for (const key of ['KeyS', 'KeyA', 'KeyD']) {
@@ -493,6 +504,7 @@ const TESTS = {
     if (r.jumpInLag) throw new Error('跳劈落地硬直中还能起跳');
     if (r.rollInLag) throw new Error('跳劈落地硬直中还能翻滚');
     if (!r.rollAfterLag) throw new Error('硬直中按的翻滚没有进缓冲');
+    if (r.splash.join() !== '2,1,0') throw new Error(`跳劈应只有正面最近一人吃 2、旁人溅 1、2.6 米外不中:${r.splash}`);
     const pc = r.plungeHitCancel;
     if (pc.dmg !== 0 || pc.lag > 0 || pc.plunging) throw new Error(`半空挨打的跳劈不该再砸下来:${JSON.stringify(pc)}`);
     for (const [k, f] of Object.entries(r.facing)) {
