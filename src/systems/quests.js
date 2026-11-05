@@ -1,5 +1,8 @@
 // 领主委托链:missions(story.js 的委托表)、进度 quest{idx,active,progress,timer}(随存档)、运行时对象 questRT。
-// 委托人管家埃隆(questGiver,头顶金色「!」exGroup)接单/交差(talkQuestGiver、completeMission、failMission),领赏面板。
+// 委托人管家埃隆(questGiver,头顶金色「!」exGroup)接单/交差(talkQuestGiver、completeMission、failMission),领赏面板;
+// 主线收尾进度 mainlineLeft / 读档欢迎语 welcomeLine。
+// 每种委托的布置与推进在表 KINDS(start / tick / unfinished / after,按 m.type 查):快递的骑马追兵与磨坊主、
+// 营地、内鬼的信使、竞速高环、受惊的白马、护送伏击、头狼、Boss。
 // 目标光柱 beacon:updateQuest(dt) 每帧推进委托并摆光柱;隔着城墙/河/湖时经航点图(nav.js)先指下一跳(routeVia)。
 // initQuests() 启动装配调用一次。
 import * as THREE from 'three';
@@ -126,68 +129,7 @@ export function talkQuestGiver(remote = false) {
     dropQuestToasts(); // 上一次(失败的)尝试留下的提示作废
     openDialog(remote ? ['(王室信使勒住马,递来一封盖着火漆的委托书)', m.brief.replace(/^埃隆:/, '埃隆(信中):')] : [m.brief]);
     toastQuest(`接受委托【${m.title}】:${m.desc}`, 4.5);
-    if (m.type === 'deliver') {
-      const parcel = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.35, 0.3), lambert(0xb4813f));
-      parcel.position.set(0, 1.0, -0.24);
-      player.group.add(parcel);
-      player.parcel = parcel;
-      questRT.deliverAmbush = false;
-      pinMiller(true);
-      keepMillerAtMill(true); // 接单时你在城里,他看不见你:直接请到磨坊门口
-    } else if (m.type === 'bandits') {
-      for (const [ox, oz] of [[-4, 2], [4, -2], [0, 6]]) addBandit(world.banditCamp.x + ox, world.banditCamp.z + oz).campFoe = true;
-      // 营地头目:会二连击和紫色破盾重击(第一次见紫色会弹教学卡)
-      const cap = addBandit(world.banditCamp.x, world.banditCamp.z - 4, { hp: 5, dmg: 2, speed: 5.6, scale: 1.12 });
-      cap.elite = true;
-      cap.captain = true;
-      cap.campFoe = true;
-    } else if (m.type === 'race') {
-      if (trialRT.active) endTrial(false); // 接正赛前先收计时赛的环
-      questRT.ringIdx = 0;
-      clearRaceRings();
-      const high = new Set(m.high || []);
-      world.raceRoute.forEach(([rx, rz], i) => {
-        const ring = new THREE.Mesh(new THREE.TorusGeometry(2.4, 0.22, 8, 20),
-          new THREE.MeshStandardMaterial({ color: 0xffd83d, emissive: 0x996600, emissiveIntensity: 0.6, metalness: 0.6, roughness: 0.3 }));
-        ring.userData.high = high.has(i); // 高环:挂得高,要跃马(空格)穿过去
-        ring.position.set(rx, ring.userData.high ? 3.7 : 2.4, rz);
-        scene.add(ring);
-        questRT.rings.push(ring);
-      });
-    } else if (m.type === 'losthorse') {
-      if (!questRT.specialHorse) {
-        questRT.specialHorse = addHorse(world.lostHorsePos.x, world.lostHorsePos.z, 0xf2efe6, false);
-        questRT.specialHorse.special = true;
-      }
-    } else if (m.type === 'escort') {
-      const mc = { ...makeHumanoid({ shirt: 0xb4813f, pants: 0x4a3a26, hair: 0x3a2a1a }),
-        pos: new THREE.Vector3(world.escortRoute[0][0], 0, world.escortRoute[0][1]),
-        yaw: 0, hp: ESCORT_HP, maxHp: ESCORT_HP, wp: 0, walkT: 0, crouch: 0, hurtT: 0 };
-      mc.group.position.copy(mc.pos);
-      scene.add(mc.group);
-      questRT.merchant = mc;
-      questRT.escortSpawned = 0;
-      questRT.ambush = false;
-      questRT.mcStriker = null;
-      questRT.mcNextAt = 0;
-    } else if (m.type === 'courier') {
-      questRT.runner = null; // 走近哨塔遗迹时信使才现身(见 updateCourier)
-    } else if (m.type === 'wolves') {
-      // 独眼头狼:大一圈、更扛揍,带两头狼守在林子里;狼杀够了它不死也不算完(见 completeMission)
-      const a = addWolf(-140, -40);
-      a.alpha = true;
-      a.hp = a.maxHp = 9;
-      a.speed += 0.8;
-      a.group.scale.setScalar(1.35);
-      questRT.alpha = a;
-      questRT.pack = [a, addWolf(-134, -47), addWolf(-147, -33)];
-    } else if (m.type === 'boss') {
-      questRT.boss = addBandit(world.fortPos.x, world.fortPos.z - 2,
-        { boss: true, hp: 12, speed: 6.8, scale: 1.35, dmg: 2 });
-      addBandit(world.fortPos.x - 5, world.fortPos.z + 3);
-      addBandit(world.fortPos.x + 5, world.fortPos.z + 3);
-      toastQuest('⚔️ 血斧巴罗克在黑石要塞等着你……', 4);
-    }
+    KINDS[m.type].start?.(m);
   } else if (m.type === 'coins' && quest.progress >= m.goal) {
     completeMission();
   } else {
@@ -213,11 +155,7 @@ function showReward(head, title, bonus, next) {
 }
 export function completeMission() {
   const m = missions[quest.idx];
-  if (m.type === 'wolves' && questRT.alpha && !questRT.alpha.dead) { // 狼杀够了,头狼还活着:不算完
-    quest.progress = Math.min(quest.progress, m.goal - 1);
-    toastQuest('🐺 狼是杀够了,可独眼头狼还在林子里嚎——光柱指着它', 3, 'wolves');
-    return;
-  }
+  if (KINDS[m.type].unfinished?.(m)) return; // 例如狼杀够了、头狼还活着
   player.coins += m.reward;
   remember(`替领主府办结了委托「${m.title}」`, `m-${quest.idx}`);
   sfx.fanfare();
@@ -236,10 +174,7 @@ export function completeMission() {
   removeEscortBandits();
   clearMissionActors();
   saveGame();
-  if (m.type === 'bandits') { // 剧情转折的引子:头目身上的信(下一单「内鬼的信使」由此而来)
-    openDialog(['(你在营地头目身上搜出一封信——火漆上竟是领主府的鹿纹印。)',
-      '(信里写着:「今日午后,哨塔遗迹,老地方交接。」……这得让埃隆看看。)']);
-  }
+  KINDS[m.type].after?.();
   if (quest.idx >= missions.length) {
     addPickup('star', 0, 13);
     toastQuest('全部委托完成!去喷泉广场领取 ★ 金狮勋章 ★,再去见领主领赏!', 6);
@@ -302,108 +237,218 @@ function updateQuestTarget(dt) {
   }
   if (!quest.active || player.dead) return;
   const m = missions[quest.idx];
-  const setBeacon = (x, z) => { beacon.visible = true; beacon.position.x = x; beacon.position.z = z; };
+  KINDS[m.type].tick(m, dt);
+}
+function aimBeacon(x, z) { beacon.visible = true; beacon.position.x = x; beacon.position.z = z; }
 
-  if (m.type === 'deliver') {
-    quest.timer -= dt;
-    setBeacon(world.windmillPos.x, world.windmillPos.z);
-    // 半路截道:出了东门、离磨坊还远时,两个黑石喽啰从路边窜出来抢包裹(甩开或砍翻都行)
-    if (!questRT.deliverAmbush && player.pos.x > 84 &&
-        dist2(player.pos.x, player.pos.z, world.windmillPos.x, world.windmillPos.z) > 30 * 30) {
-      questRT.deliverAmbush = true;
-      spawnRiders();
-      toastQuest('⚠️ 两个黑石骑手从林边杀出:「把包裹留下!」(疾驰甩开他们,或者砍下马)', 3.5);
-      sfx.wanted();
-    }
-    updateRiders(dt);
-    keepMillerAtMill();
-    if (dist2(player.pos.x, player.pos.z, world.windmillPos.x, world.windmillPos.z) < 49) {
-      const ambushed = questRT.deliverAmbush;
+// ================= 各类委托 =================
+// 每种委托:接单时摆什么(start)、每帧怎么推进(tick)、够数了还差什么(unfinished:返回真 = 先别结算)、结算后说什么(after)。
+// talkQuestGiver / updateQuestTarget / completeMission 按 m.type 查这张表
+const KINDS = {
+  coins: {
+    tick(m) {
+      beacon.visible = quest.progress >= m.goal; // 捡够了:光柱指回埃隆交差
+      beacon.position.x = steward.pos.x;
+      beacon.position.z = steward.pos.z;
+    },
+  },
+  deliver: {
+    start() {
+      const parcel = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.35, 0.3), lambert(0xb4813f));
+      parcel.position.set(0, 1.0, -0.24);
+      player.group.add(parcel);
+      player.parcel = parcel;
       questRT.deliverAmbush = false;
-      const miller = millerVillager();
-      if (miller) miller.yaw = Math.atan2(player.pos.x - miller.pos.x, player.pos.z - miller.pos.z);
-      completeMission();
-      openDialog([
-        '磨坊主卢卡斯:(接过包裹,掂了掂)总算到了!这是今年的麦价文书——落到黑石那帮人手里,他们能把全城的面包价抬上天。',
-        ambushed ? '卢卡斯:路上碰到追你的骑手了?……嗯,他们最近盯磨坊盯得紧。替我谢谢埃隆,也谢谢你。'
-          : '卢卡斯:一路太平?那是你跑得快。最近黑石的人常在东路上晃悠,往后走这条路多留个心眼。',
-      ], null, miller ? { key: miller.dbKey, name: '磨坊主卢卡斯', desc: VILLAGER_DESC_EN[villagers.indexOf(miller)],
-        // 对话跟着说话人走远自动收起:他就在跟前才挂到他身上(还在路上走着的话挂在交包裹的地方)
-        ...(dist2(miller.pos.x, miller.pos.z, player.pos.x, player.pos.z) < 64 ? { ent: miller } : {}) } : null);
-      pinMiller(true); // 说完话再回去干活(夜里也别当着你的面钻回屋)
-      questRT.millerHoldT = 25;
-    } else if (quest.timer <= 0) {
-      questRT.deliverAmbush = false;
-      failMission('投递超时!回去找埃隆重新接取…');
-    }
-  } else if (m.type === 'coins') {
-    beacon.visible = quest.progress >= m.goal;
-    beacon.position.x = steward.pos.x;
-    beacon.position.z = steward.pos.z;
-  } else if (m.type === 'bandits') {
-    beacon.visible = quest.progress < m.goal;
-    beacon.position.x = world.banditCamp.x;
-    beacon.position.z = world.banditCamp.z;
-  } else if (m.type === 'race') {
-    quest.timer -= dt;
-    if (quest.timer <= 0) { failMission('超时!回去找埃隆再试一次…'); return; }
-    const [rx, rz] = world.raceRoute[questRT.ringIdx];
-    setBeacon(rx, rz);
-    // 高亮当前环
-    questRT.rings.forEach((ring, i) => {
-      ring.rotation.y += dt * (i === questRT.ringIdx ? 3 : 0.6);
-      ring.material.emissiveIntensity = i < questRT.ringIdx ? 0.1 : i === questRT.ringIdx ? 1.2 : 0.4;
-    });
-    const ring = questRT.rings[questRT.ringIdx];
-    const high = ring && ring.userData.high;
-    const near = dist2(player.pos.x, player.pos.z, rx, rz) < (high ? 16 : 9);
-    if (near && high && player.pos.y < 0.5) {
-      questRT.ringUnder = true; // 在高环底下还没跳:先不判,离开环区还没穿过去才算没跳过
-    } else if (near) {
-      sfx.block();
-      questRT.ringIdx++;
+      pinMiller(true);
+      keepMillerAtMill(true); // 接单时你在城里,他看不见你:直接请到磨坊门口
+    },
+    tick(m, dt) {
+      quest.timer -= dt;
+      aimBeacon(world.windmillPos.x, world.windmillPos.z);
+      // 半路截道:出了东门、离磨坊还远时,两个黑石骑手从林边杀出来追你
+      if (!questRT.deliverAmbush && player.pos.x > 84 &&
+          dist2(player.pos.x, player.pos.z, world.windmillPos.x, world.windmillPos.z) > 30 * 30) {
+        questRT.deliverAmbush = true;
+        spawnRiders();
+        toastQuest('⚠️ 两个黑石骑手从林边杀出:「把包裹留下!」(疾驰甩开他们,或者砍下马)', 3.5);
+        sfx.wanted();
+      }
+      updateRiders(dt);
+      keepMillerAtMill();
+      if (dist2(player.pos.x, player.pos.z, world.windmillPos.x, world.windmillPos.z) < 49) deliverParcel();
+      else if (quest.timer <= 0) {
+        questRT.deliverAmbush = false;
+        failMission('投递超时!回去找埃隆重新接取…');
+      }
+    },
+  },
+  bandits: {
+    start() {
+      for (const [ox, oz] of [[-4, 2], [4, -2], [0, 6]]) addBandit(world.banditCamp.x + ox, world.banditCamp.z + oz).campFoe = true;
+      // 营地头目:会二连击和紫色破盾重击(第一次见紫色会弹教学卡)
+      const cap = addBandit(world.banditCamp.x, world.banditCamp.z - 4, { hp: 5, dmg: 2, speed: 5.6, scale: 1.12 });
+      cap.elite = true;
+      cap.captain = true;
+      cap.campFoe = true;
+    },
+    tick(m) {
+      beacon.visible = quest.progress < m.goal;
+      beacon.position.x = world.banditCamp.x;
+      beacon.position.z = world.banditCamp.z;
+    },
+    after() { // 剧情转折的引子:头目身上的信(下一单「内鬼的信使」由此而来)
+      openDialog(['(你在营地头目身上搜出一封信——火漆上竟是领主府的鹿纹印。)',
+        '(信里写着:「今日午后,哨塔遗迹,老地方交接。」……这得让埃隆看看。)']);
+    },
+  },
+  courier: {
+    start() { questRT.runner = null; }, // 走近哨塔遗迹时信使才现身(见 updateCourier)
+    tick(m, dt) { updateCourier(dt); },
+  },
+  race: {
+    start(m) {
+      if (trialRT.active) endTrial(false); // 接正赛前先收计时赛的环
+      questRT.ringIdx = 0;
       questRT.ringUnder = false;
-      if (questRT.ringIdx >= world.raceRoute.length) completeMission();
-      else toastQuest(`金环 ${questRT.ringIdx}/${world.raceRoute.length}${questRT.rings[questRT.ringIdx].userData.high ? '(下一个是高环:跳!)' : ''}`, 1.2, 'ring');
-    } else if (questRT.ringUnder) { // 从高环底下钻过去了:不算,兜回来跃马再穿
-      questRT.ringUnder = false;
-      callout('高环要跳!按空格', 'red');
-      toastQuest('没跳过高环——兜回来,快到环前按空格跃马穿过去', 2.5, 'ring');
-    }
-  } else if (m.type === 'losthorse') {
-    const sh = questRT.specialHorse;
-    if (!sh) return;
-    if (player.mounted === sh) {
-      setBeacon(world.stablePos.x, world.stablePos.z);
+      clearRaceRings();
+      const high = new Set(m.high || []);
+      world.raceRoute.forEach(([rx, rz], i) => {
+        const ring = new THREE.Mesh(new THREE.TorusGeometry(2.4, 0.22, 8, 20),
+          new THREE.MeshStandardMaterial({ color: 0xffd83d, emissive: 0x996600, emissiveIntensity: 0.6, metalness: 0.6, roughness: 0.3 }));
+        ring.userData.high = high.has(i); // 高环:挂得高,要跃马(空格)穿过去
+        ring.position.set(rx, ring.userData.high ? 3.7 : 2.4, rz);
+        scene.add(ring);
+        questRT.rings.push(ring);
+      });
+    },
+    tick(m, dt) {
+      quest.timer -= dt;
+      if (quest.timer <= 0) { failMission('超时!回去找埃隆再试一次…'); return; }
+      updateRace(dt);
+    },
+  },
+  losthorse: {
+    start() {
+      if (!questRT.specialHorse) {
+        questRT.specialHorse = addHorse(world.lostHorsePos.x, world.lostHorsePos.z, 0xf2efe6, false);
+        questRT.specialHorse.special = true;
+      }
+    },
+    tick(m, dt) {
+      const sh = questRT.specialHorse;
+      if (!sh) return;
+      if (player.mounted !== sh) { aimBeacon(sh.pos.x, sh.pos.z); updateSkittish(sh, dt); return; }
+      aimBeacon(world.stablePos.x, world.stablePos.z);
       if (dist2(player.pos.x, player.pos.z, world.stablePos.x, world.stablePos.z) < 100) {
         sh.home.copy(world.stablePos);
         sh.owned = false;
         completeMission();
         toastQuest('雪影归你了!它就在马厩等你。', 4);
       }
-    } else {
-      setBeacon(sh.pos.x, sh.pos.z);
-      updateSkittish(sh, dt);
-    }
-  } else if (m.type === 'courier') {
-    updateCourier(dt, setBeacon);
-  } else if (m.type === 'escort') {
-    const mc = questRT.merchant;
-    if (!mc) return;
-    setBeacon(mc.pos.x, mc.pos.z);
-    if (mc.hp <= 0) { failMission('商人巴特倒下了……回去找埃隆重整旗鼓。'); return; }
-    updateEscort(mc, dt);
-  } else if (m.type === 'wolves') {
-    const a = questRT.alpha;
-    if (a && !a.dead) setBeacon(a.pos.x, a.pos.z);
-    else setBeacon(-140, -40);
-  } else if (m.type === 'boss') {
-    if (questRT.boss) setBeacon(questRT.boss.pos.x, questRT.boss.pos.z);
-    if (questRT.boss && questRT.boss.dead) {
-      questRT.boss = null;
-      completeMission();
-      toastNow('⚔️ 血斧巴罗克倒下了!黑石兄弟会土崩瓦解!', 4); // 不管是刀、箭还是法术收的尾,倒下的这一刻就播
-    }
+    },
+  },
+  escort: {
+    start() {
+      const mc = { ...makeHumanoid({ shirt: 0xb4813f, pants: 0x4a3a26, hair: 0x3a2a1a }),
+        pos: new THREE.Vector3(world.escortRoute[0][0], 0, world.escortRoute[0][1]),
+        yaw: 0, hp: ESCORT_HP, maxHp: ESCORT_HP, wp: 0, walkT: 0, crouch: 0, hurtT: 0 };
+      mc.group.position.copy(mc.pos);
+      scene.add(mc.group);
+      questRT.merchant = mc;
+      questRT.escortSpawned = 0;
+      questRT.ambush = false;
+      questRT.mcStriker = null;
+      questRT.mcNextAt = 0;
+    },
+    tick(m, dt) {
+      const mc = questRT.merchant;
+      if (!mc) return;
+      aimBeacon(mc.pos.x, mc.pos.z);
+      if (mc.hp <= 0) { failMission('商人巴特倒下了……回去找埃隆重整旗鼓。'); return; }
+      updateEscort(mc, dt);
+    },
+  },
+  wolves: {
+    start() {
+      // 独眼头狼:大一圈、更扛揍,带两头狼守在林子里;狼杀够了它不死也不算完(见 unfinished)
+      const a = addWolf(-140, -40);
+      a.alpha = true;
+      a.hp = a.maxHp = 9;
+      a.speed += 0.8;
+      a.group.scale.setScalar(1.35);
+      questRT.alpha = a;
+      questRT.pack = [a, addWolf(-134, -47), addWolf(-147, -33)];
+    },
+    tick() {
+      const a = questRT.alpha;
+      if (a && !a.dead) aimBeacon(a.pos.x, a.pos.z);
+      else aimBeacon(-140, -40);
+    },
+    unfinished(m) {
+      if (!questRT.alpha || questRT.alpha.dead) return false;
+      quest.progress = Math.min(quest.progress, m.goal - 1);
+      toastQuest('🐺 狼是杀够了,可独眼头狼还在林子里嚎——光柱指着它', 3, 'wolves');
+      return true;
+    },
+  },
+  boss: {
+    start() {
+      questRT.boss = addBandit(world.fortPos.x, world.fortPos.z - 2,
+        { boss: true, hp: 12, speed: 6.8, scale: 1.35, dmg: 2 });
+      addBandit(world.fortPos.x - 5, world.fortPos.z + 3);
+      addBandit(world.fortPos.x + 5, world.fortPos.z + 3);
+      toastQuest('⚔️ 血斧巴罗克在黑石要塞等着你……', 4);
+    },
+    tick() {
+      if (!questRT.boss) return;
+      aimBeacon(questRT.boss.pos.x, questRT.boss.pos.z);
+      if (questRT.boss.dead) {
+        questRT.boss = null;
+        completeMission();
+        toastNow('⚔️ 血斧巴罗克倒下了!黑石兄弟会土崩瓦解!', 4); // 不管是刀、箭还是法术收的尾,倒下的这一刻就播
+      }
+    },
+  },
+};
+// ② 送到磨坊:卢卡斯在门口接包裹(说完话再在门口站一会儿,夜里也别当着你的面钻回屋)
+function deliverParcel() {
+  const ambushed = questRT.deliverAmbush;
+  questRT.deliverAmbush = false;
+  const miller = millerVillager();
+  if (miller) miller.yaw = Math.atan2(player.pos.x - miller.pos.x, player.pos.z - miller.pos.z);
+  completeMission();
+  openDialog([
+    '磨坊主卢卡斯:(接过包裹,掂了掂)总算到了!这是今年的麦价文书——落到黑石那帮人手里,他们能把全城的面包价抬上天。',
+    ambushed ? '卢卡斯:路上碰到追你的骑手了?……嗯,他们最近盯磨坊盯得紧。替我谢谢埃隆,也谢谢你。'
+      : '卢卡斯:一路太平?那是你跑得快。最近黑石的人常在东路上晃悠,往后走这条路多留个心眼。',
+  ], null, miller ? { key: miller.dbKey, name: '磨坊主卢卡斯', desc: VILLAGER_DESC_EN[villagers.indexOf(miller)],
+    // 对话跟着说话人走远自动收起:他就在跟前才挂到他身上(还在路上走着的话挂在交包裹的地方)
+    ...(dist2(miller.pos.x, miller.pos.z, player.pos.x, player.pos.z) < 64 ? { ent: miller } : {}) } : null);
+  pinMiller(true);
+  questRT.millerHoldT = 25;
+}
+// ⑤ 竞速:按顺序穿环;高环要跃马穿过——在高环底下没跳先不判,离开环区还没穿过去才提示"兜回来再跳"
+function updateRace(dt) {
+  const [rx, rz] = world.raceRoute[questRT.ringIdx];
+  aimBeacon(rx, rz);
+  questRT.rings.forEach((ring, i) => { // 高亮当前环
+    ring.rotation.y += dt * (i === questRT.ringIdx ? 3 : 0.6);
+    ring.material.emissiveIntensity = i < questRT.ringIdx ? 0.1 : i === questRT.ringIdx ? 1.2 : 0.4;
+  });
+  const high = questRT.rings[questRT.ringIdx].userData.high;
+  const near = dist2(player.pos.x, player.pos.z, rx, rz) < (high ? 16 : 9);
+  if (near && high && player.pos.y < 0.5) {
+    questRT.ringUnder = true;
+  } else if (near) {
+    sfx.block();
+    questRT.ringIdx++;
+    questRT.ringUnder = false;
+    if (questRT.ringIdx >= world.raceRoute.length) completeMission();
+    else toastQuest(`金环 ${questRT.ringIdx}/${world.raceRoute.length}${questRT.rings[questRT.ringIdx].userData.high ? '(下一个是高环:跳!)' : ''}`, 1.2, 'ring');
+  } else if (questRT.ringUnder) {
+    questRT.ringUnder = false;
+    callout('高环要跳!按空格', 'red');
+    toastQuest('没跳过高环——兜回来,快到环前按空格跃马穿过去', 2.5, 'ring');
   }
 }
 // ② 快递的追兵:两名黑石骑手从前方林边斜插过来,骑马追你。人是普通盗贼(会砍、能被砍),脚下垫一匹不进马厩名单的马;
@@ -487,14 +532,14 @@ function spawnRunner() {
   toastQuest('🏃 哨塔边的兜帽人瞧见了你,撒腿就往西跑——追上他!', 3, 'courier');
   sfx.wanted();
 }
-function updateCourier(dt, setBeacon) {
+function updateCourier(dt) {
   const r = questRT.runner;
   if (!r) {
-    setBeacon(COURIER_SPOT.x, COURIER_SPOT.z);
+    aimBeacon(COURIER_SPOT.x, COURIER_SPOT.z);
     if (dist2(player.pos.x, player.pos.z, COURIER_SPOT.x, COURIER_SPOT.z) < 45 * 45) spawnRunner();
     return;
   }
-  setBeacon(r.pos.x, r.pos.z);
+  aimBeacon(r.pos.x, r.pos.z);
   const pd = Math.hypot(player.pos.x - r.pos.x, player.pos.z - r.pos.z);
   if (pd < 2.2) {
     remember('截住了内鬼的信使:府里的税吏霍布投了黑石', 'courier');
