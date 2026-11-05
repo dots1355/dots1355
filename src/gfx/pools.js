@@ -40,22 +40,27 @@ export function addLightSource(pl) {
 }
 export function removeLightSource(pl) { lightSources.delete(pl); }
 let lightPoolScan = 0;
-const _lpList = [];
+// 最近的 LIGHT_POOL 盏:插入排序进定长槽位(每次扫描零分配,不建临时对象、不排整表)
+const _lpSrc = new Array(LIGHT_POOL).fill(null), _lpD = new Float64Array(LIGHT_POOL);
+let _lpN = 0, _lpX = 0, _lpZ = 0;
+function lpConsider(src) {
+  if (!src.visible || src.intensity <= 0.01) return;
+  const d = Math.hypot(src.position.x - _lpX, src.position.z - _lpZ);
+  if (d > 110 || (_lpN === LIGHT_POOL && d >= _lpD[_lpN - 1])) return;
+  let i = _lpN < LIGHT_POOL ? _lpN++ : _lpN - 1;
+  while (i > 0 && _lpD[i - 1] > d) { _lpD[i] = _lpD[i - 1]; _lpSrc[i] = _lpSrc[i - 1]; i--; }
+  _lpD[i] = d; _lpSrc[i] = src;
+}
 export function updateLightPool(px, pz) {
   if (lightPoolScan-- > 0) return;
   lightPoolScan = 3;
-  _lpList.length = 0;
-  for (const src of lightSources) {
-    if (!src.visible || src.intensity <= 0.01) continue;
-    const d = Math.hypot(src.position.x - px, src.position.z - pz);
-    if (d > 110) continue;
-    _lpList.push({ src, d });
-  }
-  _lpList.sort((a, b) => a.d - b.d);
+  _lpN = 0; _lpX = px; _lpZ = pz;
+  lightSources.forEach(lpConsider);
+  const n = _lpN;
   for (let i = 0; i < LIGHT_POOL; i++) {
-    const pl = lightPool[i], it = _lpList[i];
-    if (!it) { pl.intensity = 0; continue; }
-    const s2 = it.src;
+    const pl = lightPool[i];
+    if (i >= n) { pl.intensity = 0; _lpSrc[i] = null; continue; }
+    const s2 = _lpSrc[i];
     pl.color.copy(s2.color);
     pl.intensity = s2.intensity;
     pl.distance = s2.distance;

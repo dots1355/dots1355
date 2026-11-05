@@ -528,9 +528,10 @@ function wanted(cx, cz, px, pz) {
 // 实例化的地标读区块的放置清单 c.props;没走实例化、单独挂在组里的(例如翻倒的货车)再扫一遍组
 const MARK_OF = { Campfire: 'camp', Tent: 'camp', TentDark: 'bandit', Banner: 'bandit', BrokenTower: 'tower',
   Ruin: 'ruin', Shrine: 'ruin', Mesa: 'rock', Spires: 'rock', IceRock: 'rock', Cart: 'camp' };
+// out:调用方复用的数组(先清空再填),每帧调用也不分配
 const _marks = new WeakMap();
-export function wildMarks() {
-  const out = [];
+export function wildMarks(out = []) {
+  out.length = 0;
   for (const c of chunks.values()) {
     let m = _marks.get(c.group);
     if (!m) {
@@ -548,7 +549,7 @@ export function wildMarks() {
       for (const o of c.group.children) if (o.userData.isProp && o.children[0]) add(o.children[0].name, o.position.x, o.position.z);
       _marks.set(c.group, m);
     }
-    for (const k of m) out.push(k);
+    for (let i = 0; i < m.length; i++) out.push(m[i]);
   }
   return out;
 }

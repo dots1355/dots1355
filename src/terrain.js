@@ -299,20 +299,46 @@ export function buildMasks(world) {
   for (let i = 0; i < MN; i++) {
     MASK[i] = MASK[(MN - 1) * MN + i] = MASK[i * MN] = MASK[i * MN + MN - 1] = 1;
   }
-  cache.clear();
+  clearHeightCache();
 }
 
 // ---------------- 网格采样(与地表三角剖分一致) ----------------
 export const GRID = 4; // 地表网格间距(米)
-const cache = new Map();
-function cornerH(ix, iz) {
-  const key = ix * 1000003 + iz;
-  let h = cache.get(key);
-  if (h === undefined) {
-    h = terrainH(ix * GRID, iz * GRID);
-    if (cache.size > 80000) cache.clear();
-    cache.set(key, h);
+// 格点高度缓存:按 64×64 个格点(256m 见方)分桶,桶是一张 Float32Array(NaN = 还没算)。
+// 最多留 HB_MAX 个桶,满了淘汰最久没碰过的那个、数组洗净复用——不再像整表 Map 那样满 8 万条就整个 clear()
+// (一次扔掉几 MB 的条目与装箱数字,荒野流式期间引发几十毫秒的 Major GC),也不再每条一个 Map 项
+const HB = 64, HB_MAX = 48;
+const hBuckets = new Map(); // 桶号 → { a: Float32Array, used }
+let hLastKey = NaN, hLastArr = null, hClock = 0;
+function hBucket(key) {
+  let bk = hBuckets.get(key);
+  if (!bk) {
+    let arr = null;
+    if (hBuckets.size >= HB_MAX) { // 淘汰最久没用的桶,数组拿来复用
+      let oldK = 0, old = null;
+      for (const [k, b] of hBuckets) if (!old || b.used < old.used) { old = b; oldK = k; }
+      hBuckets.delete(oldK);
+      arr = old.a;
+    }
+    if (!arr) arr = new Float32Array(HB * HB);
+    arr.fill(NaN);
+    bk = { a: arr, used: 0 };
+    hBuckets.set(key, bk);
   }
+  bk.used = ++hClock;
+  hLastKey = key;
+  hLastArr = bk.a;
+  return bk.a;
+}
+function clearHeightCache() {
+  for (const b of hBuckets.values()) b.a.fill(NaN);
+}
+function cornerH(ix, iz) {
+  const key = (ix >> 6) * 16384 + (iz >> 6); // 世界 ±50 万米 → 桶号在 ±2000 内,键不重
+  const arr = key === hLastKey ? hLastArr : hBucket(key);
+  const li = ((iz & 63) << 6) | (ix & 63);
+  let h = arr[li];
+  if (h !== h) { h = terrainH(ix * GRID, iz * GRID); arr[li] = h; }
   return h;
 }
 // 任意点的地面高度:与渲染出来的三角面严格一致(脚不陷、不悬)
@@ -349,35 +375,27 @@ const BIOME_COL = [
   [lin(0x899a52), lin(0x6e8747)], // 丘陵:更绿的草坡
 ];
 const ROCK_COL = lin(0x77726a), SNOWCAP = lin(0xf1f5f9);
-// 地图配色(小地图/大地图):按群系权重混合的 sRGB 颜色 + 高度明暗;按 16m 格缓存
-const _mapCache = new Map();
+// 地图配色(小地图/大地图):按群系权重混合的 sRGB 颜色 + 高度明暗,写进 out[0..2](0~255)。
+// h 是该点的地形高度(地图自己有高度网格,这里不再重算);不缓存、不拼字符串
 const _mw = new Float32Array(NB);
 const MAP_RGB = [
   [0x8c, 0x92, 0x58], [0x4e, 0x63, 0x3a], [0xd4, 0xb2, 0x78], [0xe4, 0xea, 0xf0],
   [0x4c, 0x52, 0x38], [0x5a, 0x53, 0x4c], [0x88, 0x83, 0x79], [0x76, 0x8c, 0x4e],
 ];
-export function mapColor(x, z) {
-  const ix = Math.floor(x / 16), iz = Math.floor(z / 16);
-  const key = ix * 100003 + iz;
-  let c = _mapCache.get(key);
-  if (c) return c;
-  const cx = ix * 16 + 8, cz = iz * 16 + 8;
-  biomeWeights(cx, cz, _mw);
+export function mapRGB(x, z, h, out) {
+  biomeWeights(x, z, _mw);
   let r = 0, g = 0, b = 0;
   for (let i = 0; i < NB; i++) { r += MAP_RGB[i][0] * _mw[i]; g += MAP_RGB[i][1] * _mw[i]; b += MAP_RGB[i][2] * _mw[i]; }
-  const h = terrainH(cx, cz);
   const shade = Math.max(0.72, Math.min(1.22, 1 + h * 0.018)); // 高处亮、低处暗:一眼看出山丘洼地
   r *= shade; g *= shade; b *= shade;
-  const mh = mountainH(cx, cz); // 群山:岩灰到雪白
+  const mh = mountainH(x, z); // 群山:岩灰到雪白
   if (mh > 6) {
     const t = smooth(6, 30, mh) * 0.7, s = smooth(34, 60, mh);
     r += (132 - r) * t; g += (126 - g) * t; b += (118 - b) * t;
     r += (236 - r) * s; g += (240 - g) * s; b += (246 - b) * s;
   }
-  c = `rgb(${Math.min(255, r) | 0},${Math.min(255, g) | 0},${Math.min(255, b) | 0})`;
-  if (_mapCache.size > 60000) _mapCache.clear();
-  _mapCache.set(key, c);
-  return c;
+  out[0] = Math.min(255, r) | 0; out[1] = Math.min(255, g) | 0; out[2] = Math.min(255, b) | 0;
+  return out;
 }
 const _c = new THREE.Color(), _c2 = new THREE.Color();
 function groundColor(x, z, ny, h, out) {
