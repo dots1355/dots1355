@@ -5,17 +5,22 @@
 import * as THREE from 'three';
 import { sfx } from '../audio.js';
 import { rand } from '../core/rng.js';
+import { colliders, player, started } from '../core/state.js';
 import { hitStop } from '../core/timefx.js';
 import { simNow } from '../core/timers.js';
 import { dist2, lambert, resolveCollisions } from '../entities.js';
 import { scene } from '../gfx/core.js';
+import { toast } from '../ui/toast.js';
+import { stats, unlockAch } from './achievements.js';
+import { calendar, dayPhase } from './calendar.js';
 import { cam } from './camera.js';
 import { awakenDragon, dragonRT } from './dragon.js';
+import { remember } from './mind.js';
 import { prologue } from './prologue.js';
 import { spawnDust, weather } from './weather.js';
 import {
-  applyDamage, arrows, bandits, calendar, callout, colliders, dayPhase, dialog, faceNearestFoe, guards,
-  keys, midHeld, openDialog, player, remember, saveGame, started, stats, toast, unlockAch, wolves,
+  applyDamage, arrows, bandits, callout, dialog, faceNearestFoe, guards, keys, midHeld, openDialog,
+  saveGame, wolves,
 } from '../main.js';
 
 // ================= 魔法系统 =================

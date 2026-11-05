@@ -2,14 +2,13 @@
 // 一步一步教:锁定 → 翻滚(真的躲开一次)→ 格挡/弹反 → 出刀 → 魔光弹(要打中)→ 自由战斗;做到才进下一步。
 // 教学卡 setTutor 也给别的系统用(例如第一次见到紫色重击)。玩家的马(序章送的)与 B 键唤马也在这里。
 import { sfx } from '../audio.js';
+import { colliders, player } from '../core/state.js';
 import { resolveCollisions } from '../entities.js';
+import { toast, toastNow } from '../ui/toast.js';
 import { cam } from './camera.js';
 import { clock } from './sky.js';
 import { spawnDust } from './weather.js';
-import {
-  abHighlight, addHorse, callout, colliders, horses, killWolf, lockFoe, player, setLockFoe, toast,
-  toastNow, wolves,
-} from '../main.js';
+import { abHighlight, addHorse, callout, horses, killWolf, lockFoe, setLockFoe, wolves } from '../main.js';
 
 // ================= 序章(天际式开场):狼袭教学 → 队长赏识 → 标题卡揭幕 =================
 export const prologue = { on: false, step: 0, t: 0, wolves: [] };

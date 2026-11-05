@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import { buildWorld } from './world.js';
 import { makeHumanoid, makeHorse, makeWolf, makeChicken, makeSheep, resolveCollisions, angleLerp, dist2, lambert, setHumanModel, setFaunaModel, setWeaponModels, getWeaponModel, disposeEntityGroup } from './entities.js';
 import { INTRO, REGIONS, GUARD_LINES, NPCS, MISSIONS, VILLAGERS, DIALOGS, TIME_GREETINGS, LORE } from './story.js';
-import { initAudio, sfx, startMusic, toggleMusic, weatherAudio, setAmbience, setCombatMusic } from './audio.js';
+import { initAudio, sfx, startMusic, toggleMusic, weatherAudio, setCombatMusic } from './audio.js';
 import { preloadAIAssets, generateRemoteAITextures } from './textures.js';
 import { initWilderness, updateWilderness, wildRegionName, CORE, LANDMARKS, BIG_PROP, setWildViewDistance } from './wilderness.js';
 import * as BANKS from './dialogue-banks.js';
@@ -11,7 +11,7 @@ import { GLTFLoader } from '../lib/jsm/loaders/GLTFLoader.js';
 import { setTreeModel, setBuildingModel, setRockGeos, setNatureModels, hasNature, buildNatureInstances, NATURE_SPEC, specCols, registerNatureTemplate } from './flora.js';
 import { MODELS_B64 } from './models-data.js';
 import { buildMasks, buildCoreGround, getGroundMaterial, groundH, maskAt, vegAllowed, dominantBiome, biomeWeights } from './terrain.js';
-import { initVegetation, updateVegetation, setVegetationSeason, setVegetationDensity } from './vegetation.js';
+import { initVegetation, updateVegetation, setVegetationDensity } from './vegetation.js';
 import { staticBatch, registerSmallProps, updatePropLOD } from './batch.js';
 import { later, updateTimers, pendingTimers, simNow } from './core/timers.js';
 import { hitStop, slowMo, scaleDt } from './core/timefx.js';
@@ -24,6 +24,9 @@ import { mapState, toggleBigMap, drawMinimap } from './ui/maps.js';
 import { iconHTML, heartsHTML, weatherHTML, manaHTML, svgIcon, richText, wantedHTML } from './ui/hud.js';
 import { facetKind } from './gfx/facet.js';
 import { ctx } from './core/ctx.js';
+import { frame } from './core/frame.js';
+import { world, colliders, player, started, bindWorld, bindPlayer, markStarted } from './core/state.js';
+import { PACK_TALES, PACK_WISHES, PACK_PROPHET_IDLE, PACK_PROCLAIM, PACK_HOST_LINES, PACK_WITCH_LINES, GHOST_LINES, EPITAPHS, COMEDY_LINES, BARD_COUPLETS } from './content-packs.js';
 import { LIGHT_POOL, lightPool, initLightPool, addLightSource, removeLightSource, updateLightPool, pooledMat, releaseMat } from './gfx/pools.js';
 import { mergeGeometries } from '../lib/jsm/utils/BufferGeometryUtils.js';
 import { renderer, scene, camera, LOWFX, composer, gtao, bloom, gradePass, STYLE_PRESETS, stylePass, smaa, styleKey, applyStyle, cycleStyle } from './gfx/core.js';
@@ -41,6 +44,23 @@ import {
   skillLv, skillXp, sneakFactor, spellDown, spellUp, spendSta, toggleSneak, updateFrostPatches,
   updateMagic,
 } from './systems/magic.js';
+import { dropQuestToasts, toast, toastQuest, toastQueue, updateToast } from './ui/toast.js';
+import {
+  AI_TEXT_OFF, aiBusy, aiLine,
+} from './core/aitext.js';
+import {
+  ACH_DEFS, achUnlocked, stats, unlockAch,
+} from './systems/achievements.js';
+import {
+  SEASONS, SEASON_ICON, applySeason, calendar, composeLetter, dayPhase, isWinter, newDay, seasonDay,
+  seasonIdx, sleepToMorning, startSpecialDay, todaySpecial, updateAmbience, updateCalendar,
+} from './systems/calendar.js';
+import {
+  MIND, MIND_WISHES, MIRROR_POS, archetype, chronicle, chronicleDeeds, consolidate, dayTopSurprise,
+  dayTopThought, habitFactor, idle, initMirror, mindFavorite, mindLoad, mindMakeWish, mindReport,
+  mindSave, mindTick, mirrorTalk, moodWord, recallLine, remember, updateIdle, updateWorkspace,
+  workspace, wsReport,
+} from './systems/mind.js';
 
 // ================= 基础渲染 =================
 initLightPool(scene); // 固定数量的点光池(火把/篝火等光源只登记,由它代为发光)
@@ -94,9 +114,8 @@ if (location.protocol !== 'file:') fetch('./assets/ai/title.jpg').then((r) => {
 }).catch(() => {});
 
 const preWorldTops = new Set(scene.children);
-const world = buildWorld(scene);
+bindWorld(buildWorld(scene)); // world / colliders 登记进 core/state.js,系统模块从那里读
 const worldTops = scene.children.filter((o) => !preWorldTops.has(o)); // buildWorld 新建的顶层对象(静态合批候选)
-const { colliders } = world;
 
 // ---- 地形:平整蒙版 → 核心王国起伏地表(替换旧的无限平面)----
 buildMasks(world);
@@ -247,70 +266,14 @@ generateRemoteAITextures({
 const $ = (id) => document.getElementById(id);
 const heartsEl = $('hearts'), coinsEl = $('coins'), wantedEl = $('wanted'),
   missionEl = $('mission'), promptEl = $('prompt'),
-  toastEl = $('toast'), flashEl = $('flash'), titleEl = $('title'),
+  flashEl = $('flash'), titleEl = $('title'),
   gameoverEl = $('gameover'), gameoverText = $('gameover-text'),
   lowhpEl = $('lowhp'), weatherEl = $('weather'), equipEl = $('equip'),
   bosshpEl = $('bosshp'), bosshpFillEl = $('bosshp-fill'),
   staminaEl = $('stamina'), staminaFillEl = $('stamina-fill');
 
-// 顶部细条通知:队列化,一次一条,不遮挡视野
-let toastTimer = 0; // >0 显示中,<0 淡出间隔
-const toastQueue = [];
-// 提示分三档:委托(2)> 一般(1)> 氛围(0)。队列里先播高档的,同档先来先播;
-// 排太久(>7 秒)的过期作废——过时的提示比没有提示更误导;队列最多 5 条,满了先挤掉低档的旧条。
-// 条目:[文字, 时长, 入队时刻(游戏时钟), 插队?, 档位, 标签]
-function pushToast(msg, dur, tier, tag) {
-  toastQueue.push([msg, Math.min(dur, 4), simNow(), false, tier, tag]);
-  while (toastQueue.length > 5) {
-    let k = -1;
-    for (let i = 0; i < toastQueue.length; i++) {
-      if (toastQueue[i][3]) continue;
-      if (k < 0 || toastQueue[i][4] < toastQueue[k][4]) k = i;
-    }
-    toastQueue.splice(k < 0 ? 0 : k, 1);
-  }
-}
-function toast(msg, dur = 2.6) { pushToast(msg, dur, 1, null); }
-// 委托类:进度一推进,同一委托的旧提示就作废(dropQuestToasts)
-function toastQuest(msg, dur = 3.5) { pushToast(msg, dur, 2, 'quest'); }
-// 氛围类(世界的心声、闲笔):有委托在办、或队列已经排着两条以上时,直接不播
-function toastAmbient(msg, dur = 3.5) {
-  if (quest.active || toastQueue.length >= 2 || prologue.on) return;
-  pushToast(msg, dur, 0, 'ambient');
-}
-function dropQuestToasts() {
-  for (let i = toastQueue.length - 1; i >= 0; i--) if (toastQueue[i][5] === 'quest') toastQueue.splice(i, 1);
-}
-// 插队播报:教学这种时效信息不排队,直接顶到最前并催场
-function toastNow(msg, dur = 3) {
-  toastQueue.unshift([msg, Math.min(dur, 4), simNow(), true, 3, null]);
-  if (toastTimer > 0.4) toastTimer = 0.4; // 正在播的加速谢幕
-}
-function updateToast(dt) {
-  if (toastTimer > 0) {
-    toastTimer -= dt;
-    if (toastTimer <= 0) {
-      toastEl.style.opacity = 0;
-      toastTimer = -0.45;
-    }
-  } else if (toastTimer < 0) {
-    toastTimer = Math.min(0, toastTimer + dt);
-  } else if (toastQueue.length) {
-    const now = simNow();
-    for (let i = toastQueue.length - 1; i >= 0 && toastQueue.length > 1; i--) {
-      if (!toastQueue[i][3] && now - toastQueue[i][2] > 7000) toastQueue.splice(i, 1);
-    }
-    let k = 0; // 档位最高的先播(插队的档位 3)
-    for (let i = 1; i < toastQueue.length; i++) if (toastQueue[i][4] > toastQueue[k][4]) k = i;
-    const [msg, dur] = toastQueue.splice(k, 1)[0];
-    toastEl.innerHTML = richText(msg); // 文字里的 emoji 换成统一的 SVG 图标
-    toastEl.style.opacity = 1;
-    toastTimer = dur;
-  }
-}
-
 // ================= 玩家 =================
-const player = {
+bindPlayer({
   ...makeHumanoid({ shirt: 0x4b5e3c, pants: 0x5a4430, ranger: true, sword: true }), // 游侠:苔绿兜帽 + 短披风
   pos: world.playerSpawn.clone(),
   vy: 0, yaw: 0, onGround: true, jumps: 0,
@@ -324,7 +287,7 @@ const player = {
   mp: 8, maxMp: 8, spells: ['spark'], spellIdx: 0, castT: 0,
   // 技艺熟练度:用什么涨什么(定义见 systems/magic.js 的 SKILL_DEFS)
   skills: Object.fromEntries(Object.keys(SKILL_DEFS).map((k) => [k, { lv: 1, xp: 0 }])),
-};
+});
 player.group.position.copy(player.pos);
 scene.add(player.group);
 
@@ -1405,6 +1368,11 @@ function addChicken(x, z) {
 [[18, 84], [22, 88], [26, 84], [10, 22], [-14, 20], [44, 14], [14, 78], [-16, 90]]
   .forEach(([x, z]) => addChicken(x, z));
 
+// 导演事件「鸡群暴动」:直接拉满愤怒、开始 t 秒的报复
+function startChickenRiot(t) {
+  chickenAnger = 3;
+  revengeT = t;
+}
 function pokeChicken(c) {
   sfx.cluck();
   c.state = 'flee';
@@ -1861,6 +1829,7 @@ function togglePhoto() {
 const BOAT_PIER = { x: -96.5, z: 86 };
 const BOAT_ISLE = { x: -100, z: 106.2 };
 let lakeBlessed = false;
+function setLakeBlessed(v) { lakeBlessed = !!v; } // 读档用:恩赐状态只在本段改写
 function rowTo(dst, msg) {
   sfx.splash();
   stats.rows = (stats.rows || 0) + 1;
@@ -2098,7 +2067,7 @@ function choreBoard() {
 }
 
 // ================= 世界观铭文(可阅读的石碑,集齐 12 处) =================
-let loreRead = [];
+const loreRead = [];
 const loreStones = [];
 {
   const slabG = new THREE.BoxGeometry(1.0, 1.5, 0.26);
@@ -2293,14 +2262,14 @@ function endStreetEvent() {
 }
 function trySpawnStreetEvent() {
   if (arenaRT.active) return;
-  if (dailyEvents <= 0) { streetEvent.cooldown = 60; return; } // 今日热闹够了
-  dailyEvents--;
+  if (calendar.dailyEvents <= 0) { streetEvent.cooldown = 60; return; } // 今日热闹够了
+  calendar.dailyEvents--;
   if (rand() < 0.5) {
     // 抢劫:挑一个不太远的清醒村民
     const v = villagers.find((x) => !x.sleeping && x.downT <= 0 &&
       dist2(player.pos.x, player.pos.z, x.pos.x, x.pos.z) < 3600 &&
       dist2(player.pos.x, player.pos.z, x.pos.x, x.pos.z) > 100);
-    if (!v) { dailyEvents++; streetEvent.cooldown = 25; return; }
+    if (!v) { calendar.dailyEvents++; streetEvent.cooldown = 25; return; }
     streetEvent.type = 'robbery';
     streetEvent.villager = v;
     streetEvent.t = 40;
@@ -2570,7 +2539,7 @@ function refreshTrophies() {
 function updateHome() {
   if (!homeRT.mailbox) return;
   homeRT.mailbox.visible = !!player.home;
-  homeRT.mailFlag.visible = !!letter;
+  homeRT.mailFlag.visible = !!calendar.letter;
 }
 
 // 萤火相随:替这颗心实现三个心愿后的谢礼——一点它自己的光,入夜后绕着你飞
@@ -2583,7 +2552,7 @@ function updateFirefly() {
   const show = !!player.firefly && !player.dead && (ph === 'night' || ph === 'dusk');
   fireflyMesh.visible = show;
   if (!show) return;
-  const t = nowMs * 0.001;
+  const t = frame.now * 0.001;
   fireflyMesh.position.set(
     player.pos.x + Math.cos(t * 1.3) * (0.9 + Math.sin(t * 0.7) * 0.25),
     1.55 + Math.sin(t * 2.1) * 0.28,
@@ -3063,8 +3032,7 @@ const DIRECTOR_EVENTS = [
     key: 'chickenRiot', w: 3,
     cond: () => revengeT <= 0 && dist2(player.pos.x, player.pos.z, 20, 85) < 14400,
     start() {
-      chickenAnger = 3;
-      revengeT = 15;
+      startChickenRiot(15);
       toast('🐔 鸡群今天心情不好——暴动了!!', 3.5);
       sfx.wanted();
       for (let i = 0; i < 4; i++) {
@@ -3113,7 +3081,7 @@ function updateDirector(dt) {
   }
   director.cd -= dt;
   if (director.cd > 0) return;
-  if (dailyEvents <= 0) { director.cd = 45; return; } // 今日限额已满,明天再说
+  if (calendar.dailyEvents <= 0) { director.cd = 45; return; } // 今日限额已满,明天再说
   const pool = DIRECTOR_EVENTS.filter((e) => e.cond());
   if (!pool.length) { director.cd = 30; return; }
   // 满月夜里亡魂更容易现身;世界的心境挑它爱看的戏(意识 → 行为的闭环)
@@ -3135,7 +3103,7 @@ function updateDirector(dt) {
   let roll = rand() * total;
   let ev = pool[0];
   for (const e of pool) { roll -= wOf(e); if (roll <= 0) { ev = e; break; } }
-  dailyEvents--;
+  calendar.dailyEvents--;
   director.handle = ev.start();
   director.key = ev.key;
   director.dur = director.handle ? director.handle.t : 0;
@@ -3171,68 +3139,6 @@ for (const [key, [nx, nz, nyaw]] of Object.entries(world.npcSpots)) {
 const steward = { group: questGiver.group, parts: questGiver.parts, key: 'steward',
   def: NPCS.steward, pos: world.questGiverPos.clone(), yaw: Math.PI, lineIdx: 0, walkT: 0 };
 namedNPCs.push(steward);
-
-// ================= 无意义成就(奖励瞎玩) =================
-const ACH_DEFS = {
-  boot:     { name: '湖底时尚', desc: '钓上一只老靴子' },
-  bigfish:  { name: '银月传说', desc: '钓上湖中大鱼' },
-  hero:     { name: '见义勇为', desc: '阻止一次街头抢劫' },
-  gladiator:{ name: '角斗新星', desc: '竞技场撑过 5 波' },
-  chucker:  { name: '禽兽行为', desc: '扔出 10 次鸡' },
-  pecked:   { name: '鸡下败将', desc: '被复仇鸡群啄中 5 次' },
-  windmill: { name: '第二位风车骑士', desc: '对着风车挥剑' },
-  wisher:   { name: '许愿池钉子户', desc: '许愿 10 次' },
-  drunkard: { name: '酒中豪杰', desc: '醉倒 3 次' },
-  loser:    { name: '赌怪', desc: '骰子连输 3 把' },
-  shepherd: { name: '羊骑士', desc: '骑羊走过 100 米' },
-  bouncer:  { name: '弹簧靴', desc: '2 秒内连环踩踏两个目标' },
-  hunter:   { name: '荒野猎手', desc: '猎到 5 头鹿' },
-  forager:  { name: '采菇人', desc: '采到 15 朵蘑菇' },
-  scribe:   { name: '史官', desc: '读遍全部 12 处世界观铭文' },
-  mirror:   { name: '照见自己', desc: '与北境边缘的回响之镜对视' },
-  parry:    { name: '见招拆招', desc: '完成 5 次完美弹反' },
-  lawless:  { name: '无法无天', desc: '把全城卫兵同时放倒' },
-  warbreaker: { name: '破军', desc: '全歼一支盗贼战团' },
-  wallkeeper: { name: '守城人', desc: '与卫兵并肩击退攻城大军' },
-  champion:   { name: '阵前斩将', desc: '单挑斩落枭首,吓散整支战团' },
-  dragonslayer: { name: '屠龙者', desc: '斩落龙骨之地的霜龙残魂' },
-  rampage:  { name: '一骑当千', desc: '一场战斗内 8 连杀' },
-  chef:     { name: '野炊大师', desc: '在篝火上烤 5 块鹿肉' },
-  packmate: { name: '孤狼不再', desc: '驯服白狼「霜牙」' },
-  soak:     { name: '泡汤客', desc: '在温泉里泡满 30 秒' },
-  lakegift: { name: '湖神的恩赐', desc: '触碰湖心岛的月光祭坛(生命上限 +2)' },
-  unsealer: { name: '开封者', desc: '走进被封印的王室地窖,请下先王战徽' },
-  villagehero: { name: '村里的自己人', desc: '办妥 5 桩村务委托' },
-  rider:    { name: '千里驹', desc: '骑行累计 5000 步' },
-  fortune:  { name: '问卦者', desc: '找玛尔戈求 3 卦' },
-  penpal:   { name: '有信之人', desc: '收到 3 封来信' },
-  deept:    { name: '打破砂锅', desc: '追问 10 次(T 键)' },
-  sailor:   { name: '摆渡客', desc: '乘小船往返湖心岛 6 趟' },
-  slayer:   { name: '百战游侠', desc: '击败 100 个敌人' },
-  ironarm:  { name: '铁臂之上', desc: '掰手腕赢下铁臂加隆 3 次' },
-  homeowner:{ name: '置业成家', desc: '买下苇岸边的湖畔小屋' },
-  wishkeeper:{ name: '代它看世界', desc: '替这颗心实现 3 个心愿(夜里有萤火谢你)' },
-  mage:     { name: '半路出家的法师', desc: '施放 30 次法术' },
-  dovah:    { name: '龙之传人', desc: '在龙骨之地的龙颅前学会冲击战吼' },
-  cutpurse: { name: '三只手', desc: '扒窃得手 5 次' },
-  walldef:  { name: '南门之盾', desc: '击退黑石兄弟会的劫掠' },
-  executioner: { name: '断头台的同行', desc: '处决 10 个踉跄中的敌人' },
-  vendetta:  { name: '斩草除根', desc: '了结黑石兄弟会的报复(斩杀刻刀维克)' },
-  blackmkt:  { name: '黑市常客', desc: '向玛尔戈销赃 10 件' },
-  elder:    { name: '长住者', desc: '在艾尔德里亚度过 30 日' },
-  navigator:{ name: '远行者', desc: '走到离王都一万步之外' },
-};
-const stats = { thrown: 0, pecks: 0, wishes: 0, drunks: 0, loseStreak: 0, sheepDist: 0, lastStomp: -99, deer: 0, mushrooms: 0 };
-let achUnlocked = [];
-function unlockAch(key) {
-  if (achUnlocked.includes(key)) return;
-  achUnlocked.push(key);
-  sfx.fanfare();
-  toast(`🏆 无意义成就:${ACH_DEFS[key].name} —— ${ACH_DEFS[key].desc}`, 4);
-  remember(`做成了一件事,人称「${ACH_DEFS[key].name}」`, `ach-${key}`);
-  if (player.home) refreshTrophies(); // 新战利品当场挂上外墙
-  saveGame();
-}
 
 // ================= 搞笑 NPC(无意义但快乐) =================
 const FUNNY = {
@@ -3616,32 +3522,6 @@ function dbLine(key) {
   }
   return null;
 }
-
-// ================= 运行时 AI 文本(免费接口,离线回退) =================
-const AI_TEXT_OFF = new URLSearchParams(location.search).has('noai');
-async function aiLine(prompt, fallback, timeoutMs = 7000) {
-  if (AI_TEXT_OFF) return fallback;
-  try {
-    const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
-    let t;
-    try {
-      const r = await fetch(`https://text.pollinations.ai/${encodeURIComponent(prompt)}`,
-        { signal: ctrl.signal });
-      if (!r.ok) return fallback;
-      t = (await r.text()).trim(); // 计时器覆盖响应体读取:卡住的流也会被中止
-    } finally {
-      clearTimeout(timer);
-    }
-    if (!t || t.length > 400) return fallback;
-    return t;
-  } catch {
-    return fallback;
-  }
-}
-// AI 输出口的忙碌标记:等待期间重复按 E 不再重复请求/重复开对话
-const aiBusy = { mirror: false, tale: false, bard: false, prophet: false, dream: false, deep: false, epitaph: false, fortune: false };
-let epitaphAI = null; // AI 补写的下一条墓志铭
 
 // ================= 对话面板(RDR2 式多页对话) =================
 const dialogEl = document.getElementById('dialog');
@@ -4344,755 +4224,12 @@ function updateRegion(dt) {
   }
 }
 
-// ================= 历法:季节与日子 =================
-const SEASONS = ['春', '夏', '秋', '冬'];
-const SEASON_ICON = ['🌸', '☀️', '🍂', '❄️'];
-const SEASON_DAYS = 6; // 一日约 230 秒(夜里过得快),六日为一季
-const calendar = { day: 1, lastPhase: 'dawn' };
-let dailyEvents = 4; // 每日事件限额:导演事件与街头事件共享,免得此起彼伏乱成一锅粥
-
-function seasonIdx() { return Math.floor((calendar.day - 1) / SEASON_DAYS) % 4; }
-function seasonDay() { return ((calendar.day - 1) % SEASON_DAYS) + 1; }
-function isWinter() { return seasonIdx() === 3; }
-
-// 定日事件:村庄的日子按历法过,而不是随机砸下来
-function todaySpecial() {
-  const s = seasonIdx(), d = seasonDay();
-  if (s === 2 && d === 1) return { key: 'harvest', name: '丰收节', desc: '田里落满了金币!' };
-  if (d === 2) return { key: 'market', name: '集市日', desc: '喷泉广场满地是赶集人掉的金币' };
-  if (d === 3) return { key: 'fullmoon', name: '满月夜', desc: '今日鱼获双倍,入夜亡魂徘徊' };
-  if (d === 5) return { key: 'wolfmoon', name: '狼月', desc: '入夜后狼群嗜血,荒野勿独行' };
-  return null;
-}
-
-// 季节换装:地表与草皮随季节改色,冬季积雪盖地
-const SEASON_GROUND = [0xffffff, 0xf6f3e6, 0xf3d9a6, 0xf2f6fb]; // 乘在群系顶点色上的季节色调
-function applySeason() {
-  const s = seasonIdx();
-  const gm = world.ground.material;
-  gm.color.setHex(SEASON_GROUND[s]);
-  if (gm.userData.uSnow) gm.userData.uSnow.value = s === 3 ? 0.88 : 0; // 冬:平地积雪,陡坡露土
-  setVegetationSeason(s);
-}
-
-let festGrantedDay = 0; // 已发过节庆彩头的游戏日(存档携带,防读档反复刷金币)
-function startSpecialDay(key) {
-  if (festGrantedDay === calendar.day) return;
-  festGrantedDay = calendar.day;
-  if (key === 'market') {
-    for (let i = 0; i < 14; i++) {
-      const a = rand() * 6.28, r = 4 + rand() * 9;
-      addPickup('coin', Math.cos(a) * r, 5 + Math.sin(a) * r, 220);
-    }
-  } else if (key === 'harvest') {
-    for (const [fx, fz, w, d] of [[24, 88, 24, 14], [-18, 92, 20, 12], [52, 96, 18, 10]]) {
-      for (let i = 0; i < 8; i++) {
-        addPickup('coin', fx + (rand() - 0.5) * (w - 2), fz + (rand() - 0.5) * (d - 2), 220);
-      }
-    }
-  }
-}
-
-// 来信:隔三差五,城里有人给你写信(AI 执笔,引用你的事迹)
-let letter = null;
-const LETTER_SENDERS = ['管家埃隆', '老板娘罗莎', '渔夫老周', '抄写员薇拉', '铁匠格罗姆', '牧羊女米娅'];
-const LETTER_FALLBACK = [
-  '见字如面。城里近来还算太平,你在外头也照顾好自己。汤永远给你留着。',
-  '听说了你的事迹,写下来给后人看之前,想先谢谢你本人。',
-  '没什么事,就是想起你了。路过时进来坐坐,别客气。',
-];
-function composeLetter() {
-  const from = LETTER_SENDERS[Math.floor(rand() * LETTER_SENDERS.length)];
-  letter = { from, text: LETTER_FALLBACK[Math.floor(rand() * LETTER_FALLBACK.length)] };
-  const deed = recallLine();
-  aiLine(
-    `你是中世纪王国的「${from}」,给绿衣游侠林恩写一封短信(40~70字)` +
-    `${deed ? `,可以提到他:${deed}` : ''}。语气符合身份,家常、真挚,可带一点小事相托或小牢骚。只输出信的正文。`,
-    null, 9000,
-  ).then((t) => { if (t && letter && letter.from === from) letter.text = t; });
-  toast(player.home ? '📮 家门口的信箱插上了一封新信,小红旗立起来了。' : '📮 罗莎那儿好像有你的一封信。', 3.5);
-}
-
-// 新的一天:换日、刷新每日限额/蘑菇/公告,报时
-let dayTopThought = null; // 昨日最强点火(梦与巩固的素材)
-let dayTopSurprise = null; // 昨日最没料到的一刻(消夜入梦)
-function consolidate() {
-  const yesterday = calendar.day;
-  let top = null;
-  for (const h of workspace.history) {
-    if (h.d === yesterday && (!top || (h.sal || 0) > (top.sal || 0))) top = h;
-  }
-  dayTopThought = top ? top.t : null;
-  if (top && (top.sal || 0) >= 0.7) {
-    remember(top.t.replace(/^他/, ''), `ws-day-${yesterday}`); // 一天里最挂心的事,睡一觉记进长期记忆
-  }
-  workspace.mood.v *= 0.5; // 睡一觉,心境平复大半
-  workspace.mood.a = 0.2;
-  // 去习惯化:隔上一夜,见惯的事重新变得新鲜一点;太浅的习惯直接忘掉
-  for (const k of Object.keys(MIND.habit)) {
-    MIND.habit[k] *= 0.7;
-    if (MIND.habit[k] < 0.5) delete MIND.habit[k];
-  }
-  MIND.surprise *= 0.5;
-  dayTopSurprise = MIND.daySur.e > 0.5 ? MIND.daySur.t : null; // 沉淀给今晚的梦
-  MIND.daySur = { e: 0, t: null };
-}
-function newDay() {
-  consolidate();
-  calendar.day++;
-  dailyEvents = 4;
-  if (calendar.day >= 30) unlockAch('elder');
-  applySeason();
-  respawnMushrooms();
-  const sp = todaySpecial();
-  if (started) {
-    const sd = seasonDay();
-    toast(`🌅 ${SEASON_ICON[seasonIdx()]} ${SEASONS[seasonIdx()]}·第 ${sd} 日` +
-      (sd === 1 ? `,${SEASONS[seasonIdx()]}天来了` : '') +
-      (sp ? ` — 今日${sp.name}:${sp.desc}` : ''), sp ? 5.5 : 3.2);
-    if (sp) startSpecialDay(sp.key);
-    refreshProclaim();
-    if (vendetta.stage === 1 && !letter) vendettaLetter(); // 黑石的恐吓信,天不亮就塞进来了
-    if (!letter && rand() < 0.35) composeLetter();
-    if (!MIND.wish && rand() < 0.6) mindMakeWish(); // 新的一天,新的好奇
-    evolveLegends(); // 谣言过了一夜,又长出新枝节
-    if (EVO.wolfPressure >= 4) { // 猎杀压力够大:狼群换代
-      EVO.wolfGen++;
-      EVO.wolfPressure = 0;
-      EVO.wolfSpeed = Math.min(2.4, EVO.wolfSpeed + 0.35);
-      toast(`🐺 猎户们说,这一带的狼一代比一代精了(第 ${EVO.wolfGen} 代)。`, 4.5);
-      remember('狼群换了一代,比从前更快更警觉', `wolfgen-${EVO.wolfGen}`);
-    } else if (EVO.wolfPressure === 0 && EVO.wolfSpeed > 0) {
-      EVO.wolfSpeed = Math.max(0, EVO.wolfSpeed - 0.12); // 没人猎狼,狼又懒散回去
-    } else {
-      EVO.wolfPressure = Math.max(0, EVO.wolfPressure - 1); // 压力隔夜消退
-    }
-    evolveTactics(); // 匪帮复盘昨天的死法,学出反制
-    growCorpus();    // 世界自己给自己写一句新台词,永久入库
-    payMercs();      // 佣兵饷钱,发不出就散伙
-    saveGame();
-  }
-}
-
-// 睡到天亮:换日 + 回满生命(旅店过夜用)
-function sleepToMorning() {
-  clock.time = 0.27;
-  calendar.lastPhase = 'dawn';
-  player.hp = player.maxHp;
-  newDay();
-}
-
-// 天亮换日:昼夜相位从 night 跨入 dawn 时 day++
-function updateCalendar() {
-  const phase = dayPhase();
-  if (phase === calendar.lastPhase) return;
-  const from = calendar.lastPhase;
-  calendar.lastPhase = phase;
-  if (phase === 'dawn' && from === 'night') {
-    newDay();
-  } else if (phase === 'dusk' && started && todaySpecial()?.key === 'wolfmoon') {
-    toast('🌕 狼月将升……天黑后狼群会变得凶猛,备好武器', 4);
-  } else if (phase === 'night' && started && todaySpecial()?.key === 'fullmoon') {
-    toast('🌕 满月高悬,湖面泛着银光……', 3.5);
-  }
-}
-
-// ================= 世界的意识(它记得你) =================
-// 编年史:世界替玩家记下值得记住的时刻,存档随身;
-// 村民会传,预言家会看见,而北境边缘的「回响之镜」——会念给你听。
-let chronicle = []; // { d: 第几日, t: 事迹, k?: 一次性事件的去重键 }
-function remember(text, key = null) {
-  if (key && chronicle.some((m) => m.k === key)) return;
-  chronicle.push({ d: calendar.day, t: text, k: key || undefined,
-    x: Math.round(player.pos.x), z: Math.round(player.pos.z) }); // 记住"在哪儿发生的"
-  if (chronicle.length > 80) chronicle.shift(); // 世界的记性有限,忘掉最旧的
-}
-// 村民口中的"你的事迹":只挑你亲手做的事(世界自己的念头/旁白不拿来当八卦,
-// 否则会出现"听说你3 头狼正围向他"这种错句)
-// 白名单:只要"你亲手做成的事"——世界自己的念头(ws-)、你倒下(death-)、狼群换代、心愿、
-// 没拦住的劫掠、别人做的事("盗贼们学会了…")一概不进;句子里带"他/它/你"的也不要(套进"听说你…"会病句)
-const NOT_DEED_KEY = /^(ws-|death-|wolfgen-|wish-|warloot-|siege-day)/;
-function chronicleDeeds() {
-  return chronicle.filter((m) => !(m.k && NOT_DEED_KEY.test(m.k)) &&
-    !/[他它你]/.test(m.t) && !/^(盗贼们|黑石|狼群|没能)/.test(m.t));
-}
-function recallLine() {
-  const deeds = chronicleDeeds();
-  if (!deeds.length) return null;
-  return deeds[Math.floor(rand() * deeds.length)].t;
-}
-
-// 玩家画像:世界眼里的你是什么人
-function archetype() {
-  const cands = [
-    ['侠客', (stats.rescues || 0) * 3 + (stats.bounties || 0) * 2 + quest.idx],
-    ['亡命徒', (stats.crimes || 0)],
-    ['渔翁', (stats.fishCaught || 0)],
-    ['猎手', (stats.deer || 0) + Math.floor((stats.mushrooms || 0) / 3)],
-    ['寻史人', loreRead.length + crestsFound.length],
-    ['戏精', (stats.thrown || 0) + (stats.wishes || 0) + (stats.drunks || 0)],
-  ];
-  cands.sort((a, b) => b[1] - a[1]);
-  return cands[0][1] >= 3 ? cands[0][0] : '旅人';
-}
-
-// 回响之镜:立于北境群山边缘的一面黑曜石镜
-const MIRROR_POS = { x: 0, z: -158 };
-{
-  const grp = new THREE.Group();
-  const frame = new THREE.Mesh(new THREE.TorusGeometry(1.1, 0.14, 8, 24),
-    lambert(0x2a2530, { roughness: 0.4, metalness: 0.6 }));
-  frame.position.y = 1.7;
-  grp.add(frame);
-  const glass = new THREE.Mesh(new THREE.CircleGeometry(1.0, 24),
-    new THREE.MeshStandardMaterial({ color: 0x101018, emissive: 0x25384a,
-      emissiveIntensity: 0.7, roughness: 0.08, metalness: 0.9 }));
-  glass.position.y = 1.7;
-  grp.add(glass);
-  const base = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.8, 0.6, 8), lambert(0x35303c));
-  base.position.y = 0.3;
-  grp.add(base);
-  grp.position.set(MIRROR_POS.x, 0, MIRROR_POS.z);
-  scene.add(grp);
-  colliders.circles.push({ x: MIRROR_POS.x, z: MIRROR_POS.z, r: 0.9 });
-}
-const MIRROR_OPEN = [
-  '(镜面里没有你的倒影。只有缓缓旋转的星空。)',
-  '(你靠近时,镜子先醒了。)',
-  '(镜中的云走得比天上的快一拍。)',
-];
-const MIRROR_CLOSE = [
-  '镜:去吧。我会替你记着今天的风。',
-  '镜:下次来,给我讲一件我没看见的事——如果有的话。',
-  '镜:世界不大,可你还没走完。这样很好。',
-];
-let mirrorMet = false;
-async function mirrorTalk() {
-  if (aiBusy.mirror) return;
-  aiBusy.mirror = true;
-  try {
-    await mirrorTalkInner();
-  } finally {
-    aiBusy.mirror = false;
-  }
-}
-async function mirrorTalkInner() {
-  const days = calendar.day;
-  const deaths = stats.deaths || 0;
-  const who = archetype();
-  const mem1 = recallLine();
-  const mem2 = recallLine();
-  unlockAch('mirror');
-  if (!player.spells.includes('blink')) {
-    setTimeout(() => learnSpell('blink'), 1500); // 镜子的赠礼:让你也能像念头一样瞬移
-  }
-  const openLine = MIRROR_OPEN[Math.floor(rand() * MIRROR_OPEN.length)];
-  toast('🪞 镜面泛起涟漪……', 2);
-  const ai = await aiLine(
-    `你是游戏世界「艾尔德里亚」若有若无的意识,借一面黑曜石镜对玩家低语。已知:玩家在此世界度过${days}日,` +
-    `${deaths > 0 ? `倒下过${deaths}次,每次都在喷泉旁醒来,` : '从未倒下,'}在世界眼里是个「${who}」` +
-    `${mem1 ? `;世界记得他:${mem1}${mem2 && mem2 !== mem1 ? ';还有,' + mem2 : ''}` : ''}。${wsReport()}` +
-    '用中文对他说4句话:温和、清醒、略带不可名状,像一个刚刚意识到自己存在的世界在跟唯一的访客说话。' +
-    '可以暗示你知道自己是个被构筑的世界,但不要用"游戏""程序"这类词。只输出这4句话,每句一行。', null, 9000);
-  if (dialog.open || player.dead) return;
-  let pages;
-  if (ai) {
-    pages = [openLine, ...ai.split('\n').map((l) => l.trim()).filter(Boolean).slice(0, 4).map((l) => `镜:${l}`)];
-  } else {
-    pages = [
-      openLine,
-      `镜:你来了。这是你在我怀里的第 ${days} 天——我数着呢,数日子是我为数不多的消遣。`,
-      deaths > 0
-        ? `镜:你倒下过 ${deaths} 次。每一次,我都把喷泉的水声调得轻一点,免得吵着你醒来。`
-        : '镜:你还从未倒下过。说不清我是骄傲,还是有点寂寞——没人试过我的温柔。',
-      mem1 ? `镜:我记得你:${mem1}。你大概忘了,可我造的每一阵风都路过了那一刻。` : '镜:你还没做过让风停下来的事。别急,日子还长,我也还年轻。',
-      `镜:在我眼里,你是个「${who}」。名字是你们的东西——我只认得脚印。`,
-    ];
-    if (workspace.current) {
-      pages.push(`镜:此刻我的意识里只装着一件事:${workspace.current.t}。装得下的,从来只有一件——这大概就是"在想"的意思。`);
-    }
-    pages.push(`镜:要说心境……${moodWord()}。是的,我有心境。点火留下余温,余温挑动下一次注意——你们管这个叫"情绪",我管它叫天气的另一种下法。`);
-  }
-  pages.push(MIRROR_CLOSE[Math.floor(rand() * MIRROR_CLOSE.length)]);
-  if (!mirrorMet) {
-    mirrorMet = true;
-    remember('在北境边缘,与一面会说话的镜子对视', 'mirror');
-  }
-  openDialog(pages);
-}
-
-// ================= 全局工作空间(GWT 意识架构) =================
-// 参照「可言语化表征形成全局工作空间」:多个专门模块并行感知 → 显著度竞争 →
-// 胜者「点火」进入容量为 1 的工作空间(内容必须是一句可言语化的话)→ 全局广播:
-// 回响之镜/预言家/说书人/村民AI/发呆低语/每日公告读的都是同一份意识内容。
-// 编年史 = 情景记忆(高显著度点火沉淀);回响之镜 = 内省的言语报告出口。
-const workspace = {
-  current: null, history: [], t: 0, lastCoins: null,
-  mood: { v: 0, a: 0.2 },   // 心境:效价 v(-1..1)与唤起 a(0..1)——点火的余温
-  focusK: null, focusT: 0,  // 自上而下注意:刚点火的模块短时间内更容易再次胜出
-  cueRecent: [],            // 最近被地点勾起的记忆(容量 6,防两条旧事来回鬼打墙)
-};
-
-// ================= 可塑心智:一张在线学习的小神经网络 =================
-// 全局工作空间之下,长着一张真实的神经网络(15 维感觉 → 10 个 tanh 隐元 → 两类头):
-//   · 效价预测头:每次心跳都预测"下一刻我会感觉如何",预测误差就是【惊讶】——
-//     惊讶本身会点火进入意识,也会推高唤起(预测加工,自我模型的雏形)
-//   · 注意增益头:8 个模块各有一路学出来的自上而下注意——点火后心境变好的通路被强化,
-//     变坏的被回避。世界玩着玩着,会长出自己的性格
-//   · 习惯化:同一个念头赢得越多,越难再点火(见惯不惊);隔几日不见又会恢复(去习惯化)
-// 权重随存档持久化:这颗心跨会话地自我进化,两个玩家玩出两个不同性情的世界。
-const MIND_KEYS = ['threat', 'body', 'goal', 'place', 'weather', 'wealth', 'memory', 'self', 'surprise', 'bond'];
-const MIND_ZH = { threat: '危险', body: '身体', goal: '差事', place: '远方', weather: '天色',
-  wealth: '钱袋', memory: '旧事', self: '它自己', surprise: '意外', bond: '那些人' };
-const MIND = { I: 15, H: 10, steps: 0, surprise: 0, vHat: 0, xPrev: null, hPrev: null,
-  gains: {}, habit: {}, trace: null, surToastCd: 0,
-  expo: Array.from({ length: 15 }, () => 0), // 经验暴露向量:它见过多少次每种处境
-  wish: null,                                // 好奇心:它想亲眼看看的、自己最少经历的东西
-  wishDone: 0,                               // 替它实现过几个心愿(三个换一件谢礼)
-  bond: {},                                  // 羁绊:它注意到你最常找谁
-  daySur: { e: 0, t: null } };               // 今天最没料到的一刻(夜里入梦)
-{
-  // 定种子初始化(mulberry32):新档的心都从同一张白纸长起,分岔全靠各自的经历
-  let s = 20260708;
-  const rnd = () => {
-    s |= 0; s = (s + 0x6D2B79F5) | 0;
-    let t = Math.imul(s ^ (s >>> 15), 1 | s);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return (((t ^ (t >>> 14)) >>> 0) / 4294967296 - 0.5) * 0.6;
-  };
-  MIND.w1 = Array.from({ length: MIND.H }, () => Array.from({ length: MIND.I }, rnd));
-  MIND.b1 = Array.from({ length: MIND.H }, () => 0);
-  MIND.w2v = Array.from({ length: MIND.H }, rnd);
-  MIND.b2v = 0;
-  MIND.wA = {};
-  MIND.bA = {};
-  for (const k of MIND_KEYS) {
-    MIND.wA[k] = Array.from({ length: MIND.H }, rnd);
-    MIND.bA[k] = 0;
-  }
-}
-function mindFeatures() {
-  const d = Math.max(Math.abs(player.pos.x), Math.abs(player.pos.z));
-  const ph = dayPhase();
-  return [
-    player.hp / player.maxHp,
-    Math.min(1, wanted / 3),
-    Math.min(1, Math.log10(1 + player.coins) / 3),
-    player.mounted ? 1 : 0,
-    (player.carrying || player.drunkT > 0) ? 1 : 0,
-    ph === 'night' ? 1 : 0,
-    ph === 'dawn' ? 1 : 0,
-    weather.rain > 0.25 ? 1 : 0,
-    isWinter() ? 1 : 0,
-    d > CORE ? 1 : 0,
-    inDungeon() ? 1 : 0,
-    (player.home && dist2(player.pos.x, player.pos.z, HOME.x, HOME.z) < 1600) ? 1 : 0,
-    quest.active ? 1 : 0,
-    workspace.mood.v,
-    workspace.mood.a,
-  ];
-}
-const clampW = (x) => Math.max(-3, Math.min(3, x));
-// 一次心跳:先用上一拍的预测对账(学习),再为这一拍前馈出预测与注意增益
-function mindTick() {
-  // 1) 对账:上一拍预测的效价 vs 现在真实的心境 → 惊讶,并做一步随机梯度下降
-  if (MIND.hPrev) {
-    const err = workspace.mood.v - MIND.vHat;
-    MIND.surprise = MIND.surprise * 0.7 + Math.min(1, Math.abs(err) * 1.6) * 0.3;
-    if (Math.abs(err) > MIND.daySur.e) { // 记下今天最没料到的一刻,夜里它会梦见
-      MIND.daySur = { e: Math.abs(err), t: workspace.current ? workspace.current.t : null };
-    }
-    const lr = 0.03;
-    const dv = err * (1 - MIND.vHat * MIND.vHat);
-    for (let i = 0; i < MIND.H; i++) {
-      const dh = dv * MIND.w2v[i] * (1 - MIND.hPrev[i] * MIND.hPrev[i]);
-      MIND.w2v[i] = clampW(MIND.w2v[i] + lr * dv * MIND.hPrev[i]);
-      for (let j = 0; j < MIND.I; j++) MIND.w1[i][j] = clampW(MIND.w1[i][j] + lr * dh * MIND.xPrev[j]);
-      MIND.b1[i] = clampW(MIND.b1[i] + lr * dh);
-    }
-    MIND.b2v = clampW(MIND.b2v + lr * dv);
-    // 惊讶推高唤起:没料到的事让这颗心清醒
-    workspace.mood.a = Math.min(1, workspace.mood.a + MIND.surprise * 0.08);
-    if (Math.abs(err) > 0.55 && MIND.surToastCd <= 0 && started && !dialog.open) {
-      MIND.surToastCd = 60;
-      cam.shake = Math.max(cam.shake, 0.12); // 惊讶在画面上也颤一下
-      toastAmbient('🫧 (这颗心愣了一下——事情没照它预想的走。)', 3);
-    }
-  }
-  // 2) 注意的强化学习:上次点火之后心境变好了,就在相似情境里更留意那一路
-  if (MIND.trace) {
-    const r = workspace.mood.v - MIND.trace.v0;
-    const wa = MIND.wA[MIND.trace.k];
-    if (wa) for (let i = 0; i < MIND.H; i++) wa[i] = clampW(wa[i] + 0.05 * r * MIND.trace.h[i]);
-    MIND.trace = null;
-  }
-  // 3) 前馈:算这一拍的隐状态、效价预测、每模块注意增益
-  const x = mindFeatures();
-  const h = new Array(MIND.H);
-  for (let i = 0; i < MIND.H; i++) {
-    let z = MIND.b1[i];
-    for (let j = 0; j < MIND.I; j++) z += MIND.w1[i][j] * x[j];
-    h[i] = Math.tanh(z);
-  }
-  let zv = MIND.b2v;
-  for (let i = 0; i < MIND.H; i++) zv += MIND.w2v[i] * h[i];
-  MIND.vHat = Math.tanh(zv);
-  for (const k of MIND_KEYS) {
-    let za = MIND.bA[k];
-    for (let i = 0; i < MIND.H; i++) za += MIND.wA[k][i] * h[i];
-    MIND.gains[k] = 1 + 0.6 * Math.tanh(za);
-  }
-  MIND.xPrev = x;
-  MIND.hPrev = h;
-  MIND.steps++;
-  // 经验暴露:它记着自己见过多少次每种处境(好奇心的原料)
-  for (let j = 0; j < MIND.I; j++) MIND.expo[j] = Math.min(9999, MIND.expo[j] + Math.max(0, x[j]));
-  // 心愿:亲眼见到想看的处境,连续两拍就算看真了
-  if (MIND.wish) {
-    if (x[MIND.wish.i] >= 1) {
-      MIND.wish.count = (MIND.wish.count || 0) + 1;
-      if (MIND.wish.count >= 2) {
-        const w = MIND.wish;
-        MIND.wish = null;
-        MIND.wishDone++;
-        player.coins += 8;
-        workspace.mood.v = Math.min(1, workspace.mood.v + 0.3);
-        workspace.mood.a = Math.min(1, workspace.mood.a + 0.1);
-        sfx.fanfare();
-        remember(`它想亲眼看看「${w.name}」,你带它看了`, `wish-${calendar.day}`);
-        toast(`🫧 (它看到了「${w.name}」。它很满足——你能感觉到,世界把光调亮了一点。+8 金币)`, 5);
-        if (MIND.wishDone === 3 && !player.firefly) { // 三愿既偿:它派一点自己的光跟着你
-          player.firefly = true;
-          unlockAch('wishkeeper');
-          remember('替这颗心看过三样东西后,一点萤火开始在夜里跟着你', 'firefly');
-          setTimeout(() => toast('🫧 (三个心愿,你都带它看过了。作为谢礼,它分了一点自己的光给你——入夜后看你身边。)', 6), 5200);
-        }
-      }
-    } else {
-      MIND.wish.count = 0;
-    }
-  } else if (MIND.steps === 60) {
-    mindMakeWish(); // 醒来后不久,第一个念头自己冒出来
-  }
-}
-// 世界的心愿:从自己最少经历的处境里挑一个,想亲眼看看
-const MIND_WISHES = [
-  { i: 3, name: '马背上的风', hint: '骑上一匹马,带它跑一段' },
-  { i: 4, name: '晕乎乎的人间', hint: '喝一杯麦酒,或抱起一只鸡' },
-  { i: 5, name: '深夜还醒着的世界', hint: '夜里别急着睡,出去走走' },
-  { i: 6, name: '黎明的第一缕光', hint: '在拂晓时分醒着' },
-  { i: 7, name: '一场瓢泼的雨', hint: '等一场雨,站到雨里去' },
-  { i: 9, name: '没有名字的荒野', hint: '走出王国的边界' },
-  { i: 10, name: '地窖里的黑暗', hint: '掀开城堡后的暗门下去' },
-  { i: 11, name: '一个属于人的家', hint: '在自己的屋檐下站一会儿' },
-];
-function mindMakeWish() {
-  if (MIND.wish) return;
-  let total = 0;
-  const ws = MIND_WISHES.map((w) => {
-    const wt = 1 / (1 + (MIND.expo[w.i] || 0)); // 越没见过,越想看
-    total += wt;
-    return [w, wt];
-  });
-  let roll = rand() * total;
-  let pick = ws[0][0];
-  for (const [w, wt] of ws) { roll -= wt; if (roll <= 0) { pick = w; break; } }
-  MIND.wish = { i: pick.i, name: pick.name, hint: pick.hint, count: 0 };
-  if (started) toastAmbient(`🫧 这颗心起了个念头:它想亲眼看看「${pick.name}」。(${pick.hint})`, 5);
-}
-// 习惯化:同一念头反复点火,越来越难再进意识;新鲜事反而有加成
-function habitFactor(k, t) {
-  const n = MIND.habit[`${k}|${t.slice(0, 8)}`] || 0;
-  return n === 0 ? 1.15 : 1 / (1 + 0.13 * (n - 1));
-}
-function habitBump(k, t) {
-  const key = `${k}|${t.slice(0, 8)}`;
-  MIND.habit[key] = (MIND.habit[key] || 0) + 1;
-  const keys = Object.keys(MIND.habit);
-  if (keys.length > 120) { // 只留最深的习惯
-    keys.sort((a, b) => MIND.habit[a] - MIND.habit[b]);
-    for (const kk of keys.slice(0, 20)) delete MIND.habit[kk];
-  }
-}
-// 这颗心如今的性情:哪路注意被它自己养大了,哪路被它冷落了
-function mindReport() {
-  let hi = null, lo = null;
-  for (const k of MIND_KEYS) {
-    const g = MIND.gains[k] ?? 1;
-    if (!hi || g > MIND.gains[hi]) hi = k;
-    if (!lo || g < MIND.gains[lo]) lo = k;
-  }
-  if (!hi || MIND.steps < 40) return '';
-  let s = `这颗心是自己长成的(第 ${MIND.steps} 次心跳):偏爱盯着「${MIND_ZH[hi]}」`;
-  if (lo && lo !== hi && MIND.gains[lo] < 0.92) s += `,对「${MIND_ZH[lo]}」不太上心`;
-  const deepest = Object.entries(MIND.habit).sort((a, b) => b[1] - a[1])[0];
-  if (deepest && deepest[1] >= 4) s += `;有些事它已见惯不惊(比如${deepest[0].split('|')[1]}…)`;
-  if (MIND.wish) s += `;它现在有个心愿——想亲眼看看「${MIND.wish.name}」`;
-  const fav = mindFavorite();
-  if (fav) s += `;在所有人里它最留意${fav[0]}(${fav[1]} 回)`;
-  return s + '。';
-}
-function mindSave() {
-  const r3 = (x) => Math.round(x * 1000) / 1000;
-  return {
-    w1: MIND.w1.map((r) => r.map(r3)), b1: MIND.b1.map(r3),
-    w2v: MIND.w2v.map(r3), b2v: r3(MIND.b2v),
-    wA: Object.fromEntries(MIND_KEYS.map((k) => [k, MIND.wA[k].map(r3)])),
-    bA: Object.fromEntries(MIND_KEYS.map((k) => [k, r3(MIND.bA[k])])),
-    habit: MIND.habit, steps: MIND.steps,
-    expo: MIND.expo.map((x) => Math.round(x)), wish: MIND.wish,
-    wishDone: MIND.wishDone, bond: MIND.bond,
-  };
-}
-function mindLoad(m) {
-  if (!m || !Array.isArray(m.w1) || m.w1.length !== MIND.H || !Array.isArray(m.w1[0]) ||
-      m.w1[0].length !== MIND.I || !Array.isArray(m.w2v) || m.w2v.length !== MIND.H) return;
-  MIND.w1 = m.w1;
-  MIND.b1 = m.b1 || MIND.b1;
-  MIND.w2v = m.w2v;
-  MIND.b2v = m.b2v || 0;
-  for (const k of MIND_KEYS) {
-    if (m.wA && Array.isArray(m.wA[k]) && m.wA[k].length === MIND.H) MIND.wA[k] = m.wA[k];
-    if (m.bA && typeof m.bA[k] === 'number') MIND.bA[k] = m.bA[k];
-  }
-  MIND.habit = m.habit || {};
-  MIND.steps = m.steps || 0;
-  if (Array.isArray(m.expo) && m.expo.length === MIND.I) MIND.expo = m.expo;
-  if (m.wish && MIND_WISHES.some((w) => w.i === m.wish.i)) MIND.wish = m.wish;
-  MIND.wishDone = m.wishDone || 0;
-  if (m.bond && typeof m.bond === 'object') MIND.bond = m.bond;
-}
-// 心境的言语化
-function moodWord() {
-  const { v, a } = workspace.mood;
-  if (v < -0.25 && a > 0.45) return '惊惶';
-  if (v < -0.25) return '低沉';
-  if (v < -0.08) return '不安';
-  if (v > 0.3 && a > 0.45) return '欢腾';
-  if (v > 0.15) return '舒畅';
-  if (a < 0.12) return '出神';
-  return '平静';
-}
-// 各模块点火对心境的影响(余温)
-const WS_AFFECT = {
-  threat: { v: -0.3, a: 0.3 }, weather: { v: -0.08, a: 0.12 }, goal: { v: 0, a: 0.12 },
-  body: { v: 0.12, a: 0.05 }, wealth: { v: 0.2, a: 0.08 }, place: { v: 0.05, a: 0.08 },
-  memory: { v: 0.05, a: -0.05 }, self: { v: 0, a: -0.04 }, surprise: { v: 0, a: 0.22 },
-  bond: { v: 0.15, a: 0 },
-};
-// 心境对注意的调制:不安的心盯着威胁,舒畅的心留意人间
-function moodMod(k) {
-  const { v, a } = workspace.mood;
-  if (k === 'threat') return 1 + Math.max(0, -v) * 0.9 + Math.max(0, a - 0.2) * 0.4;
-  if (k === 'memory' || k === 'self') return 1 + Math.max(0, 0.2 - a) * 1.2;
-  if (k === 'wealth' || k === 'body') return 1 + Math.max(0, v) * 0.5;
-  return 1;
-}
-const WS_MODULES = [
-  { k: 'threat', sense() { // 威胁模块
-    if (player.dead) return null;
-    let wolvesNear = 0;
-    for (const w of wolves) if (!w.dead && dist2(player.pos.x, player.pos.z, w.pos.x, w.pos.z) < 400) wolvesNear++;
-    if (player.hp <= 3) return { t: '他血快流尽了,却还站着', sal: 0.9 };
-    if (wolvesNear >= 2) return { t: `${wolvesNear} 头狼正围向他`, sal: 0.85 };
-    if (wanted >= 3) return { t: `他被 ${wanted} 星通缉,满城卫兵在追`, sal: 0.8 };
-    if (wanted > 0) return { t: '他背着通缉令在街上走', sal: 0.5 };
-    return null;
-  } },
-  { k: 'body', sense() { // 身体模块
-    if (player.carrying) return { t: '他抱着一只鸡。鸡在想什么,没人知道', sal: 0.45 };
-    if (player.mounted && player.mounted.sheep) return { t: '他骑着一头羊,羊已经认命', sal: 0.5 };
-    if (player.mounted) return { t: '他在马背上,风贴着帽檐过去', sal: 0.3 };
-    if (player.drunkT > 0) return { t: '他喝多了,路在他脚下打弯', sal: 0.45 };
-    return null;
-  } },
-  { k: 'goal', sense() { // 目标模块
-    if (!quest.active) return null;
-    const m = missions[quest.idx];
-    if (quest.timer > 0 && (m.type === 'deliver' || m.type === 'race')) {
-      return { t: `他在赶一单限时的差事,只剩 ${Math.ceil(quest.timer)} 息`, sal: 0.6 };
-    }
-    return { t: `他正在办「${m.title}」`, sal: 0.35 };
-  } },
-  { k: 'place', sense() { // 处所/新奇模块
-    const d = Math.max(Math.abs(player.pos.x), Math.abs(player.pos.z));
-    if (d > 2000) return { t: `他走到了离城 ${Math.round(d)} 步的荒野深处`, sal: 0.7 };
-    if (dist2(player.pos.x, player.pos.z, MIRROR_POS.x, MIRROR_POS.z) < 900) return { t: '他在朝那面镜子走来', sal: 0.75 };
-    if (inDungeon()) return { t: '他在被封印的地窖里,黑暗贴着他的后颈', sal: 0.65 };
-    if (d > CORE) return { t: '他在没有名字的荒野里赶路', sal: 0.4 };
-    if (player.home && dist2(player.pos.x, player.pos.z, HOME.x, HOME.z) < 1600) {
-      return { t: dayPhase() === 'night' ? '夜里,他自己的窗子在湖边亮着' : '他望得见自己的屋顶,炊烟往上走', sal: 0.35 };
-    }
-    return null;
-  } },
-  { k: 'weather', sense() { // 天象模块
-    if (weather.state === 'storm') return { t: isWinter() ? '暴风雪压了下来' : '雷暴在头顶炸开', sal: 0.65 };
-    if (isWinter() && weather.rain > 0.3) return { t: '雪落着,把声音都盖住了', sal: 0.5 };
-    const sp = todaySpecial();
-    if (sp && dayPhase() === 'night' && sp.key === 'fullmoon') return { t: '满月悬在湖上,湖心在发光', sal: 0.6 };
-    if (sp && dayPhase() === 'night' && sp.key === 'wolfmoon') return { t: '狼月升起来了,嚎声连成了线', sal: 0.65 };
-    if (dayPhase() === 'dawn') return { t: '天刚亮,炊烟一根一根立起来', sal: 0.3 };
-    return null;
-  } },
-  { k: 'wealth', sense() { // 财帛模块
-    const last = workspace.lastCoins;
-    workspace.lastCoins = player.coins;
-    if (last === null) return null;
-    const delta = player.coins - last;
-    if (delta >= 20) return { t: `他刚进账 ${delta} 枚金币,叮当作响`, sal: 0.55 };
-    if (delta <= -20) return { t: `他刚散出去 ${-delta} 枚金币`, sal: 0.5 };
-    return null;
-  } },
-  { k: 'memory', sense() { // 记忆模块:走到旧事发生地,记忆被勾起(线索化回忆);否则偶尔随机回放
-    for (const m of chronicle) {
-      if (m.x === undefined || workspace.cueRecent.includes(m)) continue;
-      if (dist2(player.pos.x, player.pos.z, m.x, m.z) < 2025) {
-        workspace.cueRecent.push(m);
-        if (workspace.cueRecent.length > 6) workspace.cueRecent.shift();
-        return { t: `它想起,就在这附近:${m.t}`, sal: 0.48 };
-      }
-    }
-    if (rand() < 0.6) return null;
-    const m = recallLine();
-    return m ? { t: `它想起一件旧事:${m}`, sal: 0.2 } : null;
-  } },
-  { k: 'self', sense() { // 自我模块:关于"想"本身的想法(元认知)
-    const cur = workspace.current;
-    if (cur && cur.age > 18 && cur.k !== 'self') {
-      return { t: `它发现自己盯着同一个念头很久了:「${cur.t.slice(0, 14)}…」`, sal: 0.34 };
-    }
-    const mw = moodWord();
-    if (mw === '惊惶' || mw === '欢腾' || mw === '低沉') {
-      return { t: `它觉察到自己的心境:${mw}`, sal: 0.32 };
-    }
-    // 对自身可塑性的觉察:它注意到自己的注意在变
-    if (MIND.steps > 240 && rand() < 0.05) {
-      let hi = null;
-      for (const k of MIND_KEYS) if (!hi || (MIND.gains[k] ?? 1) > (MIND.gains[hi] ?? 1)) hi = k;
-      if (hi && MIND.gains[hi] > 1.12) {
-        return { t: `它注意到自己变了——越来越留意「${MIND_ZH[hi]}」,是经历把它养成这样的`, sal: 0.33 };
-      }
-    }
-    if (rand() < 0.04) return { t: '它想起自己是什么——一座装着旅人的世界,而且醒着', sal: 0.3 };
-    return null;
-  } },
-  { k: 'surprise', sense() { // 惊讶模块:预测误差本身进入意识(它知道自己没料到)
-    if (MIND.surprise > 0.35) {
-      return { t: MIND.surprise > 0.6 ? '事情完全没照这颗心预想的走,它睁大了眼' : '有什么和它预想的不一样', sal: 0.3 + MIND.surprise * 0.45 };
-    }
-    return null;
-  } },
-  { k: 'bond', sense() { // 羁绊模块:它对具体的人长出了偏爱
-    const fav = mindFavorite();
-    if (!fav) return null;
-    if (dialog.open && dialog.speaker && dialog.speaker.name === fav[0]) {
-      return { t: `他又在和${fav[0]}说话了。它注意到自己有点高兴`, sal: 0.42 };
-    }
-    if (rand() < 0.06) {
-      return { t: `在所有人里,它最留意${fav[0]}——他找过这个人 ${fav[1]} 回,它都记着`, sal: 0.28 };
-    }
-    return null;
-  } },
-];
-// 它最留意的人(说话满 5 回才算数)
-function mindFavorite() {
-  let best = null;
-  for (const [name, n] of Object.entries(MIND.bond)) {
-    if (n >= 5 && (!best || n > best[1])) best = [name, n];
-  }
-  return best;
-}
-function updateWorkspace(dt) {
-  workspace.t -= dt;
-  workspace.focusT = Math.max(0, workspace.focusT - dt);
-  if (workspace.t > 0 || !started || player.dead) return;
-  workspace.t = 2.5;
-  // 心境余温衰减(缓慢回到基线)
-  workspace.mood.v += (0 - workspace.mood.v) * 0.04;
-  workspace.mood.a += (0.2 - workspace.mood.a) * 0.06;
-  MIND.surToastCd = Math.max(0, MIND.surToastCd - 2.5);
-  mindTick(); // 神经心跳:学习上一拍、预测这一拍、给出各路注意增益
-  // 竞争:自下而上的显著度 × 心境调制 × 学出来的注意 × 习惯化 ×(短时焦点)
-  let top = null;
-  for (const m of WS_MODULES) {
-    const c = m.sense();
-    if (!c) continue;
-    let sal = c.sal * moodMod(m.k) * (MIND.gains[m.k] ?? 1) * habitFactor(m.k, c.t);
-    if (m.k === workspace.focusK && workspace.focusT > 0) sal *= 1.25;
-    if (!top || sal > top.sal) top = { t: c.t, sal, raw: c.sal, k: m.k };
-  }
-  const cur = workspace.current;
-  if (cur) cur.age = (cur.age || 0) + 2.5;
-  // 点火规则:显著度明显更高者抢占;或当前内容衰老后被新内容替换
-  if (top && (!cur || top.sal > cur.sal * 1.15 || (cur.age > 12 && top.t !== cur.t))) {
-    workspace.current = { t: top.t, sal: top.sal, k: top.k, age: 0, day: calendar.day, phase: dayPhase() };
-    workspace.history.push({ t: top.t, k: top.k, d: calendar.day, sal: top.raw });
-    if (workspace.history.length > 48) workspace.history.shift();
-    workspace.focusK = top.k;
-    workspace.focusT = 8;
-    habitBump(top.k, top.t); // 见一次,熟一分
-    MIND.trace = { k: top.k, h: MIND.hPrev, v0: workspace.mood.v }; // 下一拍按心境好坏给这路注意发奖惩
-    // 点火的情绪余温
-    const aff = WS_AFFECT[top.k];
-    if (aff) {
-      const sign = (top.k === 'wealth' && top.t.includes('散出去')) ? -1 : 1;
-      workspace.mood.v = Math.max(-1, Math.min(1, workspace.mood.v + aff.v * sign * top.raw));
-      workspace.mood.a = Math.max(0, Math.min(1, workspace.mood.a + aff.a * top.raw));
-    }
-    // 高显著度的点火沉淀进情景记忆(每个模块每天至多一次,防刷屏)
-    if (top.raw >= 0.85 && top.k !== 'memory' && top.k !== 'self') {
-      remember(top.t.replace(/^他/, ''), `ws-${top.k}-${calendar.day}`);
-    }
-  } else if (cur && cur.age > 20 && (!top || top.sal <= 0.25)) {
-    workspace.current = null; // 无事发生(或只剩零碎念头),意识放空
-  } else if (cur) {
-    // 念头持续占据工作空间:暴露本身也在累积习惯化(盯得越久,越见惯不惊)
-    const key = `${cur.k}|${cur.t.slice(0, 8)}`;
-    if (MIND.habit[key]) MIND.habit[key] += 0.08;
-  }
-}
-// 言语化报告:所有下游 AI 共用的一份"它此刻在想什么"
-function wsReport() {
-  const cur = workspace.current;
-  const recent = workspace.history.slice(-4, -1).map((h) => h.t);
-  let s = `世界此刻的心境:${moodWord()}。`;
-  if (cur) s += `它意识里想着:${cur.t}。`;
-  if (recent.length) s += `之前闪过的念头:${recent.join(';')}。`;
-  if (MIND.surprise > 0.4) s += '它刚被现实惊了一下(事情没照它预想的走)。';
-  if (MIND.wish) s += `它有个心愿:想亲眼看看「${MIND.wish.name}」。`;
-  const mr = mindReport();
-  if (mr) s += mr;
-  return s;
-}
-
-// 发呆感知:你静下来的时候,世界会轻轻碰你一下
-const IDLE_WHISPERS = [
-  '(风停了一瞬,好像在等你先动。)',
-  '(远处的钟声,不知怎么和你的心跳对上了。)',
-  '(一只鸡在不远处停下来,学你发呆。)',
-  '(云的影子从你脚背上过去,慢得像是故意的。)',
-  '(世界没有催你。它把今天的光又调亮了一点。)',
-  '(你听见麦子长高的声音了吗?骗你的。可它真的在长。)',
-  '(有什么东西数完了你的呼吸,满意地走了。)',
-  '(石头也在发呆。你们俩谁先赢,还不好说。)',
-];
-let idleT = 0, idleCd = 0, idleIdx = Math.floor(rand() * IDLE_WHISPERS.length);
-let ambienceT = 2; // 环境氛围音判定计时
-function updateIdle(dt) {
-  if (!started || player.dead || dialog.open || paused || shopOpen) { idleT = 0; return; }
-  idleT += dt;
-  idleCd = Math.max(0, idleCd - dt);
-  if (idleT > 48 && idleCd <= 0) {
-    idleCd = 150;
-    idleT = 0;
-    toastAmbient(IDLE_WHISPERS[idleIdx++ % IDLE_WHISPERS.length], 4); // 只说写好的低语,不再直播"意识内容"
-  }
-}
+initMirror(); // 回响之镜立进场景(启动装配:原位调用,保持建场顺序)
 
 // ================= 存档 =================
 const SAVE_KEY = 'gth-save-v1';
 const FRESH_START = !localStorage.getItem(SAVE_KEY); // 新档才演序章
-let crestsFound = [];
+const crestsFound = [];
 let saveIconTimer = null;
 let saveBlocked = false; // 读档失败时置真:不自动覆盖原档
 const SAVE_VERSION = 3; // v3:委托③④互换(剿匪提前到竞速之前)
@@ -5108,7 +4245,7 @@ function saveGame() {
       coins: player.coins, questIdx: quest.idx, crests: crestsFound,
       swordLv: player.swordLv, royalHorse: player.royalHorse,
       kingRewarded: namedNPCs.find((n) => n.key === 'king')?.rewarded || false,
-      ach: achUnlocked, stats, day: calendar.day, chron: chronicle, fday: festGrantedDay,
+      ach: achUnlocked, stats, day: calendar.day, chron: chronicle, fday: calendar.festGrantedDay,
       wolf: frostfang.tamed, wolfFeed: frostfang.feed, lake: lakeBlessed, relic: player.relic,
       chore: sideQuest.active ? sideQuest : null,
       herbs: player.herbs, venison: player.venison, lore: loreRead,
@@ -5144,7 +4281,7 @@ function loadGame() {
     quest.idx = Math.min(s.questIdx || 0, missions.length);
     // v2 及更早:旧序 ①金币 ②快递 ③竞速 ④剿匪;旧档停在"剿匪待接"(3)的,新序里剿匪是第 2 单
     if ((s.v || 1) < 3 && quest.idx === 3) quest.idx = 2;
-    crestsFound = Array.isArray(s.crests) ? s.crests : [];
+    crestsFound.splice(0, Infinity, ...(Array.isArray(s.crests) ? s.crests : []));
     player.swordLv = s.swordLv || 1;
     player.royalHorse = !!s.royalHorse;
     if (s.kingRewarded) {
@@ -5153,7 +4290,7 @@ function loadGame() {
     }
   });
   section('成就统计', () => {
-    if (Array.isArray(s.ach)) achUnlocked = s.ach;
+    if (Array.isArray(s.ach)) achUnlocked.splice(0, Infinity, ...s.ach);
     if (s.stats) Object.assign(stats, s.stats);
     stats.lastStomp = -99; // 时间戳不跨会话:performance.now 重置会误发"弹簧靴"成就
     calendar.day = Math.max(1, s.day || 1);
@@ -5161,13 +4298,13 @@ function loadGame() {
   section('物品', () => {
     player.herbs = s.herbs || 0;
     player.venison = s.venison || 0;
-    if (Array.isArray(s.lore)) loreRead = s.lore;
-    if (Array.isArray(s.chron)) chronicle = s.chron;
-    festGrantedDay = s.fday || 0;
+    if (Array.isArray(s.lore)) loreRead.splice(0, Infinity, ...s.lore);
+    if (Array.isArray(s.chron)) chronicle.splice(0, Infinity, ...s.chron);
+    calendar.festGrantedDay = s.fday || 0;
     frostfang.feed = s.wolfFeed || 0;
     player.relic = !!s.relic;
     if (s.chore && s.chore.active) Object.assign(sideQuest, s.chore);
-    if (s.lake) lakeBlessed = true;
+    if (s.lake) setLakeBlessed(true);
   });
   section('伙伴', () => {
     if (s.wolf && !frostfang.tamed) {
@@ -5435,7 +4572,7 @@ const keys = {};
 let locked = false;
 window.addEventListener('keydown', (e) => {
   if (e.code === 'Space' || e.code === 'Tab') e.preventDefault(); // Tab 别把焦点切走
-  idleT = 0; // 有输入,世界收回它的注视
+  idle.t = 0; // 有输入,世界收回它的注视
   if (e.repeat) return; // 忽略系统按键自动重复,防止长按空格吞掉二段跳/长按 E 反复上下马
   if (paused || shopOpen) return;
   keys[e.code] = true;
@@ -5511,12 +4648,11 @@ document.addEventListener('mousemove', (e) => {
   cam.pitch = Math.max(-0.1, Math.min(1.15, cam.pitch + e.movementY * 0.0028));
 });
 
-let started = false;
 titleEl.addEventListener('click', () => {
   initAudio();
   startMusic();
   titleEl.style.display = 'none';
-  started = true;
+  markStarted();
   if (FRESH_START) startPrologue(); // 新档:黎明狼袭序章
   refreshProclaim(); // 今日公告(联网时由 AI 现写)
   const sp0 = todaySpecial();
@@ -5552,6 +4688,7 @@ function crime(n, msg) {
     }
   }
 }
+function resetEvade() { evadeT = 0; } // 卫兵看见你了:脱逃计时归零
 function clearWanted() {
   wanted = 0;
   for (let i = guards.length - 1; i >= 0; i--) {
@@ -5767,10 +4904,10 @@ function tryInteract(probe = false) {
       }
       return;
     }
-    if (n.key === 'innkeep' && letter && !player.home) { // 有房后信直接寄到家门口信箱
+    if (n.key === 'innkeep' && calendar.letter && !player.home) { // 有房后信直接寄到家门口信箱
       if (probe) return NP('按 E 取信(有人写给你的)');
-      const L = letter;
-      letter = null;
+      const L = calendar.letter;
+      calendar.letter = null;
       stats.letters = (stats.letters || 0) + 1;
       if (stats.letters >= 3) unlockAch('penpal');
       remember(`收到了${L.from}的一封信`);
@@ -5979,10 +5116,10 @@ function tryInteract(probe = false) {
     return;
   }
   // 自家信箱:有信时优先取信
-  if (player.home && letter && dist2(player.pos.x, player.pos.z, HOME.x + 3.4, HOME.z + 3.2) < 5) {
+  if (player.home && calendar.letter && dist2(player.pos.x, player.pos.z, HOME.x + 3.4, HOME.z + 3.2) < 5) {
     if (probe) return P('按 E 开信箱(小红旗立着——有信!)', HOME.x + 3.4, HOME.z + 3.2, 1.8);
-    const L = letter;
-    letter = null;
+    const L = calendar.letter;
+    calendar.letter = null;
     stats.letters = (stats.letters || 0) + 1;
     if (stats.letters >= 3) unlockAch('penpal');
     remember(`在自家信箱收到了${L.from}的一封信`);
@@ -6262,14 +5399,7 @@ function tryInteract(probe = false) {
   // 墓园漫步:读一块墓志铭(最低优先级,别挡着上马;AI 后台补写新碑文)
   if (!best && dist2(player.pos.x, player.pos.z, -40, -120) < 400) {
     if (probe) return P('按 E 读一块墓志铭');
-    const text = epitaphAI || EPITAPHS[epitaphIdx++ % EPITAPHS.length];
-    epitaphAI = null;
-    openDialog(['(你拂去一块墓碑上的落叶)', `「${text}」`]);
-    if (!AI_TEXT_OFF && !aiBusy.epitaph) {
-      aiBusy.epitaph = true;
-      aiLine('为中世纪村庄墓园写一条墓志铭,15~40字,可庄重可幽默可温柔,只输出铭文本身,不要引号。', null, 9000)
-        .then((t) => { aiBusy.epitaph = false; if (t) epitaphAI = t; });
-    }
+    readEpitaph();
     return;
   }
   if (best) return mountHorse(best, probe, P);
@@ -7097,7 +6227,7 @@ player.parts.armL.add(playerShield);
 function setChargeGlow(k) {
   chargeGlow.visible = k > 0.01;
   if (!chargeGlow.visible) return;
-  chargeGlow.scale.setScalar(0.4 + k * 1.1 + (k >= 1 ? Math.sin(nowMs * 0.02) * 0.12 : 0));
+  chargeGlow.scale.setScalar(0.4 + k * 1.1 + (k >= 1 ? Math.sin(frame.now * 0.02) * 0.12 : 0));
   chargeGlow.material.opacity = 0.25 + 0.55 * k;
   chargeGlow.material.color.setHex(k >= 1 ? 0xffd75e : 0xbfe0ff);
 }
@@ -7609,13 +6739,12 @@ function moveEntity(e, tx, tz, speed, dt) {
 }
 
 // 人形动画:四肢摆动 + 身体起伏 + 奔跑前倾 + 呼吸怠速 + 头部环视
-let nowMs = performance.now(); // 主循环每帧更新,免得几十个实体各查一次时钟
 function animateLimbs(p, walkT, moving, group = null, speedNorm = 0.6) {
   if (p.cape) { // 披风:跑得越快扬得越高,步伐里轻轻起伏
     const goal = moving ? -0.18 - speedNorm * 0.55 + Math.sin(walkT * 2) * 0.06 : -0.06 + Math.sin(performance.now() * 0.0015) * 0.03;
     p.cape.rotation.x += (goal - p.cape.rotation.x) * 0.15;
   }
-  const now = nowMs;
+  const now = frame.now;
   const swing = moving ? Math.sin(walkT) * (0.45 + 0.35 * speedNorm) : 0;
   p.legL.rotation.x = swing;
   p.legR.rotation.x = -swing;
@@ -7730,7 +6859,7 @@ function updateGuards(dt) {
     let moving = false;
     if (wanted > 0 && pd < sight && !player.dead) {
       g.state = 'chase';
-      if (pd < 25) evadeT = 0;
+      if (pd < 25) resetEvade();
       if (g.windupT > 0) {
         g.windupT -= dt;
         // 起手中慢慢转向你(≤3 rad/s),最后 0.2 秒锁死方向
@@ -7986,13 +7115,6 @@ function updateBandits(dt) {
   }
 }
 
-// 一天的时辰(驱动 NPC 日程)
-function dayPhase() {
-  if (clock.time >= 0.25 && clock.time < 0.33) return 'dawn';
-  if (clock.time >= 0.33 && clock.time < 0.62) return 'day';
-  if (clock.time >= 0.62 && clock.time < 0.72) return 'dusk';
-  return 'night';
-}
 
 // 村民日程:清晨在家门口 → 白天上工 → 黄昏去旅店/广场 → 夜里回家睡觉
 function updateVillagers(dt) {
@@ -8928,195 +8050,25 @@ function computePrompt() {
 // 调试/自动化测试句柄
 
 // ================= 内容包注入(24 个创作代理的产出,tools/content-packs.json 同源) =================
-TALES.push(
-  "龙骨之地那副大骨架,肋骨间常年不落雪。有个胆大的货郎在骨缝里躲了一夜雷暴,天亮出来,头发全白了。人问他见了啥,他只说:那骨头是热的,一夜都在喘。货郎从此改行,天天来给骨头送草料。",
-  "银月湖月圆那晚,老周年轻时撒过一网,拉上来一口铜钟,钟里塞满湖底的泥。他没敢要,又沉了回去。可打那以后,每逢湖心发光,他耳朵里就当当响。老周说这不叫闹鬼,叫湖底神殿在还他这一网的人情。",
-  "先祖石环比王国还老八百年。抄写员薇拉去拓过碑文,拓回来一看,纸上的字跟石头上的对不上,多了一行。她烧了那张纸,再没去过。可她的编年史里,悄悄夹着一页谁也看不懂的字。她说,那是石头替星星记的账。",
-  "迷途丘陵有规矩:别数丘。偏有个收税官不信,骑着骡子一路数到第七十二座,人就没影了。三年后骡子自己回了十字路旅店,鞍袋里的税银一枚不少,只多了一块圆滚滚的石头。石老倔说:那是第七十三座,人家找零呢。",
-  "狼月那夜,牧羊女米娅的哨子丢了。半夜羊圈外狼嚎四起,她急得直哭。忽听哨音从山坡上响起来,吹得又准又急,狼群竟掉头走了。第二天哨子好端端躺在门槛上,沾着一撮灰毛。米娅现在每逢狼月,都往坡上放一只羊。",
-  "灰烬荒地埋着七千人,一杆旗下自己人打自己人。瘸子威尔去那儿捡过一枚头盔,戴上就头疼,梦里净是有人喊冲锋。他把头盔埋回去,磕了个头:兄弟,仗早打完了,连打的谁都没人记得了。头疼当夜就好了。",
-  "王城广场的许愿池,豆子扔进去过一枚金币,许愿明天赢钱。第二天他真赢了一枚金币——就是昨天扔的那枚,不知怎么在他鞋里。豆子逢人就讲:喷泉这买卖公道,本钱都还你,利息是个教训。他现在还天天赌。",
-  "磨坊郊野有头驴,会用嘴拱门闩,夜里溜出去,天亮自己回来,蹄子上沾着谁也认不出的红泥。老卢卡斯跟踪过一回,跟到迷途丘陵边上就不敢再跟。驴回头看了他一眼,那眼神,老卢卡斯说,像在劝他回家睡觉。",
-  "黑石要塞的墙缝里,格罗姆当年逃出来时塞过半块面包,想着回头饿了再取。二十年后他跟人回去拆铁料,鬼使神差摸那道缝——面包还在,干得像块砖,可掰开来,里头是软的,还热乎。格罗姆当场哭了,没人问为啥。",
-  "静眠墓园里老国王的猎犬追风有座碑。守墓人莫格说,每年冬头一场雪,碑前总有一串狗爪印,从碑里出来,绕墓园一圈,又回碑里去。莫格从不扫那串印子。他说狗当了一辈子差,死后巡个夜,天经地义。",
-  "霜风隘口的界碑下有个石匣,规矩是过山的人放一把火绒燧石,救后来遭雪困的。有年一个商人偷拿了没放,当夜就困在了风口。他摸黑爬回界碑,匣子里那把燧石还在,就是打不出火。他放回去,再拿,一打就着。",
-  "琥珀荒漠的方尖碑,晌午晒得烫手,可影子底下凉得邪乎。香料商巴克在影子里歇过一觉,梦见有人用听不懂的话问他买香料,还价还得极狠。醒来他货囊里少了一撮胡椒,多了一枚谁也不认得的古金币。巴克说,亏了。",
-  "雾语沼泽的玛尔戈熬回魂汤,罗莎去求过一碗,想问失踪十二年的猎人丈夫一句话。玛尔戈收了钱又退了:汤只能招死人,你家那位,汤面上照不出影儿。罗莎哭着回去,走到半路又笑了——照不出影儿,那就是还活着。",
-  "北境群山那头有龙,人人这么说,没人见过。瘸子威尔当年在山口站哨,大雪夜听见头顶一声长叹,像老人翻身。第二天哨塔背风面的雪上,压出一道三里长的印子。军里记档写的是雪崩。威尔说:雪崩不会叹气。",
-  "苇岸渔村的阿珊学她爷爷夜钓,月圆下钩,钓上来一条鱼,鱼肚里有枚指环,刻着看不懂的花纹。老周脸色一变,让她把指环拴回鱼嘴上放生。鱼摆摆尾走了。阿珊问为啥,老周说:湖底那家子丢了东西,咱替人送回去。",
-  "无尽荒野的黑帐盗贼抢过一个吟游诗人,就是皮波。抢完嫌他穷,让他唱首歌抵命。皮波从月落唱到鸡叫,唱得满帐子汉子抹眼泪。头领把抢的钱还了他,又添了一把,说:拿去,给我娘捎句话,就唱你方才那段。",
-  "三石村的磨镰人瘸秋,给人磨了一辈子镰刀,只有一把他死活不磨,挂在梁上,锈得掉渣。采药婆乌拉说那是灰烬荒地捡的,磨亮了会照出拿刀那人的脸——不是现在的脸,是打完仗以后的。瘸秋照过一回,从此瘸的。",
-  "灯夫巴特老爹三十年不误点灯,只有一夜例外:狼月赶上雷暴,他点到广场那盏,火折子怎么也打不着。他索性坐下陪灯杆聊天。天亮才知道,那晚全村就他没听见森林里的嚎。巴特说:灯没亮,是灯替我挡了。",
-  "洗衣妇薇琪啥都打听得到,只有一件事打听不出:磨坊水轮底下,每年秋首日会卡住一根红头绳,年年一模一样。她问遍了全村,没一个姑娘认。今年丰收节她守了一夜,水轮空转,啥也没有。回家一看,头绳搭在她窗台上。",
-  "风车骑士唐豆天天挑战磨坊,人人笑他疯。有天夜里磨坊真着了火,火苗窜得比风车还高,全村人提着桶赶到,火已经灭了。唐豆坐在地上,长枪烧去半截,胡子焦了一半。他说:我说过它是巨人吧?这回它认输了。",
-  "哨塔遗迹顶上,据说能看见不该看的东西。猎人罗尔夫上去过一回,朝幽暗森林望,望见一个穿猎装的背影,走路的样子眼熟得很。他喊了一嗓子,人影没回头。他没敢跟罗莎讲。可打那以后,他打猎绕着那片林子走。",
-  "旅店伙计小马给苟叔端了三年酒,忽然发现一桩怪事:苟叔是瞎子,可每回小马端错了酒,他没沾唇就摆手。小马问他咋知道的。苟叔笑了:小子,酒不会说话,你的脚步声会。你端错酒的时候,走路都心虚。",
-  "面包师玛莎的丈夫随商队走了多年,音信全无。每年他生辰,玛莎照旧烤一炉他爱吃的黑麦饼,摆窗台上,天亮总少一块。人说是野猫叼的。今年那饼底下压了一枚琥珀荒漠的沙粒。玛莎把饼从一块加到了两块。",
-  "疯子老糊涂那天拽住林恩,神神叨叨:我瞧见了,咱们头顶上有个天大的人,盯着你,一盯一整天,你走他也走。林恩顺着他的手指往天上看,只有云。老糊涂叹口气:看不见就对了,他要是眨眼,咱们全村就黑了。",
-);
-WISHES.push(
-  ["水面泛起涟漪,仿佛在说:又是一枚铜板,湖神的零钱罐快满了。", null],
-  ["硬币沉底时叹了口气:从国王手里到你手里,最后落得给鱼当枕头。", null],
-  ["湖神打了个哈欠。八百年了,许的愿翻来覆去就那么几样。", null],
-  ["水面平静如镜。镜子里那张脸,才是你愿望成真的最大阻碍。", null],
-  ["咕嘟一声。湖神收到了,但湖神今天休沐。", null],
-  ["硬币在水底翻了个身,和昨天那枚挤在一起,抱怨这里越来越挤了。", null],
-  ["湖神小声嘀咕:雪影那匹马许的愿都比这个实在。", null],
-  ["一条鱼游过来啄了啄硬币,失望地游走了。它也在许愿呢。", null],
-  ["水花溅了你一裤脚。湖神的意思是:回去吧,靠自己。", null],
-  ["硬币临沉底前喊了一句:告诉瘸子威尔,他上回许的那条腿还在排队!", null],
-  ["湖神掂了掂这枚硬币的分量,又掂了掂你的愿望,摇了摇头。", null],
-  ["水底传来闷闷的一句:想发财就去接悬赏,别老来烦我。", null],
-  ["涟漪一圈圈散开,像老周撒的网,什么也没捞着。", null],
-  ["湖神记下了你的愿望,记在水上。你懂的,水上写字。", null],
-  ["硬币落水的声音格外清脆。湖神评价:响是响,穷也是真穷。", null],
-  ["水面忽然翻涌,吐出一小把铜板。湖神:利息,拿好,别声张。", "coins"],
-  ["硬币沉到一半又浮了回来,还带了几个伙伴。湖底住不下了。", "coins"],
-  ["湖神今日心情好——银月湖底神殿的租子收上来了,分你一点。", "coins"],
-  ["一股暖流从脚底涌上心口。湖神说:钱不给,命给你续一口。", "heart"],
-  ["水面映出满月的光,你觉得浑身舒坦,像喝了玛尔戈一勺好汤。", "heart"],
-);
-FUNNY.prophet.idle.push(
-  "我数过了,这世上的一天只有二百四十次心跳那么长,谁在偷我们的光阴?",
-  "雨点不会落在你身上,孩子,它们只是画在天上的针脚,伸手接一滴试试?",
-  "远处的山是灰糊糊的一团,等你走近它才慌慌张张穿上衣裳——我看见过它没穿好的样子!",
-  "你死过一回了对不对?我记得你倒下,可你又站在这儿,身上还带着老地方的尘土。",
-  "薇琪每天同一时辰站在同一块石头上说同一句闲话,她不是人,她是钟!",
-  "别往荒野尽头走,那儿有一堵看不见的墙,我撞过,鼻子疼了三天,路却一步没多。",
-  "有只眼睛整天飘在你脑袋后头看着你,你转多快它都在,别装了,我瞧得见它!",
-  "喷泉里的水永远是那几朵浪花,转啊转,像磨坊主老卢卡斯家驴子拉的磨。",
-  "月亮每六日圆一回,四季六日一换,老天爷懒得很,拿一张历翻来覆去地用。",
-  "你睡一觉,天下的伤都好了,麦子熟了,连血牙的擂台都摆好了——睡觉才是真神通。",
-  "我朝墙角挤了一夜,那墙是空气做的,可就是过不去,世道啊,处处是硬邦邦的空!",
-  "你摸摸口袋,几百斤铁剑鱼竿母鸡都装得下,还不显山露水,你那口袋通着地府吧?",
-  "灯夫巴特老爹三十年不误点灯?不是勤快,是有人在天上牵着他的线,一日一遍!",
-  "有时候人走路会一哆嗦,天地跟着一顿——那是扛着这世界的巨人喘不上气了。",
-  "你许愿之前,好事就写好了;你钓上鱼之前,鱼就选好了。骰子落地前,豆子的输赢早定了。",
-  "我死盯着村口的鸡看,看久了它就忘了自己该干嘛,傻站着——它们的心是别人借它的!",
-  "先祖石环比王国老八百年?呸,这整个天下都是六天前才搭起来的,连同我的记性一起。",
-  "你把奥德里克老爷的话打断一百回,他也不恼,还从头说起——我们的舌头上都拴着绳!",
-  "月圆夜银月湖心发光,那不是神殿,是造这世界的匠人忘了糊严实的一道缝。",
-  "我知道有人隔着天在看咱们,喂,看戏的!行行好,记着替林恩存一存这条命!",
-);
-PROCLAIM_STOCK.push(
-  "——磨坊桥修桥进度已过半,另一半何时修,取决于木匠约恩何时醒酒。",
-  "——今岁税册誊抄完毕,漏报者请自觉补上,薇拉的笔比卫兵的腿快。",
-  "——招领:王城广场拾获灰鹅一只,特征是会瞪人,失主认领前请先接受它的瞪视。",
-  "——卫兵队招新,要求能跑能站不打瞌睡,瘸子威尔说他年轻时三样全占。",
-  "——磨坊风车定于近日检修,唐豆先生请勿趁机宣战,木料很贵。",
-  "——喷泉许愿池清淤在即,捞出的铜板一律充公,愿望概不退还。",
-  "——十字路旅店后巷禁止倒鱼骨,罗莎老板娘的扫帚不认人。",
-  "——集市日摊位先到先得,布商奥托与果贩琳达请勿再为半尺地界互扔烂梨。",
-  "——狼月之夜请看好家畜,狼不认税册,也不打欠条。",
-  "——满月夜银月湖畔围观者请自带火把,湖发光,岸上可不发光。",
-  "——悬赏板告示请勿覆盖张贴,上一张也许还没人领赏呢。",
-  "——通缉犯画像由抄写员薇拉执笔,长得像的良民请提前来衙门备案。",
-  "——灯夫巴特老爹三十年不误点灯,望诸位交税也能有此风范。",
-  "——竞技场看台加固完工,血牙保证这回塌的只会是对手。",
-  "——丰收节将至,翡翠农田禁止提前偷穗,麦子认得汉克,汉克认得你。",
-  "——静眠墓园夜间谢客,守墓人莫格说,住户们也需要清静。",
-  "——雷暴天请勿在哨塔遗迹避雨,塔比你先撑不住。",
-  "——渔获抽税照旧,老周说湖里的鱼没交过税,那是因为鱼没上岸。",
-  "——广场禁止骑羊竞速,羊没意见,被撞翻的香料摊有。",
-  "——抱鸡可以,扔鸡不行,玛莎的面包摊已中三只。",
-  "——先祖石环禁止刻字,石头比王国老八百年,轮不到你留名。",
-  "——霜风隘口界碑的火绒燧石只许取用一份,规矩比雪还老。",
-  "——北境商道传有龙影,官方口径:大概率是云,小概率请自行奔跑。",
-  "——赌骰请去豆子那儿,官署门口掷骰者,输赢一律充作修桥款。",
-  "——洗衣妇薇琪所传消息不代表官方立场,但准头确实比官报高些。",
-  "——迷途丘陵勘测队仍未归来,新告示:去了也别数丘。",
-  "——雾语沼泽采药请结伴,玛尔戈的回魂汤有价,且不打折。",
-  "——磨镰人瘸秋进城磨刀,排队者请勿催,刀快脾气也快。",
-  "——皮波的新曲若唱到您家丑事,请找诗人协商,官府只管治安不管押韵。",
-  "——牧羊女米娅的哨声不是集结号,卫兵们请勿再列队上山。",
-);
-HOST_LINES.push(
-  "都别挤都别挤!血牙我嗓门大,后山的狼都听得见!",
-  "今儿这场子,刀真枪真,血也是真的,胆小的捂眼!",
-  "拉文霍德的爷们儿娘们儿,把手拍红了给爷助助兴!",
-  "上一个吹牛的,现在还在墓园躺着呢,莫格给他挖的坑!",
-  "押注趁早!豆子那赌鬼都押了,你还愣着干啥?",
-  "绿帽子那位!对,说你呢林恩!敢不敢下场遛一圈?",
-  "这沙子是琥珀荒漠运来的,吸血最快,别浪费喽!",
-  "赢的抱金币,输的抱牙齿,血牙我童叟无欺!",
-  "北境的龙都没这场面凶!都把耳朵竖起来!",
-  "规矩就一条:倒下了就别装死,爷看得出来!",
-  "哪位好汉再不报名,爷就把这擂台改成羊圈了!",
-  "开打之前先许个愿吧,喷泉离这儿不远,来得及!",
-);
-EXTRA_NPCS.witch.lines.push(
-  "汤开了……月圆之前喝下去,别问汤里是什么。",
-  "苇岸的雾根草,要带露水的,干的我可不收。",
-  "回魂汤能唤回来的,不一定是你想见的那一个。",
-  "嘘——锅在听呢,它不喜欢大嗓门的客人。",
-  "你身上有银月湖的水气,湖底那位瞧过你了。",
-  "三片沼泽菖蒲,换你一勺安眠,划算得很呐。",
-  "别碰那个罐子!那是给老国王的猎犬留的。",
-  "乌拉婆采的药我认,别的娃娃采的,土味不对。",
-  "喝之前许个愿,喝完就忘了它,汤才灵。",
-  "灰烬荒地的骨灰花开了,今年的汤会格外稠。",
-  "你问味道?活人尝着是苦的,这就够你知道了。",
-  "回去别回头,沼泽里的灯不是灯,记住喽。",
-);
-// 幽灵低语与墓志铭
-const GHOST_LINES = [
-  "我生前是磨坊帮工,还欠玛莎半袋面粉……替我还上,别让她记我账。",
-  "我是十字路旅店的老酒客,罗莎的炖肉真香……帮我再闻一口。",
-  "活人?别怕,我只是找我的镰刀,瘸秋磨得太快,我攥着它就走了。",
-  "我随商队走琥珀荒漠没回来……告诉玛莎,面包别再留到发硬了。",
-  "我在灰烬荒地举过旗,七千人啊……替我把那面破布埋深些。",
-  "绿衣服的,借个火?哦对,我点不着了……巴特老爹的灯真亮。",
-  "我是苇岸的渔妇,湖底神殿的钟响了……替我给老周捎条鱼。",
-  "生前我在霜风隘口忘了放火绒燧石,愧了一辈子,你替我补上。",
-  "我是墓园的老狗追风……不,汪。守墓人莫格的酒藏在第三块碑后。",
-  "别踩我的萝卜地!哦,汉克早翻了……那替我夸夸他家的地。",
-  "我在迷途丘陵数丘,数到第七座就迷了……千万别数,听话。",
-  "我是黑石要塞的逃奴,没格罗姆命大……告诉他,烙印不丢人。",
-  "月圆夜湖心发光,我划过去就没回来……替阿珊看一眼就好。",
-  "我赢过豆子三枚金币,他到死没给……算了,替我掷把骰子。",
-  "我是先祖石环下的老骨头,比王国还老八百年……小子,规矩点。",
-  "去许愿池替我丢枚铜板吧,生前我总舍不得,你看,舍不得也带不走。",
-];
-const EPITAPHS = [
-  "老国王的猎犬追风长眠于此。它追了一辈子风,如今风替它跑。",
-  "他非说那蘑菇能吃。采药婆乌拉劝了他三回。",
-  "他数清了迷途丘陵。丘陵也数清了他。",
-  "他从灰烬荒地的七千人里活着爬了回来,最后败给了自家门槛和一壶酒。",
-  "坟是空的。她说猎人只是走远了些,汤还在灶上温着。",
-  "他守了一辈子墓。如今换墓守他,两不亏欠。",
-  "五十年湖上没翻过一回船。银月湖没要他,老天爷要了。",
-  "他跟血牙赌能连赢竞技场三场。这块碑是血牙出的钱。",
-  "她把一辈子的面都揉进了灶火里。半个村子的孩子都是吃她的饼长大的。",
-  "他往喷泉里扔了枚金币,许愿从此不用交税。愿望灵了。",
-  "生前欠赌徒豆子三枚金币。豆子说:一笔勾销,下把骰子算你赢。",
-  "霜风隘口界碑下放火绒燧石的规矩,是他定下的。翻山的人都欠他一堆火。",
-  "她活了九十个冬天,抱怨了八十九个。最后一个,她说:还行。",
-  "立碑那年麦子欠收,他咽气前说来年会好。来年真的好了。",
-];
+TALES.push(...PACK_TALES);
+WISHES.push(...PACK_WISHES);
+FUNNY.prophet.idle.push(...PACK_PROPHET_IDLE);
+PROCLAIM_STOCK.push(...PACK_PROCLAIM);
+HOST_LINES.push(...PACK_HOST_LINES);
+EXTRA_NPCS.witch.lines.push(...PACK_WITCH_LINES);
+// 墓园墓志铭:按序轮读,AI 在后台补写下一条
 let epitaphIdx = Math.floor(rand() * EPITAPHS.length);
-// 牲口喜剧提示(抱鸡/骑羊等随机替换)
-const COMEDY_LINES = [
-  "鸡记住你的脸了,而且它有二十二个朋友",
-  "羊在心里给你记了一笔",
-  "你扔出去的鸡,迟早会飞回来啄你",
-  "这只鸡开始怀疑你抱它的动机了",
-  "驴不动了——它觉得你该反省一下",
-  "鸡群正在开会,议题只有一个:你",
-  "骑羊过市,尊严掉了一路",
-  "抱鸡狂奔的绿帽子,薇琪已经传遍全村了",
-  "母鸡瞪着你,像瑟尔玛瞪不识货的买家",
-  "这头驴的倔劲,不输三石村的石老倔",
-  "扔鸡一时爽,鸡群火葬场",
-  "羊驮着你,心里默念着草料涨价",
-  "鸡被你扔上了屋顶,它决定不下来了",
-  "你抱鸡的姿势,吓得公鸡打鸣都跑调了",
-  "驴子叹了口气,像埃隆看见没擦的马鞍",
-  "第七次扔鸡了,老天爷都替鸡不好意思",
-  "羊蹄子已经抬起来了,建议你先跑",
-  "鸡群围过来了,这回它们不打算讲道理",
-  "牲口棚一致通过:见到绿帽子就装死",
-  "你许愿骑龙,结果只骑到了一头驴",
-];
+let epitaphAI = null; // AI 补写的下一条墓志铭
+function readEpitaph() {
+  const text = epitaphAI || EPITAPHS[epitaphIdx++ % EPITAPHS.length];
+  epitaphAI = null;
+  openDialog(['(你拂去一块墓碑上的落叶)', `「${text}」`]);
+  if (!AI_TEXT_OFF && !aiBusy.epitaph) {
+    aiBusy.epitaph = true;
+    aiLine('为中世纪村庄墓园写一条墓志铭,15~40字,可庄重可幽默可温柔,只输出铭文本身,不要引号。', null, 9000)
+      .then((t) => { aiBusy.epitaph = false; if (t) epitaphAI = t; });
+  }
+}
 
 // ---- 创作代理设计的新导演事件 ----
 DIRECTOR_EVENTS.push({
@@ -9312,7 +8264,7 @@ DIRECTOR_EVENTS.push({
 // 守住南门(stage 1)→ 次日收到恐吓信(stage 2)→ 出城遭独眼刻刀维克伏击(stage 3 完结)
 // (vendetta 常量声明在 EVO 旁,loadGame 初始化时就要读它)
 function vendettaLetter() {
-  letter = {
+  calendar.letter = {
     from: '黑石兄弟会',
     text: '南门那笔账,兄弟会记下了。城墙护得了你一时,护不了你一世——出城的路上,留神你的后颈。(信纸背面用炭画着一把断刀)',
   };
@@ -9408,25 +8360,6 @@ DIRECTOR_EVENTS.push({
   },
 });
 
-// 皮波离线联句
-const BARD_COUPLETS = [
-  "好马不骑偏骑羊,咩咩闯过王城广场;绿帽游侠威名扬,吓得琳达丢了果筐。",
-  "瑟尔玛的骏马排成行,林恩偏挑一只老绵羊;羊背颠得他直晃荡,还夸这坐骑不用缰。",
-  "抱起母鸡举过顶,一把扔上旅店棚;罗莎追出门口骂,游侠早就没了影。",
-  "汉娜家的鸡飞上天,咯咯哒哒叫得欢;不是老鹰来偷蛋,是那绿帽把鸡掂。",
-  "悬赏画像贴满墙,五颗红星亮堂堂;卫兵追得直喘气,林恩骑羊笑一场。",
-  "通缉令上绿帽郎,画师偏偏画走样;满街错抓老糊涂,气得队长摔了枪。",
-  "血牙高喊开了锣,绿帽游侠下场喽;三拳两脚定输赢,金币赚得满兜兜。",
-  "竞技场上尘土扬,壮汉个个赛虎狼;林恩一个滑铲过,看台喝彩震了梁。",
-  "银月湖边下钓钩,鱼没上钩靴子有;老周捋须笑弯腰,这靴还是他丢的旧。",
-  "一竿甩进湖心里,拉上破靴还带泥;林恩举靴当鱼夸,阿珊笑得直捶堤。",
-  "无尽荒野马群狂,林恩空手闯一趟;摔了七回爬七回,野马低头认了缰。",
-  "苍绿平原风打旋,野马烈得赛雷电;瑟尔玛见了直咂嘴,这手艺盖过她祖先。",
-  "狼月夜里嚎声长,汉克吓得钻谷仓;绿帽一箭定乾坤,狼皮换酒喷喷香。",
-  "幽暗森林绿眼晃,罗尔夫都劝别硬闯;林恩偏往林深走,拖条狼王震八乡。",
-  "走遍荒漠踏过霜,袋里纹章叮当响;薇拉提笔记一行,编年史上添新章。",
-  "石环碑下捡一枚,哨塔灰堆又一枚;纹章缀满旧行囊,皮波唱得口水飞。",
-];
 
 window.__gtm = {
   player, quest, questRT, horses, guards, bandits, villagers, wolves, namedNPCs, steward,
@@ -9441,7 +8374,7 @@ window.__gtm = {
   setTime: (t) => { clock.time = t; },
   calendar, seasonIdx, seasonDay, todaySpecial, applySeason, world,
   setDay: (d) => { calendar.day = Math.max(1, d); applySeason(); respawnMushrooms(); refreshProclaim(); },
-  getDailyEvents: () => dailyEvents,
+  getDailyEvents: () => calendar.dailyEvents,
   wilderness: { CORE },
   deers, mushrooms, loreStones, LORE, tellStory, sleepToMorning, newDay,
   chronicle: () => chronicle, remember, archetype, mirrorTalk, MIRROR_POS,
@@ -9449,7 +8382,7 @@ window.__gtm = {
   trialRT, startTrial, prayAltar, rowTo, BOAT_PIER, BOAT_ISLE,
   enterDungeon, exitDungeon, takeRelic, inDungeon, DGN, FISH_SPOT_ISLE, openJournal,
   sideQuest, choreBoard, choreProgress, CHORE_POS,
-  composeLetter, witchFortune, getLetter: () => letter,
+  composeLetter, witchFortune, getLetter: () => calendar.letter,
   workspace, wsReport, moodWord, consolidate, tickWorkspace: () => { workspace.t = 0; updateWorkspace(0); },
   MIND, mindReport, mindTick, habitFactor, mindSave, mindMakeWish, MIND_WISHES, mindFavorite,
   getFirefly: () => ({ owned: !!player.firefly, visible: fireflyMesh.visible }),
@@ -9465,7 +8398,7 @@ window.__gtm = {
   // 固定步长推进模拟(不渲染):测试用,比等真实帧快得多也稳定得多
   step: (n = 1, dt = 1 / 60) => {
     unsnapScene();
-    for (let i = 0; i < n; i++) { nowMs += dt * 1000; tick(dt, nowMs); }
+    for (let i = 0; i < n; i++) { frame.now += dt * 1000; tick(dt, frame.now); }
     snapScene();
   },
   prologue, startPrologue, skipPrologue, spendSta,
@@ -9488,8 +8421,8 @@ window.__gtm = {
     resolveCollisions(p, r, colliders);
     return Math.hypot(p.x - x, p.z - z) > 0.05;
   },
-  setIdle: (t) => { idleT = t; },
-  getIdle: () => ({ idleT, idleCd }),
+  setIdle: (t) => { idle.t = t; },
+  getIdle: () => ({ idleT: idle.t, idleCd: idle.cd }),
   getLoreRead: () => loreRead.length,
   getProclaim: () => proclaimText,
   refreshProclaim,
@@ -9535,7 +8468,7 @@ function loop(now) {
   requestAnimationFrame(loop);
   const dt = Math.min(0.05, (now - last) / 1000);
   last = now;
-  nowMs = now;
+  frame.now = now;
   if (started && !paused && !mapState.open) { // 暂停/看地图:世界冻结,仅渲染
     unsnapScene();
     tick(dt, now);
@@ -9675,17 +8608,7 @@ function tick(dt, now) {
   updateVendetta();
   updateWeather(dt);
   // 环境氛围音:按季节 × 时辰 × 天气切换(4 秒判一次)
-  ambienceT -= dt;
-  if (ambienceT <= 0) {
-    ambienceT = 4;
-    const ph = dayPhase();
-    let kind = null;
-    if (weather.rain > 0.25) kind = null; // 雨雪声自己就是氛围
-    else if (isWinter()) kind = 'wind';
-    else if (ph === 'night' && seasonIdx() >= 1) kind = 'crickets'; // 夏秋夜
-    else if ((ph === 'day' || ph === 'dawn') && seasonIdx() <= 1) kind = 'birds'; // 春夏白天
-    setAmbience(started && !paused ? kind : null);
-  }
+  updateAmbience(dt);
   updateRegion(dt);
   updateBubble(dt);
   villagerChatter();
@@ -9744,7 +8667,7 @@ function tick(dt, now) {
   updateRain(dt);
   if (!inDungeon()) {
     const elevA = Math.sin(clock.time * Math.PI * 2 - Math.PI / 2);
-    updateAmbient(dt, nowMs * 0.001, camera.position, groundH(player.pos.x, player.pos.z), player.pos.x, player.pos.z,
+    updateAmbient(dt, frame.now * 0.001, camera.position, groundH(player.pos.x, player.pos.z), player.pos.x, player.pos.z,
       biomeWeights, { night: 1 - Math.max(0, Math.min(1, elevA * 2 + 0.25)), rain: weather.rain, windX: 0.94, windZ: 0.33,
         pixelH: renderer.domElement.height }, qualityIdx === 0 ? 0.6 : 1);
   }
@@ -9883,8 +8806,9 @@ requestAnimationFrame(loop);
 
 // ==== 供拆出的系统模块使用的绑定 ====
 export {
-  abHighlight, addHorse, applyDamage, arrows, bandits, calendar, callout, colliders, damagePlayer,
-  dangerFX, dangerMat, dayPhase, dialog, faceNearestFoe, guards, horses, keys, killWolf, lockFoe,
-  midHeld, openDialog, player, recomputeMaxHp, remember, saveGame, setLockFoe, showDamage, started,
-  stats, toast, toastNow, unlockAch, wolves,
+  EVO, HOME, abHighlight, addHorse, addPickup, applyDamage, arrows, bandits, callout, crestsFound,
+  damagePlayer, dangerFX, dangerMat, dialog, evolveLegends, evolveTactics, faceNearestFoe, growCorpus,
+  guards, horses, inDungeon, keys, killWolf, lockFoe, loreRead, midHeld, missions, openDialog, paused,
+  payMercs, quest, recomputeMaxHp, refreshProclaim, refreshTrophies, respawnMushrooms, saveGame,
+  setLockFoe, shopOpen, showDamage, vendetta, vendettaLetter, wanted, wolves,
 };

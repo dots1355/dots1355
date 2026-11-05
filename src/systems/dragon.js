@@ -4,17 +4,20 @@
 import * as THREE from 'three';
 import { sfx } from '../audio.js';
 import { rand } from '../core/rng.js';
+import { player } from '../core/state.js';
 import { hitStop, slowMo } from '../core/timefx.js';
 import { later } from '../core/timers.js';
 import { angleLerp, dist2, makeDragon } from '../entities.js';
 import { scene } from '../gfx/core.js';
 import { pooledMat } from '../gfx/pools.js';
+import { toast } from '../ui/toast.js';
+import { stats, unlockAch } from './achievements.js';
 import { cam } from './camera.js';
 import { DRAGON_SKULL, addFrostPatch, explodeAt } from './magic.js';
+import { remember } from './mind.js';
 import { spawnDust } from './weather.js';
 import {
-  callout, damagePlayer, dangerFX, dangerMat, openDialog, player, recomputeMaxHp, remember, saveGame,
-  showDamage, stats, toast, unlockAch,
+  callout, damagePlayer, dangerFX, dangerMat, openDialog, recomputeMaxHp, saveGame, showDamage,
 } from '../main.js';
 
 // ================= 霜龙苏醒(龙骨之地终局 Boss)=================
