@@ -1,19 +1,16 @@
-// 箭矢与投射物:箭、魔光弹、火球、飞刀共用一张表 arrows,逐帧子步进飞行与命中(卫兵/盗贼/狼/鹿/鸡/飞龙)。
+// 箭矢与投射物:箭、魔光弹、火球、飞刀共用一张表 arrows,逐帧子步进飞行与命中(受击目标注册表 combat.TARGET_KINDS + 飞龙)。
 // 对外:arrows、shootArrow()(弓)、wetSpread()(雨天湿弦的散布)、updateArrows(dt);arrowGeo/arrowMat 供飞刀等复用。
 // 命中一律走 applyDamage(伤害来源决定罪责与连杀);法术弹/飞刀是独占资源,下场时释放。
 import * as THREE from 'three';
 import { sfx } from '../audio.js';
 import { rand } from '../core/rng.js';
 import { colliders, player } from '../core/state.js';
+import { simNow } from '../core/timers.js';
 import { dist2, lambert } from '../entities.js';
 import { scene } from '../gfx/core.js';
-import { hitFX, showDamage } from '../ui/feedback.js';
 import { toast } from '../ui/toast.js';
-import { bandits, guards, wolves } from './actors.js';
-import { applyDamage, flinch, magBurst } from './combat.js';
+import { TARGET_KINDS, magBurst } from './combat.js';
 import { damageDragon, dragonRT } from './dragon.js';
-import { EVO } from './evo.js';
-import { chickens, deers, killDeer, pokeChicken } from './fauna.js';
 import { WEAPONS } from './gear.js';
 import { arrowBonus, dragonAim, explodeAt, skillLv, skillXp } from './magic.js';
 import { prologue } from './prologue.js';
@@ -35,12 +32,12 @@ function pointBlocked(x, z) {
   return false;
 }
 // 雨天湿弦:箭路发飘(暴雨更甚);提示节流,别刷屏
-let wetToastT = 0;
+let wetToastT = -1e9;
 export function wetSpread(mul = 1) {
   const wet = weather.state === 'storm' ? 0.11 : weather.state === 'rain' ? 0.055 : 0;
   if (!wet) return 0;
-  if (performance.now() - wetToastT > 12000) {
-    wetToastT = performance.now();
+  if (simNow() - wetToastT > 12000) {
+    wetToastT = simNow();
     toast('🌧️ 雨水打湿了弓弦,箭路发飘……', 2);
   }
   return (rand() - 0.5) * 2 * wet * mul;
@@ -59,51 +56,26 @@ export function shootArrow() {
   }
   sfx.arrow();
 }
+// 箭/法弹/飞刀命中:按受击目标注册表的顺序找第一个挨上的(身位 0.8m²、高度 0~2.3m;鸡更小更矮),结算交给该类目标
 function arrowHitEntities(a) {
   const dmg = a.dmg || arrowBonus(WEAPONS.bow.dmg + (player.swordLv >= 2 ? 1 : 0));
-  const tryHit = (list, onHit) => {
-    for (const e of list) {
-      if (e.dead || e.downT > 0) continue;
-      if (a._hits && a._hits.includes(e)) continue; // 贯穿箭:一箭对同一目标只算一次
-      const dy = a.pos.y - 0.9;
-      if (dy > 1.4 || dy < -0.9) continue;
-      if (dist2(a.pos.x, a.pos.z, e.pos.x, e.pos.z) < 0.8) {
-        if (a._hits) a._hits.push(e);
-        onHit(e);
-        return true;
-      }
+  for (const T of TARGET_KINDS) {
+    const [ylo, yhi] = T.arrowY || [0, 2.3];
+    if (a.pos.y < ylo || a.pos.y > yhi) continue;
+    const r2 = T.arrowR2 || 0.8;
+    for (const e of T.list()) {
+      if (!T.alive(e) || (a._hits && a._hits.includes(e))) continue; // 贯穿箭:一箭对同一目标只算一次
+      if (dist2(a.pos.x, a.pos.z, e.pos.x, e.pos.z) >= r2) continue;
+      if (a._hits) a._hits.push(e);
+      T.arrow(e, a, dmg);
+      return true;
     }
-    return false;
-  };
-  if (tryHit(guards, (g) => {
-    sfx.hit();
-    if (!applyDamage(g, dmg, { knock: 0.4, crit: false, crimeMsg: '你放箭射击卫兵!' })) g.state = 'chase';
-  })) return true;
-  if (tryHit(bandits, (b) => {
-    // 战术演化:被射多了的匪帮学会侧身闪箭(贴脸射/法术/飞刀不受影响)
-    if (!a.mag && !a.knife && rand() < EVO.tactics.dodge * 0.45) {
-      showDamage(b.pos, 0);
-      hitFX(b, 0.15);
-      return;
-    }
-    sfx.hit();
-    if (applyDamage(b, dmg, { knock: 0.4, crit: false })) EVO.kills.arrow++;
-    else flinch(b, false); // 箭/法弹也能打断起手
-  })) return true;
-  if (tryHit(wolves, (w) => {
-    sfx.hit();
-    if (!applyDamage(w, dmg, { knock: 0.4, crit: false })) flinch(w, false);
-  })) return true;
-  if (tryHit(deers, (d) => {
-    sfx.hit();
-    killDeer(d);
-  })) return true;
-  for (const c of chickens) {
-    if (c === player.carrying || c.state === 'thrown') continue;
-    if (dist2(a.pos.x, a.pos.z, c.pos.x, c.pos.z) < 0.5 && a.pos.y < 1) { pokeChicken(c); return true; }
   }
   return false;
 }
+// 火球的近炸引信:贴近任何可受击的目标就炸
+const nearTarget = (a) => TARGET_KINDS.some((T) => T.list().some((e) => T.alive(e) &&
+  dist2(a.pos.x, a.pos.z, e.pos.x, e.pos.z) < 1.6));
 // 投射物下场:法术弹/飞刀是每发独立 geometry+material,必须 dispose,否则连发就是显存漏斗
 function disposeArrow(a) {
   scene.remove(a.mesh);
@@ -128,8 +100,6 @@ export function updateArrows(dt) {
       a.pos.addScaledVector(a.vel, dt / stepN);
       if (a.fire) {
         // 火球:贴近任何敌人 / 落地 / 撞墙 / 燃尽 → 爆炸
-        const near = (list) => list.some((e) => !e.dead && !(e.downT > 0) &&
-          dist2(a.pos.x, a.pos.z, e.pos.x, e.pos.z) < 1.6);
         if (dragonRT.on && dragonRT.hp > 0) { // 火球打龙:三维近身即炸
           const gp = dragonRT.ent.group.position;
           if (Math.abs(a.pos.y - gp.y - 1.6) < 3 && dist2(a.pos.x, a.pos.z, gp.x, gp.z) < 3.2 * 3.2) {
@@ -142,8 +112,7 @@ export function updateArrows(dt) {
             continue;
           }
         }
-        if (near(bandits) || near(wolves) || near(guards) ||
-            a.pos.y <= 0.1 || pointBlocked(a.pos.x, a.pos.z) || a.ttl <= 0.05) {
+        if (nearTarget(a) || a.pos.y <= 0.1 || pointBlocked(a.pos.x, a.pos.z) || a.ttl <= 0.05) {
           const wetMul = weather.state === 'storm' ? 0.75 : weather.state === 'rain' ? 0.85 : 1;
           explodeAt(a.pos.x, a.pos.z, a.big ? 4 : 2, (a.big ? 5.2 : 3.4) * wetMul); // 雨天火势打折;小火球不再一发清场
           disposeArrow(a);

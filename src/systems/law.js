@@ -9,7 +9,8 @@ import { player, world } from '../core/state.js';
 import { dist2 } from '../entities.js';
 import { addGuard, guards, retireEntity } from './actors.js';
 import { rand } from '../core/rng.js';
-import { registerKill, startFall } from '../ui/feedback.js';
+import { startFall } from '../ui/feedback.js';
+import { registerKill } from './combat.js';
 import { dropCoins } from './pickups.js';
 
 // ================= 通缉系统 =================

@@ -21,7 +21,7 @@ import {
 import { cam } from '../systems/camera.js';
 import {
   applyDamage, banditSlain, combatCalmT, dangerFX, faceNearestFoe, flinch, foeName, frightenBandits,
-  killWolf, lockFoe, lockMark, slayBandit, telegraphFlash, toggleLock, trailFX,
+  killWolf, lockFoe, lockMark, registerKill, slayBandit, telegraphFlash, toggleLock, trailFX, whiteHot,
 } from '../systems/combat.js';
 import { DIRECTOR_EVENTS, director } from '../systems/director.js';
 import { awakenDragon, damageDragon, dragonRT, telegraphArea } from '../systems/dragon.js';
@@ -60,7 +60,7 @@ import { WARLORD_TAUNTS, spawnWarband, updateWarband, warband } from '../systems
 import { setWeather, weather } from '../systems/weather.js';
 import { groundH } from '../terrain.js';
 import { advanceDialog, dbLine, dialog, witchFortune } from '../ui/dialog.js';
-import { callout, flashing, registerKill, whiteHot } from '../ui/feedback.js';
+import { callout, flashing } from '../ui/feedback.js';
 import { dropQuestToasts, toast, toastNow, toastQuest, toastQueue } from '../ui/toast.js';
 import { CORE } from '../wilderness.js';
 import { frame } from './frame.js';

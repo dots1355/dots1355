@@ -34,7 +34,7 @@ import { initAttack, updateAttackInput } from './systems/attack.js';
 import { isWinter, updateAmbience, updateCalendar } from './systems/calendar.js';
 import { updateCamera } from './systems/camera.js';
 import {
-  dangerMat, initCombat, lockFoe, magBurstGeo, magBurstMat, trailMat, updateCombatMusic, updateDanger,
+  dangerMat, initCombat, lockFoe, magBurstGeo, magBurstMat, trailMat, updateCombatMusic, updateCombo, updateDanger,
   updateLock, updateTrails,
 } from './systems/combat.js';
 import { updateDirector } from './systems/director.js';
@@ -68,9 +68,7 @@ import { updateDust, updateRain, updateWeather, weather } from './systems/weathe
 import { buildCoreGround, buildMasks, getGroundMaterial } from './terrain.js';
 import { generateRemoteAITextures, preloadAIAssets } from './textures.js';
 import { updateBubble, updateDialogRange, villagerChatter } from './ui/dialog.js';
-import {
-  updateCombo, updateDamageNums, updateFalls, updateFlashes, updateKnockback, updateLowHp,
-} from './ui/feedback.js';
+import { updateDamageNums, updateFalls, updateFlashes, updateKnockback, updateLowHp } from './ui/feedback.js';
 import { updateActionBar, updateHUD, updateRegion } from './ui/hudview.js';
 import { drawMinimap, mapState } from './ui/maps.js';
 import { paused } from './ui/pause.js';
