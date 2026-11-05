@@ -21,6 +21,8 @@ import { cam, updateCamera } from './systems/camera.js';
 import { weather, setWeather, updateWeather, updateRain, spawnDust, updateDust } from './systems/weather.js';
 import { clock, sun, lantern, vistaFar, vistaNear, updateDayNight, updateEnvIntensity, fitViewDistance } from './systems/sky.js';
 import { mapState, toggleBigMap, drawMinimap } from './ui/maps.js';
+import { iconHTML, heartsHTML, weatherHTML, manaHTML, svgIcon, richText, wantedHTML } from './ui/hud.js';
+import { facetKind } from './gfx/facet.js';
 import { ctx } from './core/ctx.js';
 import { LIGHT_POOL, lightPool, initLightPool, addLightSource, removeLightSource, updateLightPool, pooledMat, releaseMat } from './gfx/pools.js';
 import { mergeGeometries } from '../lib/jsm/utils/BufferGeometryUtils.js';
@@ -54,6 +56,7 @@ try {
   const b64buf = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)).buffer;
   await Promise.all(Object.entries(MODELS_B64).map(([kind, b64]) =>
     new Promise((res) => gltfLoader.parse(b64buf(b64), '', (gltf) => {
+      facetKind(kind, gltf.scene); // 环境静物统一刻面(gfx/facet.js);角色与生物保持光滑
       if (kind === 'human') setHumanModel(gltf.scene);
       else if (kind === 'horse' || kind === 'wolf' || kind === 'dragon') setFaunaModel(kind, gltf.scene);
       else if (kind === 'weapons') setWeaponModels(gltf.scene);
@@ -221,9 +224,9 @@ function setTitleArt(bitmap) {
 generateRemoteAITextures({
   onStatus(state, done, total) {
     if (!aiStatusEl) return;
-    if (state === 'generating') aiStatusEl.textContent = `🎨 AI 高清材质生成中… ${done}/${total}(首次需约 1 分钟,已自动缓存)`;
-    else if (state === 'done') aiStatusEl.textContent = `🎨 AI 高清材质已启用(${done}/${total})`;
-    else aiStatusEl.textContent = '🎨 离线模式:使用内置程序化材质(联网后自动启用 AI 材质)';
+    if (state === 'generating') aiStatusEl.textContent = `AI 高清材质生成中… ${done}/${total}(首次需约 1 分钟,已自动缓存)`;
+    else if (state === 'done') aiStatusEl.textContent = `AI 高清材质已启用(${done}/${total})`;
+    else aiStatusEl.textContent = '离线模式:使用内置程序化材质(联网后自动启用 AI 材质)';
   },
   onTexture(name, canvases) {
     const set = new Set(canvases);
@@ -300,7 +303,7 @@ function updateToast(dt) {
     let k = 0; // 档位最高的先播(插队的档位 3)
     for (let i = 1; i < toastQueue.length; i++) if (toastQueue[i][4] > toastQueue[k][4]) k = i;
     const [msg, dur] = toastQueue.splice(k, 1)[0];
-    toastEl.textContent = msg;
+    toastEl.innerHTML = richText(msg); // 文字里的 emoji 换成统一的 SVG 图标
     toastEl.style.opacity = 1;
     toastTimer = dur;
   }
@@ -370,7 +373,8 @@ VILLAGERS.forEach((id, i) => {
   const v = { ...makeHumanoid({
     shirt: villagerColors[i % villagerColors.length], pants: 0x50412e,
     hair: villagerHair[i % villagerHair.length],
-    cap: [2, 6, 7, 13, 15, 17, 19].includes(i),   // 果贩/农夫/农妇/伙计/渔家女/磨坊主/村长:布帽
+    cap: [2, 13, 19].includes(i),                  // 果贩/伙计/村长:布帽
+    straw: [6, 7, 15, 17].includes(i),             // 农夫/农妇/渔家女/磨坊主:草帽
     hood: [8, 18, 21].includes(i),                 // 猎人/守墓人/采药婆:兜帽
   }),
     id, dbKey: `v${i}`, pos: new THREE.Vector3(id.home[0], 0, id.home[1]), yaw: rand() * 6.28,
@@ -386,7 +390,7 @@ VILLAGERS.forEach((id, i) => {
 const FOE_HP_MUL = 1.6;
 function addBandit(x, z, opts = {}) {
   const hp0 = Math.max(1, Math.round((opts.hp ?? 3) * FOE_HP_MUL));
-  const b = { ...makeHumanoid({ shirt: opts.boss ? 0x5a1020 : 0x3b3b46, pants: 0x26262e, hood: true, sword: true }),
+  const b = { ...makeHumanoid({ shirt: opts.boss ? 0x5a1020 : 0x3b3b46, pants: 0x26262e, hood: true, mask: true, sword: true }),
     pos: new THREE.Vector3(x, 0, z), yaw: 0, hp: hp0, maxHp: hp0, speed: opts.speed ?? 5.8,
     state: 'patrol', home: new THREE.Vector3(x, 0, z), attackCd: 0, stunT: 0, walkT: 0, dead: false,
     boss: !!opts.boss, escort: !!opts.escort, dmg: opts.dmg ?? 2 };
@@ -3145,7 +3149,7 @@ const npcStyles = {
   blacksmith: { shirt: 0x5a4632, pants: 0x33261a, hair: 0x2a1a10 },
   trader: { shirt: 0x2a6a5a, pants: 0x4a3a26, hair: 0x6a4a2a },
   innkeep: { shirt: 0xa04a5a, pants: 0x4a3320, hair: 0x8a3a1a },
-  fisher: { shirt: 0x3a5a7a, pants: 0x33301c, hair: 0xbababa },
+  fisher: { shirt: 0x3a5a7a, pants: 0x33301c, hair: 0xbababa, straw: true },
 };
 const namedNPCs = [];
 const EXTRA_NPCS = {
@@ -3952,7 +3956,7 @@ function updateActionBar() {
     if (L.show !== show) { L.show = show; sl.el.style.display = show ? 'block' : 'none'; }
     if (!show) continue;
     const icon = sl.icon();
-    if (L.icon !== icon) { L.icon = icon; sl.iconEl.textContent = icon; }
+    if (L.icon !== icon) { L.icon = icon; sl.iconEl.innerHTML = iconHTML(icon); }
     const nm = typeof sl.name === 'function' ? sl.name() : sl.name;
     if (L.name !== nm) { L.name = nm; sl.nameEl.textContent = nm; }
     const cdv = sl.cd ? Math.round(Math.min(1, sl.cd()) * 20) * 5 : 0;
@@ -6078,7 +6082,7 @@ function tryInteract(probe = false) {
   }
   if (dist2(player.pos.x, player.pos.z, BOAT_ISLE.x, BOAT_ISLE.z) < 6) {
     if (probe) return P('按 E 划船回栈桥', BOAT_ISLE.x, BOAT_ISLE.z, 1.2);
-    rowTo({ x: -98, z: 83 });
+    rowTo({ x: -99.4, z: 83 }); // 落在栈桥桥面上(桥面宽 2.2m,两侧是水)
     return;
   }
   if (dist2(player.pos.x, player.pos.z, -100, 100.5) < 5) {
@@ -6900,7 +6904,21 @@ function backstabMul(e) {
   const d = Math.hypot(dx, dz) || 1;
   return (Math.sin(e.yaw) * dx + Math.cos(e.yaw) * dz) / d < -0.35 ? 1.5 : 1;
 }
+// 符文立石:刀锋判定帧劈中身前的立石(与砍人同一刀长与扇面),符文碎光化作金币
+function strikeRuneStones(range, arcDot) {
+  const b = world.runeStrike(player.pos.x, player.pos.z, player.yaw, range, arcDot);
+  if (!b) return;
+  magBurst(b.x, b.y, b.z);
+  sfx.block();
+  cam.shake = Math.max(cam.shake, 0.15);
+  for (let i = 0; i < 5; i++) {
+    const a = rand() * 6.28;
+    addPickup('coin', b.x + Math.cos(a) * 1.4, b.z + Math.sin(a) * 1.4, 30);
+  }
+  callout('符文碎光 +5 金币', 'blue', { x: b.x, y: b.y + 1.2, z: b.z });
+}
 function meleeSweep(dmg, range, arcDot, knock, opts = {}) {
+  if (dmg > 0) strikeRuneStones(range, arcDot);
   const fx = Math.sin(player.yaw), fz = Math.cos(player.yaw);
   const maxHits = opts.maxHits ?? 3;
   const heavy = !!opts.heavy;
@@ -8359,29 +8377,6 @@ function updatePlayer(dt) {
     if (wasAirborne && fallSpeed < -6) spawnDust(player.pos.x, 0.06, player.pos.z, 6, 0.9, 1.5);
   }
 
-  // “?”砖块(从下方顶)
-  if (player.vy > 0) {
-    for (const b of world.qBlocks) {
-      if (b.used) continue;
-      const headY = player.pos.y + 1.55;
-      if (Math.abs(player.pos.x - b.x) < 0.85 && Math.abs(player.pos.z - b.z) < 0.85 &&
-          headY > b.y - 0.5 && headY < b.y + 0.2) {
-        b.used = true;
-        b.bump = 0.25;
-        b.mesh.material.emissiveIntensity = 0; // 符文熄灭,只剩一块旧石头
-        b.mesh.material.color.setHex(0x8f8a80);
-        magBurst(b.x, b.y, b.z);
-        player.vy = -1;
-        sfx.block();
-        for (let i = 0; i < 5; i++) {
-          const a = rand() * 6.28;
-          addPickup('coin', b.x + Math.cos(a) * 1.2, b.z + Math.sin(a) * 1.2, 30);
-        }
-        callout('符文碎光 +5 金币', 'blue', { x: b.x, y: b.y - 1.2, z: b.z });
-      }
-    }
-  }
-
   resolveCollisions(player.pos, 0.45, colliders);
   pushCrowd();
   player.group.position.copy(player.pos);
@@ -8883,19 +8878,20 @@ function updateHUD() {
   const key = hearts + '|' + player.coins + '|' + player.weapon + player.armor + (player.relic ? 'R' : '') + '|' + stars + '|' + missionText + '|' + timer + '|' + promptText + '|' + wIcon + phaseIcon + calText + '|' + bossHp + '|' + Math.floor(player.mp) + player.spellIdx + player.spells.length;
   if (key === hudCache) return;
   hudCache = key;
-  weatherEl.textContent = `${calText} ${phaseIcon} ${wIcon}`;
-  heartsEl.textContent = hearts;
-  coinsEl.textContent = `🪙 ${player.coins}`;
-  wantedEl.textContent = stars;
+  weatherEl.innerHTML = weatherHTML(seasonIdx(), `${SEASONS[seasonIdx()]}·${seasonDay()}日${sp ? '·' + sp.name : ''}`,
+    dayPhase(), weather.state, isWinter() && raining);
+  heartsEl.innerHTML = heartsHTML(full, half, heartsMax - full - half);
+  coinsEl.innerHTML = `${svgIcon('coin')}<span>${player.coins}</span>`;
+  wantedEl.innerHTML = wantedHTML(wanted);
   wantedEl.style.display = wanted > 0 ? 'block' : 'none';
-  missionEl.textContent = missionText;
+  missionEl.innerHTML = richText(missionText);
   const wDef = WEAPONS[player.weapon];
-  equipEl.textContent = // 法术/冷却改由底部技能栏显示,这里只留装备与法力
-    `${wDef.icon} ${wDef.name}${player.swordLv >= 2 ? '+1' : ''}${player.relic ? '·☀️' : ''}` +
-    (player.armor ? ` · 🛡️ ${ARMORS[player.armor].name}` : '') +
+  equipEl.innerHTML = // 法术/冷却改由底部技能栏显示,这里只留装备与法力(统一 SVG 图标)
+    `${iconHTML(wDef.icon, 'ico-s')}<span>${wDef.name}${player.swordLv >= 2 ? '+1' : ''}</span>${player.relic ? svgIcon('relic', 'ico-s') : ''}` +
+    (player.armor ? `<span class="eq-sep">·</span>${svgIcon('armor', 'ico-s')}<span>${ARMORS[player.armor].name}</span>` : '') +
     (player.spells.length
-      ? ` · 法力 ${'🔹'.repeat(Math.floor(player.mp))}${'▫'.repeat(player.maxMp - Math.floor(player.mp))}` : '');
-  promptEl.textContent = promptText;
+      ? `<span class="eq-sep">·</span><span>法力</span>${manaHTML(Math.floor(player.mp), player.maxMp)}` : '');
+  promptEl.innerHTML = richText(promptText);
   promptEl.style.display = promptText ? 'block' : 'none';
   // Boss 血条(仅 Boss 战期间)
   const boss = questRT.boss;
@@ -9600,13 +9596,13 @@ function tick(dt, now) {
   }
   player._lastRX = player.pos.x;
   player._lastRZ = player.pos.z;
-  // 深水规则:银月湖面不可徒步——栈桥走廊(|x+100|<2.2 且 z<92)与湖心岛(距岛心<6.8)除外。
+  // 深水规则:银月湖面不可徒步——栈桥走廊(|x+100|<1.3 即桥面宽,且 z<92)与湖心岛(距岛心<6.8)除外。
   // 每帧检查,步幅远小于缓冲带宽,冲刺也蹚不过去;上岛只能靠小船。
   {
     const ldx = player.pos.x + 100, ldz = player.pos.z - 100;
     const lakeD = Math.hypot(ldx, ldz);
     if (lakeD < 28.5 && lakeD > 6.8 &&
-        !(Math.abs(ldx) < 2.2 && player.pos.z < 92)) {
+        !(Math.abs(ldx) < 1.3 && player.pos.z < 92)) {
       const push = 28.5 / (lakeD || 1);
       player.pos.x = -100 + ldx * push;
       player.pos.z = 100 + ldz * push;
@@ -9765,12 +9761,9 @@ function tick(dt, now) {
   world.underlay.position.z = Math.round(player.pos.z / 64) * 64;
   updateCamera(dt);
 
-  // 风车与砖块动画
+  // 风车与符文立石动画
   for (const w of world.windmills) w.rotation.x += dt * 0.9;
-  for (const b of world.qBlocks) {
-    if (b.bump > 0) { b.bump -= dt; b.mesh.position.y = b.y + Math.sin((0.25 - b.bump) / 0.25 * Math.PI) * 0.3; }
-    else if (!b.used) b.mesh.rotation.y += dt * 0.8;
-  }
+  world.animRunes(dt); // 符文立石:符文呼吸 / 劈中时一晃
   for (const c of world.chests) {
     if (c.opened && c.lid.rotation.x > -1.9) c.lid.rotation.x -= dt * 5;
   }
@@ -9816,7 +9809,7 @@ ctx.mood = () => workspace.mood.v;
 ctx.inDungeon = inDungeon;
 // 地图快照:地图模块只读这些,不碰玩法状态
 ctx.mapView = () => ({ guards, bandits, horses, wanted, warband, beacon, beaconRouted,
-  questGiver: exGroup.visible ? { x: steward.pos.x, z: steward.pos.z } : null });
+  questGiver: exGroup.visible ? { x: steward.pos.x, z: steward.pos.z } : null, wildSpots });
 // ---- 点光入池:场景里现有的火把/篝火/地窖烛台点光全部改为登记,由点光池代为发光 ----
 {
   scene.updateMatrixWorld(true);

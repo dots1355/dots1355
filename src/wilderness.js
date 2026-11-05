@@ -68,10 +68,10 @@ function addTree(g, rng, x, z, biome, cols) {
     built = rng() < 0.6 ? buildPine(rng) : buildDeadTree(rng, { bark: 0x5a5048 });
   } else if (biome === 'snow') {
     built = rng() < 0.85 ? buildPine(rng, { snow: true }) : buildDeadTree(rng, { bark: 0x5a5048 });
-  } else if (biome === 'forest') {
+  } else if (biome === 'forest') { // 林海用 Blender 写实橡树/桦树/松树(与王国森林同一套模型,每棵只几次绘制)
     const roll = rng();
-    built = roll < 0.6 ? buildTree(rng, { leaf: 0x3d7a47 })
-      : roll < 0.9 ? buildPine(rng)
+    built = roll < 0.6 ? buildTree(rng)
+      : roll < 0.93 ? buildPine(rng)
       : buildBush(rng, { leaf: 0x3d7a47 });
   } else { // plains
     const roll = rng();
@@ -80,7 +80,7 @@ function addTree(g, rng, x, z, biome, cols) {
       : buildPine(rng);
   }
   const grp = built.group;
-  const sc = 0.85 + rng() * 0.5;
+  const sc = biome === 'forest' ? 1 + rng() * 0.6 : 0.85 + rng() * 0.5; // 林海的树更高大,林冠才合得拢
   grp.scale.setScalar(sc);
   grp.rotation.y = rng() * 6.28;
   grp.position.set(x, 0, z);
@@ -179,7 +179,7 @@ function* chunkJob(cx, cz) {
   yield;
 
   // 植被密度按群系
-  const treeN = biome === 'forest' ? 12 + Math.floor(rng() * 8)
+  const treeN = biome === 'forest' ? 30 + Math.floor(rng() * 12) // 茂密林海:名副其实(林下另有灌木/蕨/蘑菇,见 vegetation.js)
     : biome === 'plains' || biome === 'hills' ? 3 + Math.floor(rng() * 4)
     : biome === 'swamp' ? 5 + Math.floor(rng() * 4)
     : 3 + Math.floor(rng() * 3);
@@ -523,6 +523,36 @@ function wanted(cx, cz, px, pz) {
   if (Math.abs(centerX) < CORE && Math.abs(centerZ) < CORE) return false; // 核心手工区不生成
   return Math.abs(centerX) <= WORLD_LIMIT && Math.abs(centerZ) <= WORLD_LIMIT; // 世界边界外不生成
 }
+
+// 地图用:已加载区块里的兴趣点(营地/匪窝/断塔/遗迹/大地标),按区块缓存;只读,不碰构建流程。
+// 实例化的地标读区块的放置清单 c.props;没走实例化、单独挂在组里的(例如翻倒的货车)再扫一遍组
+const MARK_OF = { Campfire: 'camp', Tent: 'camp', TentDark: 'bandit', Banner: 'bandit', BrokenTower: 'tower',
+  Ruin: 'ruin', Shrine: 'ruin', Mesa: 'rock', Spires: 'rock', IceRock: 'rock', Cart: 'camp' };
+const _marks = new WeakMap();
+export function wildMarks() {
+  const out = [];
+  for (const c of chunks.values()) {
+    let m = _marks.get(c.group);
+    if (!m) {
+      m = [];
+      const seen = new Set();
+      const add = (name, x, z) => {
+        const kind = MARK_OF[name];
+        if (!kind) return;
+        const key = kind + Math.round(x / 6) + ',' + Math.round(z / 6);
+        if (seen.has(key)) return; // 同一处营地的帐篷/篝火/旗只标一次
+        seen.add(key);
+        m.push({ kind, x, z });
+      };
+      for (const p of c.props || []) add(p.name, p.x, p.z);
+      for (const o of c.group.children) if (o.userData.isProp && o.children[0]) add(o.children[0].name, o.position.x, o.position.z);
+      _marks.set(c.group, m);
+    }
+    for (const k of m) out.push(k);
+  }
+  return out;
+}
+
 export function updateWilderness(px, pz) {
   if (Math.abs(px - lastX) > 24 || Math.abs(pz - lastZ) > 24) {
     lastX = px;

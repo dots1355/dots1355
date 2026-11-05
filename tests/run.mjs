@@ -156,6 +156,62 @@ const TESTS = {
     if (!r.dead) throw new Error('贴脸一刀没砍死 1 血的盗贼');
     if (r.killsDelta < 1) throw new Error('近战击杀没有计入连杀/击杀数');
   },
+  // 符文立石:刀落下的判定帧才劈中(起手不算),劈中后熄灭并撒出金币;背对着砍不中
+  async runestone(page) {
+    await boot(page);
+    const r = await page.evaluate(() => {
+      const g = window.__gtm;
+      for (const gd of g.guards) gd.pos.x += 400; // 别让攻击磁吸转向卫兵
+      const [a, b] = g.world.qBlocks;
+      g.player.pos.set(a.x, 0, a.z + 1.6);
+      g.player.yaw = 0; // 背对立石
+      g.tryAttack();
+      g.step(60);
+      const back = a.used;
+      g.player.pos.set(b.x, 0, b.z + 1.6);
+      g.player.yaw = Math.PI; // 面朝立石
+      const coins0 = g.player.coins;
+      g.tryAttack();
+      const early = b.used;
+      g.step(60);
+      g.step(120); // 走过去捡不到也没关系:金币要么已被吸走,要么散在地上
+      return { back, early, hit: b.used, glow: b.mat.emissiveIntensity, coins: g.player.coins - coins0 };
+    });
+    if (r.back) throw new Error('背对立石也劈中了');
+    if (r.early) throw new Error('起手就判定劈中(应在刀落下的判定帧)');
+    if (!r.hit) throw new Error('面朝立石挥刀没有劈中');
+    if (r.glow !== 0) throw new Error('劈中后符文没有熄灭');
+  },
+  // 后期链不黑屏:开着泛光,把王都广场、磨坊、雨夜几处常见取景完整渲一遍,画面中心不能是全黑
+  // (场景里任何 NaN/Inf 像素都会被泛光糊满全屏;曾因材质端 flatShading 的导数法线在广场整帧全黑)
+  async postfx(page) {
+    await page.setViewportSize({ width: 960, height: 540 });
+    await boot(page);
+    const r = await page.evaluate(async () => {
+      const g = window.__gtm;
+      const core = await import('/src/gfx/core.js');
+      core.bloom.enabled = true;
+      const gl = g.renderer.getContext();
+      const px = new Uint8Array(4 * 64);
+      const views = [[0, 17, 0, -40, 0.42, 'clear'], [120, 40, 140, 20, 0.42, 'clear'], [0, 46, 0, 0, 0.88, 'rain'], [-130, -10, -170, -30, 0.72, 'clear']];
+      const out = [];
+      for (const [x, z, tx, tz, t, w] of views) {
+        g.setTime(t); g.setWeather(w); g.weather.rain = g.weather.targetRain;
+        g.player.pos.set(x, 0, z);
+        g.player.yaw = Math.atan2(tx - x, tz - z);
+        g.setCamView(g.player.yaw + Math.PI, 0.3);
+        g.step(30);
+        await new Promise((res) => requestAnimationFrame(res));
+        core.composer.render();
+        gl.readPixels((gl.drawingBufferWidth / 2) | 0, (gl.drawingBufferHeight / 2) | 0, 8, 8, gl.RGBA, gl.UNSIGNED_BYTE, px);
+        let s = 0;
+        for (let i = 0; i < px.length; i += 4) s += px[i] + px[i + 1] + px[i + 2];
+        out.push(Math.round(s / 64));
+      }
+      return out;
+    });
+    if (r.some((b) => b < 3)) throw new Error(`后期链出黑屏(各取景中心亮度 ${r.join(' / ')})`);
+  },
   // 出招时序:伤害在判定帧(刀落下)才结算;按住蓄力→松手重击 ≥3 倍;轻击打断敌人起手
   async combatTiming(page) {
     await boot(page);

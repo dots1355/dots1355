@@ -8,6 +8,9 @@
 // 把城镇/道路/水域/建筑压平,向外平滑过渡成丘陵。地表网格在 CPU 上一次烘焙
 // (核心 ±512 米一块,荒野每个区块一块),运行时不做任何噪声计算。
 import * as THREE from 'three';
+import { waterBasin, waterProx } from './waterbodies.js';
+import { NOISE_GLSL, PUDDLE_GLSL, PUDDLE_COLOR, PUDDLE_ROUGH, PUDDLE_NORMAL, PUDDLE_EMISSIVE, SURFACE_UNIFORMS_GLSL,
+  bindSurfaceUniforms } from './gfx/surface.js';
 
 // ---------------- 整数哈希值噪声 ----------------
 function hash2(ix, iz) {
@@ -144,11 +147,11 @@ export function mountainH(x, z) {
 const _wh = new Float32Array(NB);
 export function terrainH(x, z) {
   const m = maskAt(x, z);
-  if (m <= 0) return 0;
+  if (m <= 0) return -waterBasin(x, z);
   const w = biomeWeights(x, z, _wh);
   let h = 0;
   for (let i = 0; i < NB; i++) if (w[i] > 0.002) h += w[i] * biomeH(i, x, z);
-  return (h + mountainH(x, z)) * m;
+  return (h + mountainH(x, z)) * m - waterBasin(x, z); // 湖/河/水塘挖成盆地(水位 0)
 }
 
 // ---------------- 核心区平整蒙版(距离场) ----------------
@@ -226,6 +229,7 @@ export function buildMasks(world) {
       stampRect(VEG, VN, VS, f.x, f.z, f.w + 0.8, f.h + 0.8, rot, 0);
     } else if (['wall', 'tower', 'keep', 'house', 'stall', 'tent', 'windmill', 'plaza', 'field', 'water'].includes(f.type)) {
       stampRect(zone, MN, MS, f.x, f.z, f.w + 6, f.h + 6, rot, 1);
+      if (f.shape) continue; // 有真实轮廓的水体:下面按岸线精确禁草(岸边留给芦苇)
       const m = f.type === 'water' ? 1.2 : 0.6;
       stampRect(VEG, VN, VS, f.x, f.z, f.w + m, f.h + m, rot, 0);
     }
@@ -243,6 +247,17 @@ export function buildMasks(world) {
   for (const s of FLAT_SPOTS) {
     if (s[0] === 0) stampRect(zone, MN, MS, s[1], s[2], s[3] * 2, s[4] * 2, 0, 1);
     else stampCircle(zone, MN, MS, s[1], s[2], s[3], 1);
+  }
+  for (const f of world.features) { // 水体:岸线以内(含 0.3m 湿边)不长草
+    if (!f.shape) continue;
+    const R = Math.hypot(f.w, f.h) / 2 + 2;
+    const x0 = Math.max(0, Math.floor((f.x - R + MO) / VS)), x1 = Math.min(VN - 1, Math.ceil((f.x + R + MO) / VS));
+    const z0 = Math.max(0, Math.floor((f.z - R + MO) / VS)), z1 = Math.min(VN - 1, Math.ceil((f.z + R + MO) / VS));
+    for (let iz = z0; iz <= z1; iz++) {
+      for (let ix = x0; ix <= x1; ix++) {
+        if (waterProx((ix + 0.5) * VS - MO, (iz + 0.5) * VS - MO) > -0.3) VEG[iz * VN + ix] = 0;
+      }
+    }
   }
   stampCircle(VEG, VN, VS, 0, 5, 13.5, 0);                 // 喷泉广场
   stampRect(VEG, VN, VS, 352, -280, 96, 96, 0, 0);         // 地窖迷宫
@@ -324,22 +339,22 @@ export function groundNormalY(x, z) {
 // ---------------- 地表配色 ----------------
 const lin = (hex) => new THREE.Color(hex); // ColorManagement 下 setHex 自动转线性
 const BIOME_COL = [
-  [lin(0xa0955f), lin(0x87894f)], // 平原:tussock 金卡其 ↔ 橄榄草
+  [lin(0x969858), lin(0x7c8a4b)], // 平原:金橄榄 ↔ 青橄榄草(比旧的卡其多一分绿,远看不发灰)
   [lin(0x56633a), lin(0x4a5233)], // 林地:苔绿 ↔ 腐叶褐
   [lin(0xd8b67c), lin(0xc49a62)], // 荒漠:亮沙 ↔ 赭沙
   [lin(0xe8eef4), lin(0xc9d4de)], // 雪原:新雪 ↔ 阴影雪
   [lin(0x4f5236), lin(0x3e4430)], // 沼泽:泥橄榄 ↔ 黑泥
   [lin(0x5c544c), lin(0x3f3935)], // 灰烬:灰褐 ↔ 焦黑
   [lin(0x8b857b), lin(0x6f6a62)], // 龙骨:碎石灰 ↔ 暗岩
-  [lin(0x8f9558), lin(0x7c8550)], // 丘陵:更绿的草坡
+  [lin(0x899a52), lin(0x6e8747)], // 丘陵:更绿的草坡
 ];
 const ROCK_COL = lin(0x77726a), SNOWCAP = lin(0xf1f5f9);
 // 地图配色(小地图/大地图):按群系权重混合的 sRGB 颜色 + 高度明暗;按 16m 格缓存
 const _mapCache = new Map();
 const _mw = new Float32Array(NB);
 const MAP_RGB = [
-  [0x93, 0x8f, 0x5d], [0x4e, 0x63, 0x3a], [0xd4, 0xb2, 0x78], [0xe4, 0xea, 0xf0],
-  [0x4c, 0x52, 0x38], [0x5a, 0x53, 0x4c], [0x88, 0x83, 0x79], [0x7f, 0x8f, 0x52],
+  [0x8c, 0x92, 0x58], [0x4e, 0x63, 0x3a], [0xd4, 0xb2, 0x78], [0xe4, 0xea, 0xf0],
+  [0x4c, 0x52, 0x38], [0x5a, 0x53, 0x4c], [0x88, 0x83, 0x79], [0x76, 0x8c, 0x4e],
 ];
 export function mapColor(x, z) {
   const ix = Math.floor(x / 16), iz = Math.floor(z / 16);
@@ -386,10 +401,17 @@ function groundColor(x, z, ny, h, out) {
     out.lerp(ROCK_COL, smooth(6, 26, mh) * 0.55);
     out.lerp(SNOWCAP, smooth(36, 58, mh) * (1 - steep * 0.55));
   }
+  // 水边:水下是泥滩(越深越暗),岸上两三米是潮湿的深色泥土
+  const wp = waterProx(x, z);
+  if (wp > -3.5) {
+    if (h < 0) out.lerp(MUD_COL, Math.min(1, 0.55 + -h * 0.5));
+    else out.lerp(BANK_COL, smooth(-3.5, 0.2, wp) * 0.55);
+  }
   const k = 0.9 + fine * 0.2;
   out.r *= k; out.g *= k; out.b *= k;
   return out;
 }
+const MUD_COL = lin(0x3d3a2c), BANK_COL = lin(0x5a5338);
 const _wc = new Float32Array(NB);
 
 // ---------------- 地表材质(共享) ----------------
@@ -439,11 +461,29 @@ export function getGroundMaterial(normalMap) {
   groundMat.userData.uSnow = { value: 0 };
   groundMat.onBeforeCompile = (sh) => {
     sh.uniforms.uSnow = groundMat.userData.uSnow;
+    bindSurfaceUniforms(sh);
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vSfW;')
+      .replace('#include <project_vertex>', '#include <project_vertex>\nvSfW = (modelMatrix * vec4(transformed, 1.0)).xyz;');
     sh.fragmentShader = sh.fragmentShader
-      .replace('#include <common>', '#include <common>\nuniform float uSnow;')
+      .replace('#include <common>', `#include <common>
+        uniform float uSnow;
+        ${SURFACE_UNIFORMS_GLSL}
+        varying vec3 vSfW;
+        ${NOISE_GLSL}
+        ${PUDDLE_GLSL}`)
       .replace('#include <color_fragment>', `#include <color_fragment>
         float snowK = uSnow * smoothstep(0.82, 0.96, normalize(vNormal).y);
-        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.86, 0.9, 0.95), snowK);`);
+        diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.86, 0.9, 0.95), snowK);
+        // 雨天:泥土整体压暗,平地上积出水洼(见 gfx/surface.js;积雪处不积水)
+        diffuseColor.rgb *= 1.0 - 0.24 * uWet;
+        ${PUDDLE_COLOR}
+        sfPud *= 1.0 - snowK;`)
+      .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
+        roughnessFactor = mix(roughnessFactor, 0.42, uWet * 0.7);
+        ${PUDDLE_ROUGH}`)
+      .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>\n${PUDDLE_NORMAL}`)
+      .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>\n${PUDDLE_EMISSIVE}`);
   };
   return groundMat;
 }
