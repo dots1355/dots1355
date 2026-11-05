@@ -75,6 +75,13 @@
   #timer { display: none; }
   #minimap { position: absolute; left: 18px; bottom: 18px; border-radius: 10px;
     box-shadow: 0 4px 16px rgba(0,0,0,0.5); }
+  /* 窄窗口(如 960×540):对话框/手账让出左下角小地图的宽度,不再被小地图压住说话人名字 */
+  @media (max-width: 1180px) {
+    #dialog { left: 236px; right: 18px; width: auto; transform: none; }
+  }
+  /* 拍照模式:整套 HUD 一律藏起(技能栏等每帧会被别的系统复位可见性,这里用 !important 压住) */
+  body.photo #actionbar, body.photo #keyhint, body.photo #prompt, body.photo #combo,
+  body.photo #bubble { visibility: hidden !important; }
   #prompt { position: absolute; bottom: 96px; left: 50%; transform: translateX(-50%);
     font-size: 16px; font-weight: bold; background: rgba(16,11,6,0.8);
     border: 1px solid #b08d3e; border-radius: 20px; padding: 7px 18px; color: #ffe9a0; display: none; }

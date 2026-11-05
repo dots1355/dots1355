@@ -98,15 +98,16 @@ loft('Arm', [
     (-0.47, 0.045, 0.055, -0.012), # 指部(拳形)
 ], [shirt, skin], lambda li: 0 if li <= 3 else 1)
 
-# ---- 躯干(髋摆→腰→胸→肩→颈,含束腰下摆) ----
+# ---- 躯干(外翻的短袍下摆→束腰→胸→肩→颈):腰带下面散开一圈袍摆,不再是一根圆柱 ----
 loft('Torso', [
-    (-0.31, 0.255, 0.20, 0),   # 下摆(略宽)
-    (-0.24, 0.235, 0.185, 0),
-    (-0.10, 0.205, 0.165, 0),  # 腰
-    (0.06, 0.255, 0.195, 0.01),  # 胸
-    (0.20, 0.29, 0.185, 0.005),  # 肩
-    (0.27, 0.20, 0.15, 0),
-    (0.30, 0.09, 0.09, 0),     # 颈
+    (-0.39, 0.292, 0.238, 0.0),   # 袍摆(外翻)
+    (-0.33, 0.27, 0.218, 0.0),
+    (-0.24, 0.24, 0.192, 0.0),    # 腰带下
+    (-0.10, 0.206, 0.165, 0.0),   # 腰
+    (0.06, 0.262, 0.2, 0.012),    # 胸
+    (0.19, 0.3, 0.188, 0.005),    # 肩
+    (0.26, 0.21, 0.155, 0.0),
+    (0.30, 0.09, 0.09, 0.0),      # 颈
 ], [shirt], lambda li: 0)
 
 # ---- 腰带 ----
@@ -186,6 +187,6 @@ for sx in (-1, 1):
     bpy.context.collection.objects.link(ob)
 
 path = os.path.join(OUT, 'human.glb')
-bpy.ops.export_scene.gltf(filepath=path, export_format='GLB', export_apply=True, export_yup=True)
+bpy.ops.export_scene.gltf(filepath=path, export_format='GLB', export_apply=True, export_yup=True, export_texcoords=False)
 total = sum(len(o.data.polygons) for o in bpy.context.collection.objects)
 print(f'human.glb faces(细分前)≈{total} → {os.path.getsize(path) // 1024}KB')

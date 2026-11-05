@@ -6,6 +6,7 @@
 import * as THREE from 'three';
 import { nordicColor } from './entities.js';
 import { plainStandard, vpbrMaterial, bakeVPBR, INSTANCED_DEPTH } from './gfx/vpbr.js';
+import { mergeGeometries } from '../lib/jsm/utils/BufferGeometryUtils.js';
 
 // ---- 可复现随机(素材池用固定种子,形状稳定) ----
 function makeRng(seed) {
@@ -142,6 +143,7 @@ export const NATURE_SPEC = {
   DeadTree2: { r: 0.45, sink: 0.1 }, Willow: { r: 0.55, sink: 0.1 }, Log: { r: 0, sink: 0.12, log: true },
   Stump: { r: 0.6, sink: 0.08 }, Bush1: { r: 0, sink: 0.15 }, Bush2: { r: 0, sink: 0.15 },
   Ribcage: { r: 0, sink: 0.25 },
+  Crag1: { r: 2.2, sink: 0.7 }, Crag2: { r: 2.4, sink: 0.7 }, // 山脊岩峰(雪顶)
   // camp.glb:营地与路边
   Tent: { r: 1.5, sink: 0.04 }, TentDark: { r: 1.5, sink: 0.04 }, Campfire: { r: 0, sink: 0.03 },
   Cart: { r: 0, sink: 0.05, line: [-1.2, 0, 1.1], lr: 0.8 }, Well: { r: 1.25, sink: 0.05 },
@@ -191,7 +193,51 @@ export function setNatureModels(root) {
     NATURE[name] = o;
   }
 }
-export function hasNature() { return Object.keys(NATURE).length > 0; }
+export function hasNature() { return Object.keys(NATURE).some((k) => !k.startsWith('Far_')); } // 远景树冠团是程序化的,不算
+// 原始模板(只读:world.js 拿营地道具按材质槽配贴图,另建自己的几何,不改模板)
+export function natureTemplate(name) { return NATURE[name] || null; }
+
+// 立石(符文立石 / 先祖石环 / 铭文碑共用):六棱、收分、斜顶的粗糙石板,刻面 + 顶点色(根部青苔、顶部风化发白)
+// + 正面平面投影 UV(刻字/石纹贴图只落在正反两块大面上),脚下一圈半埋的碎石。
+// w 宽度倍率、h 高、d 前后压扁比例、slant 斜顶量、rubble 碎石块数;同一 seed 同一块石头(默认参数即符文立石)
+export function standingStoneGeo(seed, { w = 1, h = 2.15, d = 0.62, slant = 0.26, rubble = 6 } = {}) {
+  let sd = seed;
+  const rr = () => { sd = (sd * 16807) % 2147483647; return sd / 2147483647; };
+  const k = h / 2.15; // 青苔/风化带随高度等比
+  const parts = [];
+  const body = new THREE.CylinderGeometry(0.5 * w, 0.56 * w, h, 6, 4, false, Math.PI / 6).translate(0, h / 2, 0);
+  const p = body.attributes.position;
+  const bump = new Map(); // 同一位置的顶点同样扰动(棱面不裂缝)
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
+    const key = `${x.toFixed(3)},${y.toFixed(3)},${z.toFixed(3)}`;
+    if (!bump.has(key)) bump.set(key, [(rr() - 0.5) * 0.08 * w, (rr() - 0.5) * 0.06 * k, (rr() - 0.5) * 0.05 * w]);
+    const [jx, jy, jz] = bump.get(key);
+    const t = y / h; // 0 底 → 1 顶:上窄下宽、前后压扁成板、斜顶
+    p.setXYZ(i, x * (1 - t * 0.2) + jx, y + jy + x * slant * t * t, z * d * (1 - t * 0.12) + jz);
+  }
+  parts.push(body.toNonIndexed());
+  for (let j = 0; j < rubble; j++) { // 脚下半埋的碎石(二十面体本就是非索引几何)
+    const a = (j / rubble) * Math.PI * 2 + rr() * 0.7, r = (0.72 + rr() * 0.3) * w, s = (0.12 + rr() * 0.14) * w;
+    parts.push(new THREE.IcosahedronGeometry(s, 0).scale(1.2, 0.6, 1)
+      .translate(Math.cos(a) * r, s * 0.15, Math.sin(a) * r * 0.8));
+  }
+  const g = mergeGeometries(parts.map((q) => { q.deleteAttribute('uv'); q.deleteAttribute('normal'); return q; }));
+  g.computeVertexNormals();
+  const P = g.attributes.position, col = new Float32Array(P.count * 3), uv = new Float32Array(P.count * 2);
+  const lin = (v) => Math.pow(v, 2.2); // 顶点色按线性空间进着色器:这里按 sRGB 调好再换算
+  for (let i = 0; i < P.count; i++) {
+    const x = P.getX(i), y = P.getY(i), n = Math.sin(x * 9.1 + y * 5.3 + P.getZ(i) * 7.7) * 0.5 + 0.5;
+    const moss = Math.max(0, 1 - y / (0.8 * k)) * (0.4 + 0.4 * n); // 根部青苔(橄榄绿,不是薄荷绿)
+    const top = Math.max(0, (y - 1.6 * k) / (0.6 * k)); // 顶部风化发白
+    const base = (0.5 + 0.1 * n + 0.16 * top) * (1 - 0.22 * moss);
+    col[i * 3] = lin(base * (1 - moss * 0.3)); col[i * 3 + 1] = lin(base * (1 - moss * 0.1)); col[i * 3 + 2] = lin(base * (0.95 - moss * 0.55));
+    uv[i * 2] = x / (0.78 * w) + 0.5; uv[i * 2 + 1] = (y - 0.42 * k) / (1.25 * k); // 正面平面投影
+  }
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  return g;
+}
 // 其他 GLB 模板(写实橡树/白桦/松树)也登记进实例化管线:核心森林几百棵树只占十来次绘制
 export function registerNatureTemplate(name, obj, spec) {
   obj.updateMatrixWorld(true);
@@ -249,23 +295,72 @@ function sharedGeo(src) {
 }
 const smallInst = new Set(); // 小件(灌木/树桩/木箱……)的实例块:远了整块不画
 const bigInst = new Set();   // 其余(树、岩石、地标)的实例块:只有流畅档才按视距收
-export function buildNatureInstances(list) {
+// 树的远近两套:近处画 Blender 树,一块实例的包围盒离镜头超过 TREE_NEAR 米就换成同位置、同朝向缩放的
+// 远景树冠团(十几个三角形,不投影)——林海一块几百棵树,远处才画得起
+const treeLOD = new Set(); // { near: [im], far: [im], box }
+const TREE_NEAR = 28;
+const FAR_TREE = {};
+{
+  const leafP = new THREE.MeshStandardMaterial({ color: new THREE.Color(0.07, 0.11, 0.09), roughness: 0.9 });
+  const leafO = new THREE.MeshStandardMaterial({ color: new THREE.Color(0.12, 0.15, 0.07), roughness: 0.9 });
+  const leafB = new THREE.MeshStandardMaterial({ color: new THREE.Color(0.45, 0.32, 0.1), roughness: 0.9 });
+  const barkD = new THREE.MeshStandardMaterial({ color: new THREE.Color(0.2, 0.15, 0.11), roughness: 0.95 });
+  const barkW = new THREE.MeshStandardMaterial({ color: new THREE.Color(0.58, 0.57, 0.52), roughness: 0.95 });
+  const trunk = (x, y, z, r) => {
+    const g = new THREE.CylinderGeometry(r * 0.7, r, 1, 5, 1, true);
+    const len = Math.hypot(x, y, z);
+    g.translate(0, 0.5, 0).scale(1, len, 1);
+    g.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(x, y, z).normalize()));
+    return g;
+  };
+  const blob = (cx, cy, cz, rx, ry, rz) => new THREE.IcosahedronGeometry(1, 0).scale(rx, ry, rz).translate(cx, cy, cz);
+  const mk = (parts) => {
+    const g = new THREE.Group();
+    for (const [geo, mat] of parts) {
+      const m = new THREE.Mesh(facetGeoLocal(geo), mat);
+      g.add(m);
+    }
+    for (const m of [leafP, leafO, leafB, barkD, barkW]) m.userData.shared = true;
+    g.updateMatrixWorld(true);
+    return g;
+  };
+  FAR_TREE.Tree_pine = mk([[new THREE.ConeGeometry(1.45, 5.3, 7).translate(0, 3.15, 0), leafP], [trunk(0, 1.2, 0, 0.18), barkD]]);
+  FAR_TREE.Tree_oak = mk([[blob(-1.95, 5.65, 0.83, 2.6, 1.75, 1.9), leafO], [trunk(-1.5, 4.5, 0.6, 0.3), barkD]]);
+  FAR_TREE.Tree_birch = mk([[blob(-0.5, 6.6, -1.46, 2.4, 1.4, 1.9), leafB], [trunk(-0.4, 5.6, -1.2, 0.2), barkW]]);
+  for (const k of Object.keys(FAR_TREE)) {
+    NATURE['Far_' + k] = FAR_TREE[k];
+    NATURE_SPEC['Far_' + k] = { r: 0, sink: 0.12 };
+  }
+}
+function facetGeoLocal(g) {
+  const n = g.index ? g.toNonIndexed() : g;
+  n.deleteAttribute('normal');
+  n.deleteAttribute('uv');
+  n.computeVertexNormals();
+  n.userData.shared = true;
+  return n;
+}
+// cell:分格边长(荒野区块传区块边长,一块一格:同种地标一块只画一次)
+export function buildNatureInstances(list, cell = NAT_CELL) {
   const groups = new Map();
   for (const p of list) {
     if (!NATURE[p.name]) continue;
-    const key = `${p.name}|${Math.floor(p.x / NAT_CELL)},${Math.floor(p.z / NAT_CELL)}`;
+    const key = `${p.name}|${Math.floor(p.x / cell)},${Math.floor(p.z / cell)}`;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(p);
   }
   const root = new THREE.Group();
+  root.userData.treeLOD = [];
   const M = new THREE.Matrix4(), P = new THREE.Matrix4(), Q = new THREE.Quaternion();
   const S = new THREE.Vector3(), T = new THREE.Vector3(), UP = new THREE.Vector3(0, 1, 0);
+  const lodOf = new Map(); // 格 → 这一格的树 LOD 条目(几种树共用一个)
   for (const [key, arr] of groups) {
     const name = key.slice(0, key.indexOf('|'));
+    const far = FAR_TREE[name] ? 'Far_' + name : null;
     const parts = instParts(name);
     const small = !name.startsWith('Tree_') && parts.length && parts[0].geometry.boundingSphere &&
       parts[0].geometry.boundingSphere.radius < 1.6;
-    for (const { geometry, material, rel } of parts) {
+    const make = (geometry, material, rel, shadow) => {
       const im = new THREE.InstancedMesh(sharedGeo(geometry), material, arr.length);
       arr.forEach((p, i) => {
         Q.setFromAxisAngle(UP, p.yaw);
@@ -277,21 +372,63 @@ export function buildNatureInstances(list) {
       });
       im.instanceMatrix.needsUpdate = true;
       im.computeBoundingSphere();
-      im.castShadow = true;
+      im.castShadow = shadow;
       im.receiveShadow = true;
       im.customDepthMaterial = INSTANCED_DEPTH;
       im.frustumCulled = true;
       im.matrixAutoUpdate = false;
-      (small ? smallInst : bigInst).add(im);
       root.add(im);
+      return im;
+    };
+    const nearIms = [];
+    for (const { geometry, material, rel } of parts) {
+      const im = make(geometry, material, rel, true);
+      if (far) nearIms.push(im);
+      else (small ? smallInst : bigInst).add(im);
     }
+    if (far) {
+      const cellKey = key.slice(key.indexOf('|') + 1);
+      let e = lodOf.get(cellKey);
+      if (!e) {
+        e = { near: [], far: [], farItems: [], box: new THREE.Box2(), isNear: true };
+        lodOf.set(cellKey, e);
+        treeLOD.add(e);
+        root.userData.treeLOD.push(e);
+      }
+      e.near.push(...nearIms);
+      // 远景树冠团不实例化:这一格所有树的树冠团直接烘成一块顶点色网格(几种树合起来一次绘制)
+      const tpl = FAR_TREE[name];
+      for (const p of arr) {
+        e.box.expandByPoint(new THREE.Vector2(p.x, p.z));
+        Q.setFromAxisAngle(UP, p.yaw);
+        S.setScalar(p.s);
+        T.set(p.x, p.y, p.z);
+        P.compose(T, Q, S);
+        for (const m of tpl.children) e.farItems.push({ geometry: m.geometry, material: m.material, matrix: new THREE.Matrix4().multiplyMatrices(P, m.matrixWorld) });
+      }
+    }
+  }
+  for (const e of lodOf.values()) {
+    const geo = bakeVPBR(e.farItems);
+    geo.computeBoundingSphere();
+    const mesh = new THREE.Mesh(geo, vpbrMaterial());
+    mesh.castShadow = false;
+    mesh.receiveShadow = true;
+    mesh.matrixAutoUpdate = false;
+    mesh.layers.mask = 0;
+    mesh.userData.farTrees = true;
+    root.add(mesh);
+    e.far.push(mesh);
+    e.farItems = null;
   }
   root.userData.noSnap = true;
   return root;
 }
 // 卸载(荒野区块):实例块退出远景剔除名单;实例矩阵与包装几何释放,共享的模板缓冲保留
 export function releaseNatureInstances(root) {
+  for (const e of root.userData.treeLOD || []) treeLOD.delete(e);
   for (const im of root.children) {
+    if (im.userData.farTrees) { im.geometry.dispose(); continue; } // 烘好的远景树冠团是独占几何
     if (!im.isInstancedMesh) continue;
     smallInst.delete(im);
     bigInst.delete(im);
@@ -325,6 +462,15 @@ export function updateNatureLOD(cx, cz, far, shadows = true, bigFar = Infinity) 
     const s = im.boundingSphere;
     if (!s) continue;
     im.layers.mask = Math.hypot(s.center.x - cx, s.center.z - cz) - s.radius > bigFar ? 0 : 1;
+  }
+  // 树:离这一格树的包围盒近 → Blender 树(投影);远 → 树冠团。8m 回差,免得在边界上来回切
+  for (const e of treeLOD) {
+    const b = e.box;
+    const d = Math.hypot(Math.max(b.min.x - cx, 0, cx - b.max.x), Math.max(b.min.y - cz, 0, cz - b.max.y));
+    e.isNear = d < TREE_NEAR + (e.isNear ? 8 : 0);
+    const gone = d > bigFar;
+    for (const im of e.near) im.layers.mask = e.isNear && !gone ? 1 : 0;
+    for (const im of e.far) im.layers.mask = !e.isNear && !gone ? 1 : 0;
   }
 }
 // 返回 { group, cols:[{dx,dz,r}] };cols 是相对放置点的碰撞圆(已含缩放与朝向)

@@ -116,6 +116,16 @@ function hoodGeo() {
   if (_hatGeo.hood) return _hatGeo.hood;
   const shell = new THREE.SphereGeometry(HOOD_R, 24, 16, 0, Math.PI * 2, 0, Math.PI * 0.74);
   const p = shell.attributes.position, v = new THREE.Vector3(), ax = new THREE.Vector3();
+  // 三个角都落在开口锥里的三角形整片删掉:推到开口边上的三个点方位各不相同,三角形并不退化,
+  // 会在脸前张一张"布膜"(只有鼻尖戳得出来——上一版主角的绿脸就是它)
+  const inside = new Uint8Array(p.count);
+  for (let i = 0; i < p.count; i++) inside[i] = Math.acos(Math.min(1, v.fromBufferAttribute(p, i).normalize().dot(HOOD_C))) < HOOD_A ? 1 : 0;
+  const src = shell.index.array, keep = [];
+  for (let k = 0; k < src.length; k += 3) {
+    if (inside[src[k]] && inside[src[k + 1]] && inside[src[k + 2]]) continue;
+    keep.push(src[k], src[k + 1], src[k + 2]);
+  }
+  shell.setIndex(keep);
   for (let i = 0; i < p.count; i++) {
     v.fromBufferAttribute(p, i).normalize();
     const b = Math.acos(Math.min(1, v.dot(HOOD_C)));
@@ -184,6 +194,76 @@ function strawHatGeo() { // 草帽:圆柱帽冠 + 宽檐(檐边微垂)
 }
 const CAP_COLS = [0x7a5a3a, 0x8a6a40, 0x6a4a42, 0x5a6470, 0x7a7466];
 
+// ---- 发型与胡子(几何全场共享)----
+// 发壳:比头大一圈的球冠,按方位角剪出发际线(额前刘海齐眉、两鬓到耳上、脑后到后颈),下缘参差成发梢,
+// 表面按方位起伏出几簇发缕;side 是侧分(一边刘海压低、另一边掀起),long 的脑后再垂一片到肩
+const HAIR_STYLES = ['crop', 'tied', 'long', 'bald', 'crop', 'side'];
+function hairGeo(kind) {
+  const key = 'hair_' + kind;
+  if (_hatGeo[key]) return _hatGeo[key];
+  const R = 0.218;
+  const top = kind === 'bald';
+  const g = top
+    ? new THREE.SphereGeometry(R, 20, 8, Math.PI * 0.33, Math.PI * 1.34, Math.PI * 0.36, Math.PI * 0.36) // 秃顶:只剩脑后一圈马蹄形
+    : new THREE.SphereGeometry(R, 22, 12, 0, Math.PI * 2, 0, Math.PI * 0.8);
+  const p = g.attributes.position;
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i), z = p.getZ(i);
+    let y = p.getY(i);
+    const az = Math.atan2(x, z), front = Math.cos(az); // 1 = 脸前,-1 = 脑后
+    let line = front > 0 ? -0.03 + 0.115 * Math.pow(front, 1.4) : -0.03 - (kind === 'long' ? 0.14 : 0.1) * Math.pow(-front, 1.2);
+    if (kind === 'side') line += 0.035 * Math.sin(az) * Math.max(0, front); // 侧分:一边压低一边掀起
+    line += 0.012 * Math.sin(az * 13) + 0.006 * Math.sin(az * 29);       // 参差的发梢
+    if (y < line) y = line;
+    const tuft = 1 + 0.035 * Math.sin(az * 5 + y * 30) * Math.sin(y * 21 + az * 2) + (y > 0.12 ? 0.025 : 0); // 发缕 + 头顶蓬一点
+    p.setXYZ(i, x * tuft, y * (y > 0 ? 1.04 : 1), z * tuft + 0.004);
+  }
+  g.computeVertexNormals();
+  const parts = [g.toNonIndexed()];
+  if (kind === 'tied') { // 脑后挽一个髻,垂一束马尾
+    parts.push(new THREE.SphereGeometry(0.058, 10, 7).translate(0, 0.03, -0.215).toNonIndexed());
+    parts.push(new THREE.CylinderGeometry(0.042, 0.016, 0.24, 8).translate(0, -0.12, 0).rotateX(0.25).translate(0, 0.0, -0.235).toNonIndexed());
+  } else if (kind === 'long') { // 披到肩上的一片
+    const back = new THREE.CylinderGeometry(0.205, 0.235, 0.22, 14, 2, true, Math.PI * 0.62, Math.PI * 0.76).translate(0, -0.19, 0);
+    const bp = back.attributes.position;
+    for (let i = 0; i < bp.count; i++) bp.setY(i, bp.getY(i) + (bp.getY(i) < -0.25 ? 0.02 * Math.sin(Math.atan2(bp.getX(i), bp.getZ(i)) * 11) : 0));
+    back.computeVertexNormals();
+    parts.push(back.toNonIndexed());
+  }
+  for (const q of parts) { q.deleteAttribute('uv'); }
+  _hatGeo[key] = sharedGeo(parts.length > 1 ? mergeGeometries(parts) : parts[0]);
+  return _hatGeo[key];
+}
+function beardGeo() { // 络腮胡:沿下颌的一圈 + 唇上的八字须
+  if (_hatGeo.beard) return _hatGeo.beard;
+  const jaw = new THREE.SphereGeometry(0.205, 16, 8, Math.PI * 0.06, Math.PI * 0.88, Math.PI * 0.55, Math.PI * 0.3); // 从左颊经下巴到右颊
+  const jp = jaw.attributes.position;
+  for (let i = 0; i < jp.count; i++) { // 上沿:两颊高(连着鬓角),正前方压到嘴下——露出嘴,胡子只包下巴
+    const x = jp.getX(i), z = jp.getZ(i);
+    let y = jp.getY(i);
+    const front = Math.max(0, z / 0.205);
+    y = Math.min(y, -0.04 - 0.085 * front * front);
+    jp.setXYZ(i, x * 1.08, y - (y < -0.15 ? 0.035 * front : 0), z * 1.1 + 0.006);
+  }
+  jaw.computeVertexNormals();
+  const mus = [];
+  for (const s of [-1, 1]) {
+    mus.push(new THREE.CapsuleGeometry(0.014, 0.055, 3, 6).rotateZ(Math.PI / 2 - s * 0.35).translate(s * 0.032, -0.072, 0.19).toNonIndexed());
+  }
+  const parts = [jaw.toNonIndexed(), ...mus];
+  for (const q of parts) { q.deleteAttribute('uv'); }
+  _hatGeo.beard = sharedGeo(mergeGeometries(parts));
+  return _hatGeo.beard;
+}
+// 发型/胡子按发色与衣色确定(不消耗随机数:同一身打扮永远同一个发型,也不打乱玩法随机序列)
+function hairStyleOf(opts) {
+  const h = (Math.imul((opts.hair ?? 0x3a2a1a) | 0, 2654435761) ^ Math.imul((opts.shirt ?? 0) | 0, 40503) ^ Math.imul((opts.pants ?? 0) | 0, 9176)) >>> 0;
+  const grey = new THREE.Color(opts.hair ?? 0x3a2a1a).getHSL({}).l > 0.6; // 灰白头发:多半是老人
+  const kind = grey ? (h % 3 === 0 ? 'crop' : 'bald') : HAIR_STYLES[h % HAIR_STYLES.length];
+  const beard = kind === 'bald' || (h >>> 8) % 3 === 0;
+  return { kind, beard };
+}
+
 // 帽盔/兜帽/头发/佩剑:两条构建路径共用
 function applyHumanProps(g, parts, opts) {
   const { hair = 0x3a2a1a, helmet = false, cap = false, hood = false, sword = false, ranger = false,
@@ -201,13 +281,13 @@ function applyHumanProps(g, parts, opts) {
     mantle.position.set(0, 0.25, 0); // 披肩顶口落在下巴以下,不遮嘴
     mantle.castShadow = true;
     if (parts.body) parts.body.add(mantle);
-    const capeGeo = new THREE.PlaneGeometry(0.6, 0.86, 2, 6);
+    const capeGeo = new THREE.PlaneGeometry(0.62, 0.9, 10, 8);
     const cp = capeGeo.attributes.position;
-    for (let i = 0; i < cp.count; i++) { // 微微兜起的弧面,下摆更宽
+    for (let i = 0; i < cp.count; i++) { // 兜起的弧面,下摆更宽;越往下褶子越深(布料垂坠感),下缘不齐
       const y = cp.getY(i), x = cp.getX(i);
-      const t = (0.43 - y) / 0.86;
-      cp.setX(i, x * (1 + t * 0.35));
-      cp.setZ(i, -Math.abs(x) * 0.25 - t * 0.05);
+      const t = (0.45 - y) / 0.9;
+      const fold = Math.sin((x / 0.62 + 0.5) * Math.PI * 5) * 0.045 * (0.3 + t);
+      cp.setXYZ(i, x * (1 + t * 0.42), y + (t > 0.95 ? 0.025 * Math.sin(x * 31) : 0), -Math.abs(x) * 0.24 - t * 0.06 + fold);
     }
     capeGeo.computeVertexNormals();
     capeGeo.translate(0, -0.43, 0); // 轴心在领口,便于摆动
@@ -241,10 +321,12 @@ function applyHumanProps(g, parts, opts) {
     head.add(h);
     head.add(new THREE.Mesh(hoodRimGeo(), hatMat(mask ? 0x1e1e22 : 0x3a3428)));
   } else {
-    const h = new THREE.Mesh(new THREE.SphereGeometry(0.215, 10, 7, 0, Math.PI * 2, 0, Math.PI * 0.55), lambert(hair, { roughness: 0.95 }));
-    h.position.y = 0.015;
-    head.add(h);
+    const st = hairStyleOf(opts);
+    const hm = hatMat(hair, { roughness: 0.95 });
+    head.add(new THREE.Mesh(hairGeo(st.kind), hm));
+    if (st.beard) head.add(new THREE.Mesh(beardGeo(), hm));
   }
+  if ((cap || straw || helmet) && hairStyleOf(opts).beard) head.add(new THREE.Mesh(beardGeo(), hatMat(hair, { roughness: 0.95 })));
   if (mask) head.add(new THREE.Mesh(maskGeo(), hatMat(0x3a2a28, { side: THREE.DoubleSide }))); // 蒙面
   if (sword) {
     const swordGroup = new THREE.Group();
@@ -480,8 +562,10 @@ function buildHorse(color = 0x8b5a2b, saddled = true, opts = {}) {
     const maneHex2 = opts.antlers ? darkHex : (opts.mane ?? 0x2e2018);
     const slots = { coat: color, dark: darkHex, mane: maneHex2 };
     const body = tintClone(HORSE_TPL, slots);
-    const legTpl = body.getObjectByName('HorseLeg');
-    if (legTpl) legTpl.parent.remove(legTpl);
+    // 前后腿各一套模板(后腿跗关节向后折);老模板只有一条 HorseLeg
+    const legF = body.getObjectByName('HorseLegF') || body.getObjectByName('HorseLeg');
+    const legH = body.getObjectByName('HorseLegH') || legF;
+    for (const t of [legF, legH]) if (t && t.parent) t.parent.remove(t);
     const toRemove = [];
     body.traverse((o) => {
       if (o.name.startsWith('Antlers') && !opts.antlers) toRemove.push(o);
@@ -494,6 +578,7 @@ function buildHorse(color = 0x8b5a2b, saddled = true, opts = {}) {
     for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
       const pivot = new THREE.Group();
       pivot.position.set(0.24 * sx, 0.85, 0.62 * sz);
+      const legTpl = sz > 0 ? legF : legH;
       if (legTpl) pivot.add(tintClone(legTpl, slots));
       g.add(pivot);
       parts.legs.push(pivot);

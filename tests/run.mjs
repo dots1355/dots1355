@@ -40,7 +40,7 @@ async function boot(page, { clear = true, start = true } = {}) {
     await page.waitForFunction(() => window.__gtm, null, { timeout: 240000 });
   }
   if (start) {
-    await page.click('#title');
+    await page.click('#title', { timeout: 180000 }); // 机器很忙时标题动画迟迟不"稳定",别 30 秒就判失败
     await page.waitForTimeout(1200);
     await page.evaluate(() => { const g = window.__gtm; g.skipPrologue(true); g.setWeather('clear'); g.toastQueue.length = 0; });
   }
@@ -321,7 +321,7 @@ const TESTS = {
   // 序章教学:锁定 → 翻滚 → 格挡 → 出刀 → 魔光弹 → 清场;做到才进下一步,结束回满血并送马
   async prologue(page) {
     await boot(page, { start: false });
-    await page.click('#title');
+    await page.click('#title', { timeout: 180000 }); // 机器很忙时标题动画迟迟不"稳定",别 30 秒就判失败
     await page.waitForTimeout(800);
     const r = await page.evaluate(() => {
       const g = window.__gtm, P = g.prologue, log = [];
@@ -889,7 +889,7 @@ const TESTS = {
     await page.evaluate(() => localStorage.clear());
     await page.reload();
     await page.waitForFunction(() => window.__gtm, null, { timeout: 240000 });
-    await page.click('#title');
+    await page.click('#title', { timeout: 180000 }); // 机器很忙时标题动画迟迟不"稳定",别 30 秒就判失败
     await page.waitForTimeout(1200);
     await page.evaluate(() => { const g = window.__gtm; g.skipPrologue(true); g.step(120); g.player.coins = 77; g.saveNow(); });
     await page.reload();

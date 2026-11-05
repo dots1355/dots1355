@@ -2,6 +2,73 @@
 // - worldTint:世界坐标低频明暗/冷暖斑块,打破平铺贴图的重复感(鹅卵石、墙、屋顶、木料)
 // - 湿润:下雨时反照率压暗、粗糙度降到 ~0.3;地面另有水洼(见 terrain.js 的地表材质)
 // 统一由 surfaceUniforms 驱动(天气系统每帧写 uWet / uTime)。
+import * as THREE from 'three';
+
+// 大气透视(全局雾补丁,模块加载期、任何着色器编译之前生效):高处的东西雾淡一些、偏蓝灰——
+// 北境群山从王都望去看得见山脊与岩壁,山上的岩峰、树与山体落在同一层雾里(不会山体发白、岩峰发灰,看着像飘在空中);
+// 到雾的远端(视距边缘)仍全部溶进雾里,不会露出被远裁剪面切断的山。世界高度由视空间位置反推(实例化/蒙皮都对)
+{
+  const SC = THREE.ShaderChunk;
+  const decl = 'varying float vFogDepth;';
+  if (SC.fog_pars_vertex.includes(decl) && SC.fog_vertex.includes('vFogDepth = - mvPosition.z;') && SC.fog_pars_fragment.includes(decl)) {
+    SC.fog_pars_vertex = SC.fog_pars_vertex.replace(decl, decl + '\n\tvarying float vFogY;');
+    SC.fog_vertex = SC.fog_vertex.replace('vFogDepth = - mvPosition.z;',
+      'vFogDepth = - mvPosition.z;\n\tvFogY = ( transpose( mat3( viewMatrix ) ) * ( mvPosition.xyz - viewMatrix[ 3 ].xyz ) ).y;');
+    SC.fog_pars_fragment = SC.fog_pars_fragment.replace(decl, decl + '\n\tvarying float vFogY;');
+    SC.fog_fragment = `#ifdef USE_FOG
+	float hazeK = 0.0;
+	#ifdef FOG_EXP2
+		float fogFactor = 1.0 - exp( - fogDensity * fogDensity * vFogDepth * vFogDepth );
+	#else
+		float fogFactor = smoothstep( fogNear, fogFar, vFogDepth );
+		hazeK = smoothstep( 14.0, 70.0, vFogY ) * ( 1.0 - smoothstep( fogFar * 0.78, fogFar, vFogDepth ) );
+		fogFactor *= 1.0 - 0.45 * hazeK;
+	#endif
+	gl_FragColor.rgb = mix( gl_FragColor.rgb, fogColor * mix( vec3( 1.0 ), vec3( 0.74, 0.82, 0.95 ), hazeK ), fogFactor );
+#endif`;
+  }
+}
+
+// 角色与生物的程序化质感(只在刚体蒙皮的实体上生效,接在 gfx/vpbr.js 的顶点色 PBR 里):按骨骼本地坐标取 3D 值噪声,
+// 顶点里的粗糙度/金属度当"材质类别"——布料与皮毛:洗旧的深浅斑 + 经纬织纹;皮革:皮纹与磨亮的旧斑;
+// 金属:顺着一个方向的拉丝;皮肤:极淡的红晕。纹样钉在身体部件上(跑动时不"游动"),远处按屏幕导数淡出细纹(不闪)
+export const ENTITY_DETAIL_PARS = `
+  varying vec3 vObjP;
+  float edH(vec3 p) { p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
+  float edN(vec3 x) {
+    vec3 i = floor(x), f = fract(x);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(mix(edH(i), edH(i + vec3(1.0, 0.0, 0.0)), f.x), mix(edH(i + vec3(0.0, 1.0, 0.0)), edH(i + vec3(1.0, 1.0, 0.0)), f.x), f.y),
+      mix(mix(edH(i + vec3(0.0, 0.0, 1.0)), edH(i + vec3(1.0, 0.0, 1.0)), f.x), mix(edH(i + vec3(0.0, 1.0, 1.0)), edH(i + vec3(1.0)), f.x), f.y), f.z);
+  }`;
+export const ENTITY_DETAIL_COLOR = `
+  {
+    float edR = vRM.x, edM = vRM.y;
+    vec3 edP = vObjP;
+    float edFine = 1.0 - smoothstep(0.012, 0.03, length(fwidth(edP)));
+    float edBig = edN(edP * 7.0) - 0.5, edMid = edN(edP * 23.0 + 7.1) - 0.5;
+    float edK;
+    if (edM > 0.5) {
+      edK = 1.0 + (edN(vec3(edP.x * 90.0, edP.y * 4.0, edP.z * 90.0)) - 0.5) * 0.35 * edFine + edBig * 0.18;
+    } else if (edR < 0.6) {
+      edK = 1.0 + edMid * 0.22 + edBig * 0.2 + (edN(edP * 70.0) - 0.5) * 0.25 * edFine;
+    } else if (edR < 0.72) {
+      edK = 1.0 + edBig * 0.1;
+      diffuseColor.r *= 1.0 + max(0.0, edBig) * 0.08;
+    } else {
+      float edFold = edN(vec3(edP.x * 16.0, edP.y * 2.6, edP.z * 16.0)) - 0.5; // 顺着垂向的褶
+      edK = 1.0 + edFold * 0.42 + edBig * 0.24 + edMid * 0.12 + sin(edP.x * 520.0 + edP.z * 520.0) * sin(edP.y * 520.0) * 0.08 * edFine;
+    }
+    diffuseColor.rgb *= edK;
+  }`;
+
+// 静物(树石、地标、道具,同一个顶点色 PBR 材质)的手绘斑驳:一层低频深浅,让纯色刻面也有笔触密度
+export const STATIC_DETAIL_COLOR = `
+  {
+    float sdN = edN(vObjP * 1.3 + 3.7);
+    diffuseColor.rgb *= 0.9 + 0.2 * sdN;
+  }`;
+
 export const surfaceUniforms = {
   uWet: { value: 0 },      // 0 干 → 1 湿透
   uTime: { value: 0 },

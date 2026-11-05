@@ -227,4 +227,13 @@ CI 见 `.github/workflows/ci.yml`。
 ## 资产
 `tools/gen-*.py` 是 Blender(bpy)资产工厂,生成 `assets/models/*.glb`;`tools/bake-models.mjs` 把它们烘进
 `src/models-data.js`(base64),单文件版与 `file://` 都能用。需要 Python 3.13 的 bpy:`/usr/bin/python3 tools/gen-camp.py`。
+- `gen-landmarks.py` → `landmarks.glb`:风车(塔身 + 格栅风帆 `MillSails`,帆在轮毂原点)、黑石要塞的墙段/塌墙/角楼/门楼/塌塔、
+  哨塔遗迹、回响之镜的石拱。按材质名分槽(stone/dstone/bstone/wood/plank/door/roof/canvas/iron/slit/moss),
+  `world.js` 的 `texModel(name)` 用 `prepParts` 刻面 + 平面投影 UV(1 单位 = 1 米)配贴图;camp.glb 的帐篷、篝火等也走它。
+  `world.texModel` 对外开放,开局后才立的布景(回响之镜)也用它。
+- 立石几何 `flora.standingStoneGeo(seed, opts)`:符文立石、先祖石环、铭文碑、墓碑同一画法。
+- 城外土路不是网格:`road()` 只登记要素,`terrain.js` 把它们栅格成 1 米的道路蒙版,地表着色器按蒙版画路(贴地、软边、车辙)。
+- 树的远近两套:`flora.buildNatureInstances` 给 `Tree_*` 自动配远景树冠团(按格烘成一块网格,不投影),
+  `updateNatureLOD` 按镜头到这一格树的包围盒距离切换。
+- `gfx/surface.js` 在模块加载期改写全局雾片段:高处雾淡、偏蓝灰(大气透视),所有带雾的材质一致。
 单文件打包在 `tools/bundle.mjs`(`build-desktop.mjs` 与 `bundle` 用例共用)。

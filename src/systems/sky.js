@@ -28,7 +28,7 @@ scene.add(sun.target);
 export const moon = new THREE.DirectionalLight(0x8899cc, 0.0);
 scene.add(moon);
 // 随身提灯:夜里跟着玩家的一团暖光(强度在 updateDayNight 里按夜色调)
-export const lantern = new THREE.PointLight(0xffd9a0, 0, 17, 1.6);
+export const lantern = new THREE.PointLight(0xffd9a0, 0, 22, 1.5);
 scene.add(lantern);
 
 // 大气天空穹顶(程序化渐变 + 太阳光晕)
@@ -162,11 +162,11 @@ const _topC = new THREE.Color();
 const _horC = new THREE.Color();
 const _flashC = new THREE.Color(0xc8d4ff);
 const C_MOON = new THREE.Color(0x8899cc);
-const _vegSun = new THREE.Color(), _vegAmb = new THREE.Color();
+const _vegSun = new THREE.Color(), _vegAmb = new THREE.Color(), _vegGreen = new THREE.Color();
 // 北境天空:晴天天顶是冷而深的蓝,地平线是带蓝的雾白(远山与雾同色,远景自然溶进天里)
 const C_DAY_TOP = new THREE.Color(0x3f70b2), C_DAY_HOR = new THREE.Color(0xb9cfe2);
 const C_DUSK_TOP = new THREE.Color(0x3b3a63), C_DUSK_HOR = new THREE.Color(0xe8834a);
-const C_NIGHT_TOP = new THREE.Color(0x040814), C_NIGHT_HOR = new THREE.Color(0x0e1830);
+const C_NIGHT_TOP = new THREE.Color(0x060c1c), C_NIGHT_HOR = new THREE.Color(0x22324e); // 夜雾是月光下的蓝灰,不是黑:林子、沼泽夜里也看得见轮廓
 const C_SUN_DAY = new THREE.Color(0xf7ecd4), C_SUN_DUSK = new THREE.Color(0xf07a38);
 // 天光(半球光的天空色):白天冷蓝、黄昏染暖、夜里月蓝
 const C_HEMI_DAY = new THREE.Color(0xb4c4d4), C_HEMI_DUSK = new THREE.Color(0xe0a882), C_HEMI_NIGHT = new THREE.Color(0x7484b0);
@@ -240,7 +240,10 @@ export function updateDayNight(dt) {
     moon.intensity = moon.intensity * (1 - f) + f * 4.2;
     moon.color.lerp(_flashC, f);
   }
+  // 林冠遮天的群系(林海/沼泽,光强 atmo[9] < 1)夜里另补一点天光:最低环境光不跟着林冠一起压暗
+  const canopy = Math.max(0, 1 - atmo[9]);
   hemi.intensity = (0.32 + 0.18 * day) * (1 - 0.3 * weather.rain) * dgnDim * (0.6 + 0.4 * atmo[9])
+    + night * (0.1 + canopy * 0.55) * dgnDim
     + weather.flash * 2.2 * dgnDim; // 闪电:整片天光一下照亮(不只是网页遮罩一闪)
   // 天光色:昼冷夜蓝,太阳贴着地平线时(黄昏/清晨)染上暖橙;再乘群系色调
   const duskK = Math.max(0, 1 - Math.abs(elev - 0.06) / 0.3) * (1 - 0.6 * weather.cover);
@@ -248,7 +251,9 @@ export function updateDayNight(dt) {
   hemi.color.setRGB(_hemiC.r * atmo[10], _hemiC.g * atmo[11], _hemiC.b * atmo[12]);
   envIntensity = (0.1 + 0.25 * day) * rainDim * (ctx.inDungeon() ? 0.25 : 1);
   // 随身提灯:入夜自动点起一圈暖光(地窖里已有火把,不重复)
-  lantern.intensity = night * 1.2 * (ctx.inDungeon() ? 0 : 1);
+  // 林子里提灯更亮、照得更远:脚下 6~8m 的地面看得清
+  lantern.intensity = night * (7 + canopy * 16) * (ctx.inDungeon() ? 0 : 1);
+  lantern.distance = 22 + canopy * 12;
   lantern.position.set(player.pos.x, 2.4, player.pos.z);
 
   // 天空穹顶
@@ -281,8 +286,9 @@ export function updateDayNight(dt) {
   scene.fog.color.r = Math.min(1, scene.fog.color.r * atmo[0]);
   scene.fog.color.g = Math.min(1, scene.fog.color.g * atmo[1]);
   scene.fog.color.b = Math.min(1, scene.fog.color.b * atmo[2]);
-  scene.fog.near *= atmo[3];
-  scene.fog.far *= atmo[4];
+  // 群系雾距;夜里雾距往回放一些(浓雾群系放得多):夜色已经够暗,不必再让雾把 40m 外全吞掉
+  scene.fog.near *= atmo[3] + (1 - atmo[3]) * night * 0.45;
+  scene.fog.far *= atmo[4] + (1 - atmo[4]) * night * 0.35;
   sun.color.r *= atmo[5];
   sun.color.g *= atmo[6];
   sun.color.b *= atmo[7];
@@ -310,8 +316,11 @@ export function updateDayNight(dt) {
 
   // 草叶受光:透光/包裹光跟着太阳走(含群系与天气的明暗),最低环境光取雾色——黄昏草不发黑发褐
   _vegSun.copy(sun.color).multiplyScalar(sun.intensity * 0.3);
+  { const l = (_vegSun.r + _vegSun.g + _vegSun.b) / 3; _vegSun.lerp(_vegGreen.setRGB(l * 1.05, l, l * 0.85), duskK * 0.65); } // 晚霞的橙光照在草上先褪掉大半饱和度
   // 最低环境光偏天顶色(背着太阳那半边天是蓝紫的):黄昏的草仍带一点绿,不被橙光染成褐色
   _vegAmb.copy(scene.fog.color).lerp(skyUniforms.topColor.value, 0.55).multiplyScalar(0.5 * (0.35 + 0.65 * day));
+  // 黄昏/清晨:最低环境光只取亮度、色相保持草绿(否则被晚霞染成橙褐色的尖刺)
+  { const lum = _vegAmb.r * 0.3 + _vegAmb.g * 0.55 + _vegAmb.b * 0.15; _vegGreen.setRGB(lum * 0.86, lum * 1.12, lum * 0.78); _vegAmb.lerp(_vegGreen, duskK * 0.8); }
   setVegetationLight(_sunDir, _vegSun, _vegAmb);
 
   // 曝光与泛光随昼夜变化

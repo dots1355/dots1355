@@ -149,8 +149,14 @@ export function terrainH(x, z) {
   const m = maskAt(x, z);
   if (m <= 0) return -waterBasin(x, z);
   const w = biomeWeights(x, z, _wh);
+  // 荒野里平原与雪原的起伏放大约一倍(核心手绘区不变):无尽荒野不再是一片平地
+  const wildAmp = smooth(470, 540, Math.max(Math.abs(x), Math.abs(z)));
   let h = 0;
-  for (let i = 0; i < NB; i++) if (w[i] > 0.002) h += w[i] * biomeH(i, x, z);
+  for (let i = 0; i < NB; i++) {
+    if (w[i] <= 0.002) continue;
+    const amp = i === BIOME.plains ? 1 + wildAmp : i === BIOME.snow ? 1 + 0.8 * wildAmp : 1;
+    h += w[i] * biomeH(i, x, z) * amp;
+  }
   return (h + mountainH(x, z)) * m - waterBasin(x, z); // 湖/河/水塘挖成盆地(水位 0)
 }
 
@@ -219,7 +225,78 @@ const FLAT_SPOTS = [
   [0, 352, -280, 46, 46],     // 封印地窖迷宫
 ];
 
+// ---------------- 道路蒙版:城外土路画进地表 ----------------
+// 1 米一格覆盖核心区 [-512, 512]:R = 路面覆盖(两侧约 1 米软边、边缘随距离起伏不齐),G = 两道车辙。
+// 地表着色器按它把路面贴图混进去——路面逐像素贴着地形起伏,不再是漂着/陷着的长方片,端头自然收成圆头
+const RN = 1024;
+const roadUniforms = { uRoadMask: { value: null }, uRoadTex: { value: null } };
+function buildRoadMask(features) {
+  const data = new Uint8Array(RN * RN * 2);
+  for (const f of features) {
+    if (!f.paint) continue;
+    const { x1: ax, z1: az, x2: bx, z2: bz } = f;
+    const dx = bx - ax, dz = bz - az, L2 = dx * dx + dz * dz, L = Math.sqrt(L2);
+    const hw = f.w / 2, pad = hw + 2;
+    const i0 = Math.max(0, Math.floor(Math.min(ax, bx) - pad + 512)), i1 = Math.min(RN - 1, Math.ceil(Math.max(ax, bx) + pad + 512));
+    const j0 = Math.max(0, Math.floor(Math.min(az, bz) - pad + 512)), j1 = Math.min(RN - 1, Math.ceil(Math.max(az, bz) + pad + 512));
+    for (let j = j0; j <= j1; j++) {
+      const pz = j + 0.5 - 512;
+      for (let i = i0; i <= i1; i++) {
+        const px = i + 0.5 - 512;
+        const t = Math.max(0, Math.min(1, ((px - ax) * dx + (pz - az) * dz) / L2));
+        const d = Math.hypot(px - ax - dx * t, pz - az - dz * t);
+        if (d > pad) continue;
+        const e = hw + 0.28 * Math.sin(t * L * 0.37 + ax) + 0.22 * (vnoise(px * 0.29, pz * 0.29) - 0.5);
+        const cover = 1 - smooth(e - 0.5, e + 0.55, d);
+        const rut = Math.exp(-((d - hw * 0.42) ** 2) / 0.05) * (1 - smooth(0.2, 1, Math.abs(t - 0.5) * 2 - 0.6));
+        const k = (j * RN + i) * 2;
+        data[k] = Math.max(data[k], Math.round(cover * 255));
+        data[k + 1] = Math.max(data[k + 1], Math.round(rut * cover * 255));
+      }
+    }
+  }
+  const tex = new THREE.DataTexture(data, RN, RN, THREE.RGFormat, THREE.UnsignedByteType);
+  tex.magFilter = THREE.LinearFilter;
+  tex.minFilter = THREE.LinearFilter;
+  tex.needsUpdate = true;
+  if (roadUniforms.uRoadMask.value) roadUniforms.uRoadMask.value.dispose();
+  roadUniforms.uRoadMask.value = tex;
+}
+// 路面:压实的黄褐泥土、碎石子与浅坑(中性偏暖,颜色已含在贴图里;四边环绕重画,严格无缝)
+function makeRoadTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 256;
+  const g = c.getContext('2d');
+  g.fillStyle = '#7a6a54';
+  g.fillRect(0, 0, 256, 256);
+  let sd = 77;
+  const r = () => { sd = (sd * 16807) % 2147483647; return (sd - 1) / 2147483646; };
+  const wrap = (x, y, s, fn) => { for (const ox of [0, -256, 256]) for (const oy of [0, -256, 256]) if (x + ox > -s && x + ox < 256 + s && y + oy > -s && y + oy < 256 + s) fn(x + ox, y + oy); };
+  for (let i = 0; i < 90; i++) { // 大片深浅斑(干湿、压实程度不同)
+    const x = r() * 256, y = r() * 256, s = 14 + r() * 30, l = r() < 0.5 ? 'rgba(60,50,38,0.16)' : 'rgba(160,142,112,0.14)';
+    wrap(x, y, s, (px, py) => { g.fillStyle = l; g.beginPath(); g.ellipse(px, py, s, s * (0.5 + r() * 0.5), r() * 3, 0, Math.PI * 2); g.fill(); });
+  }
+  for (let i = 0; i < 2600; i++) { // 细土粒
+    const x = r() * 256, y = r() * 256, l = 80 + r() * 90;
+    g.fillStyle = `rgba(${l},${l * 0.88},${l * 0.7},0.35)`;
+    g.fillRect(x, y, 1 + r() * 1.5, 1 + r() * 1.5);
+  }
+  for (let i = 0; i < 220; i++) { // 碎石子:亮面 + 下沿一点影子
+    const x = r() * 256, y = r() * 256, s = 1.0 + r() * 2.0, l = 112 + r() * 52;
+    wrap(x, y, s + 2, (px, py) => {
+      g.fillStyle = 'rgba(40,32,24,0.45)'; g.beginPath(); g.ellipse(px + 0.6, py + 0.9, s, s * 0.7, 0, 0, Math.PI * 2); g.fill();
+      g.fillStyle = `rgb(${l},${l * 0.95},${l * 0.86})`; g.beginPath(); g.ellipse(px, py, s, s * 0.7, r() * 3, 0, Math.PI * 2); g.fill();
+    });
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 4;
+  return t;
+}
+
 export function buildMasks(world) {
+  buildRoadMask(world.features);
   const zone = new Uint8Array(MN * MN);
   VEG = new Uint8Array(VN * VN).fill(1);
   for (const f of world.features) {
@@ -342,13 +419,15 @@ const BIOME_COL = [
   [lin(0x969858), lin(0x7c8a4b)], // 平原:金橄榄 ↔ 青橄榄草(比旧的卡其多一分绿,远看不发灰)
   [lin(0x56633a), lin(0x4a5233)], // 林地:苔绿 ↔ 腐叶褐
   [lin(0xd8b67c), lin(0xc49a62)], // 荒漠:亮沙 ↔ 赭沙
-  [lin(0xe8eef4), lin(0xc9d4de)], // 雪原:新雪 ↔ 阴影雪
+  [lin(0xdce3eb), lin(0xbcc7d3)], // 雪原:新雪 ↔ 阴影雪(压一档亮度:雪地不再和雾、天一样白)
   [lin(0x4f5236), lin(0x3e4430)], // 沼泽:泥橄榄 ↔ 黑泥
   [lin(0x5c544c), lin(0x3f3935)], // 灰烬:灰褐 ↔ 焦黑
   [lin(0x8b857b), lin(0x6f6a62)], // 龙骨:碎石灰 ↔ 暗岩
   [lin(0x899a52), lin(0x6e8747)], // 丘陵:更绿的草坡
 ];
-const ROCK_COL = lin(0x77726a), SNOWCAP = lin(0xf1f5f9);
+const ROCK_COL = lin(0x77726a), SNOWCAP = lin(0xdfe6ee);
+// 北境群山:岩壁按层理在深浅两色间起伏;背阴(朝北)的雪偏蓝灰;林线附近是枯黄的高山草甸
+const ROCK_DARK = lin(0x4f4c49), ROCK_LIGHT = lin(0x878176), SNOW_SHADE = lin(0xa3afc2), ALPINE = lin(0x7d7a5a), TAIGA = lin(0x6c7566);
 // 地图配色(小地图/大地图):按群系权重混合的 sRGB 颜色 + 高度明暗;按 16m 格缓存
 const _mapCache = new Map();
 const _mw = new Float32Array(NB);
@@ -393,13 +472,25 @@ function groundColor(x, z, ny, h, out) {
   }
   // 陡坡露岩;雪原高处积雪更厚
   const steep = smooth(0.94, 0.8, ny);
-  if (steep > 0) out.lerp(ROCK_COL, steep * 0.85);
-  if (w[BIOME.snow] > 0.3) out.lerp(SNOWCAP, smooth(6, 12, h) * w[BIOME.snow] * (1 - steep));
-  // 北境群山:山腰裸岩、山顶积雪(按山体自身高度,不看群系)
   const mh = mountainH(x, z);
-  if (mh > 6) {
-    out.lerp(ROCK_COL, smooth(6, 26, mh) * 0.55);
-    out.lerp(SNOWCAP, smooth(36, 58, mh) * (1 - steep * 0.55));
+  if (steep > 0) out.lerp(ROCK_COL, steep * 0.85);
+  if (w[BIOME.snow] > 0.3 && mh < 4) out.lerp(SNOWCAP, smooth(6, 12, h) * w[BIOME.snow] * (1 - steep));
+  // 北境群山(按山体自身高度,不看群系):山脚雪松林 → 林线(约 25m)以上的枯黄草甸与碎石 → 裸岩(陡坡一律是带层理的岩壁)
+  // → 缓坡积雪;背阴(朝北)的雪面偏蓝灰。不再是从山脚白到山顶的一整块奶油
+  if (mh > 4) {
+    const gx = Math.round(x / GRID), gz = Math.round(z / GRID);
+    const nz = -(cornerH(gx, gz + 1) - cornerH(gx, gz - 1)) / (2 * GRID) * ny; // 地面法线的 z 分量(负 = 朝北背阴)
+    const strata = 0.5 + 0.5 * Math.sin(h * 0.85 + vnoise(x / 23, z / 23) * 5.0);
+    // 山脊(比四周高出一截)常年被风刮秃:岩脊连成线,山的骨架从远处就读得出来
+    const ridgeK = h - (cornerH(gx + 3, gz) + cornerH(gx - 3, gz) + cornerH(gx, gz + 3) + cornerH(gx, gz - 3)) / 4;
+    out.lerp(TAIGA, smooth(2, 8, mh) * (1 - smooth(18, 28, mh)) * 0.65); // 山脚林带的林下(雪斑、针叶、落枝)
+    out.lerp(ALPINE, smooth(14, 26, mh) * (1 - smooth(30, 44, mh)) * 0.55);
+    _c.copy(ROCK_DARK).lerp(ROCK_LIGHT, strata * 0.7 + patch * 0.3);
+    out.lerp(_c, Math.min(1, smooth(22, 40, mh) * 0.7 + smooth(0.86, 0.62, ny) * smooth(4, 14, mh) * 0.95 +
+      smooth(0.5, 2.2, ridgeK) * smooth(16, 30, mh)));
+    const snow = smooth(34, 60, mh + 14 * (vnoise(x / 41, z / 41) - 0.5)) * smooth(0.64, 0.84, ny) * (1 - smooth(0.8, 2.6, ridgeK) * 0.8);
+    _c.copy(SNOWCAP).lerp(SNOW_SHADE, smooth(0.08, -0.35, nz));
+    out.lerp(_c, snow);
   }
   // 水边:水下是泥滩(越深越暗),岸上两三米是潮湿的深色泥土
   const wp = waterProx(x, z);
@@ -459,8 +550,11 @@ export function getGroundMaterial(normalMap) {
   groundMat.userData.shared = true;
   // 冬季积雪:平地先白,陡坡露土
   groundMat.userData.uSnow = { value: 0 };
+  if (!roadUniforms.uRoadTex.value) roadUniforms.uRoadTex.value = makeRoadTexture();
   groundMat.onBeforeCompile = (sh) => {
     sh.uniforms.uSnow = groundMat.userData.uSnow;
+    sh.uniforms.uRoadMask = roadUniforms.uRoadMask;
+    sh.uniforms.uRoadTex = roadUniforms.uRoadTex;
     bindSurfaceUniforms(sh);
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', '#include <common>\nvarying vec3 vSfW;')
@@ -468,17 +562,25 @@ export function getGroundMaterial(normalMap) {
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', `#include <common>
         uniform float uSnow;
+        uniform sampler2D uRoadMask, uRoadTex;
         ${SURFACE_UNIFORMS_GLSL}
         varying vec3 vSfW;
         ${NOISE_GLSL}
         ${PUDDLE_GLSL}`)
       .replace('#include <color_fragment>', `#include <color_fragment>
+        // 城外土路(道路蒙版,见 buildRoadMask):路面贴图 + 车辙压暗,软边混进草地
+        vec2 rdUv = (vSfW.xz + 512.0) / 1024.0;
+        vec2 rdM = (rdUv.x > 0.0 && rdUv.x < 1.0 && rdUv.y > 0.0 && rdUv.y < 1.0) ? texture2D(uRoadMask, rdUv).rg : vec2(0.0);
+        if (rdM.r > 0.004) {
+          vec3 rdCol = texture2D(uRoadTex, vSfW.xz * 0.23).rgb * (1.0 - 0.3 * rdM.g);
+          diffuseColor.rgb = mix(diffuseColor.rgb, rdCol, rdM.r * 0.96);
+        }
         float snowK = uSnow * smoothstep(0.82, 0.96, normalize(vNormal).y);
         diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.86, 0.9, 0.95), snowK);
         // 雨天:泥土整体压暗,平地上积出水洼(见 gfx/surface.js;积雪处不积水)
         diffuseColor.rgb *= 1.0 - 0.24 * uWet;
         ${PUDDLE_COLOR}
-        sfPud *= 1.0 - snowK;`)
+        sfPud *= (1.0 - snowK) * mix(0.35, 1.0, rdM.r);`) // 水洼积在路面上,草地上少得多
       .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
         roughnessFactor = mix(roughnessFactor, 0.42, uWet * 0.7);
         ${PUDDLE_ROUGH}`)

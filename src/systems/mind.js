@@ -6,7 +6,7 @@ import * as THREE from 'three';
 import { sfx } from '../audio.js';
 import { aiBusy, aiLine } from '../core/aitext.js';
 import { rand } from '../core/rng.js';
-import { colliders, player, started } from '../core/state.js';
+import { colliders, player, started, world } from '../core/state.js';
 import { dist2, lambert } from '../entities.js';
 import { scene } from '../gfx/core.js';
 import { dialog, openDialog } from '../ui/dialog.js';
@@ -69,18 +69,32 @@ export function archetype() {
 export const MIRROR_POS = { x: 0, z: -158 };
 export function initMirror() {
   const grp = new THREE.Group();
-  const frame = new THREE.Mesh(new THREE.TorusGeometry(1.1, 0.14, 8, 24),
-    lambert(0x2a2530, { roughness: 0.4, metalness: 0.6 }));
-  frame.position.y = 1.7;
-  grp.add(frame);
-  const glass = new THREE.Mesh(new THREE.CircleGeometry(1.0, 24),
-    new THREE.MeshStandardMaterial({ color: 0x101018, emissive: 0x25384a,
-      emissiveIntensity: 0.7, roughness: 0.08, metalness: 0.9 }));
-  glass.position.y = 1.7;
-  grp.add(glass);
-  const base = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.8, 0.6, 8), lambert(0x35303c));
-  base.position.y = 0.3;
-  grp.add(base);
+  const glassMat = new THREE.MeshStandardMaterial({ color: 0x101018, emissive: 0x25384a,
+    emissiveIntensity: 0.7, roughness: 0.08, metalness: 0.9, side: THREE.DoubleSide });
+  const arch = world.texModel && world.texModel('MirrorArch'); // 两级石台 + 方柱 + 半圆拱(landmarks.glb)
+  if (arch) {
+    grp.add(arch);
+    // 镜面:嵌在拱框里的圆顶黑曜石
+    const sh = new THREE.Shape();
+    sh.moveTo(-0.97, 0.6);
+    sh.lineTo(0.97, 0.6);
+    sh.lineTo(0.97, 3.05);
+    sh.absarc(0, 3.05, 0.97, 0, Math.PI, false);
+    sh.lineTo(-0.97, 0.6);
+    grp.add(new THREE.Mesh(new THREE.ShapeGeometry(sh, 16), glassMat));
+    for (const sx of [-1.25, 1.25]) colliders.circles.push({ x: MIRROR_POS.x + sx, z: MIRROR_POS.z, r: 0.55 });
+  } else {
+    const frame = new THREE.Mesh(new THREE.TorusGeometry(1.1, 0.14, 8, 24),
+      lambert(0x2a2530, { roughness: 0.4, metalness: 0.6 }));
+    frame.position.y = 1.7;
+    grp.add(frame);
+    const glass = new THREE.Mesh(new THREE.CircleGeometry(1.0, 24), glassMat);
+    glass.position.y = 1.7;
+    grp.add(glass);
+    const base = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.8, 0.6, 8), lambert(0x35303c));
+    base.position.y = 0.3;
+    grp.add(base);
+  }
   grp.position.set(MIRROR_POS.x, 0, MIRROR_POS.z);
   scene.add(grp);
   colliders.circles.push({ x: MIRROR_POS.x, z: MIRROR_POS.z, r: 0.9 });
