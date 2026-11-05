@@ -421,13 +421,14 @@ const BIOME_COL = [
   [lin(0xd8b67c), lin(0xc49a62)], // 荒漠:亮沙 ↔ 赭沙
   [lin(0xdce3eb), lin(0xbcc7d3)], // 雪原:新雪 ↔ 阴影雪(压一档亮度:雪地不再和雾、天一样白)
   [lin(0x4f5236), lin(0x3e4430)], // 沼泽:泥橄榄 ↔ 黑泥
-  [lin(0x5c544c), lin(0x3f3935)], // 灰烬:灰褐 ↔ 焦黑
+  [lin(0x5d5a56), lin(0x34312f)], // 灰烬:草木灰 ↔ 焦炭(冷灰,不再是一片翻过的褐土)
   [lin(0x8b857b), lin(0x6f6a62)], // 龙骨:碎石灰 ↔ 暗岩
   [lin(0x899a52), lin(0x6e8747)], // 丘陵:更绿的草坡
 ];
 const ROCK_COL = lin(0x77726a), SNOWCAP = lin(0xdfe6ee);
 // 北境群山:岩壁按层理在深浅两色间起伏;背阴(朝北)的雪偏蓝灰;林线附近是枯黄的高山草甸
-const ROCK_DARK = lin(0x4f4c49), ROCK_LIGHT = lin(0x878176), SNOW_SHADE = lin(0xa3afc2), ALPINE = lin(0x7d7a5a), TAIGA = lin(0x6c7566);
+const ROCK_DARK = lin(0x4f4c49), ROCK_LIGHT = lin(0x878176), SNOW_SHADE = lin(0x98a5bb), ALPINE = lin(0x7d7a5a), TAIGA = lin(0x6c7566);
+const PEAK_SNOW = lin(0xd5dde8); // 山上的雪比雪原再冷一点、暗一点:远看与发白的地平线天色拉开
 // 地图配色(小地图/大地图):按群系权重混合的 sRGB 颜色 + 高度明暗;按 16m 格缓存
 const _mapCache = new Map();
 const _mw = new Float32Array(NB);
@@ -488,8 +489,13 @@ function groundColor(x, z, ny, h, out) {
     _c.copy(ROCK_DARK).lerp(ROCK_LIGHT, strata * 0.7 + patch * 0.3);
     out.lerp(_c, Math.min(1, smooth(22, 40, mh) * 0.7 + smooth(0.86, 0.62, ny) * smooth(4, 14, mh) * 0.95 +
       smooth(0.5, 2.2, ridgeK) * smooth(16, 30, mh)));
-    const snow = smooth(34, 60, mh + 14 * (vnoise(x / 41, z / 41) - 0.5)) * smooth(0.64, 0.84, ny) * (1 - smooth(0.8, 2.6, ridgeK) * 0.8);
-    _c.copy(SNOWCAP).lerp(SNOW_SHADE, smooth(0.08, -0.35, nz));
+    // 雪线约 32~54m(噪声抖动)。挂不挂雪看坡度(群山坡度中位数约 43°),阈值再按 ~20m 的噪声上下浮动:
+    // 雪坡里露出一道道岩肋,峭壁与陡峭的刀脊是裸岩,平缓的峰顶是白的——远看是"雪峰 + 黑色岩骨",
+    // 既不是一座褐色土山,也不是一整块和天空一样白的奶油
+    const rib = vnoise(x / 23 + 7.3, z / 23 - 2.1) - 0.5;
+    const snow = smooth(32, 54, mh + 16 * (vnoise(x / 41, z / 41) - 0.5)) * smooth(0.6, 0.75, ny + rib * 0.24) *
+      (1 - smooth(1.6, 4.5, ridgeK) * 0.7 * smooth(0.88, 0.68, ny));
+    _c.copy(PEAK_SNOW).lerp(SNOW_SHADE, smooth(0.08, -0.35, nz));
     out.lerp(_c, snow);
   }
   // 水边:水下是泥滩(越深越暗),岸上两三米是潮湿的深色泥土
@@ -557,14 +563,15 @@ export function getGroundMaterial(normalMap) {
     sh.uniforms.uRoadTex = roadUniforms.uRoadTex;
     bindSurfaceUniforms(sh);
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vSfW;')
-      .replace('#include <project_vertex>', '#include <project_vertex>\nvSfW = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+      .replace('#include <common>', '#include <common>\nvarying vec3 vSfW;\nvarying vec3 vSfN;')
+      .replace('#include <project_vertex>', '#include <project_vertex>\nvSfW = (modelMatrix * vec4(transformed, 1.0)).xyz;\nvSfN = normalize(mat3(modelMatrix) * objectNormal);');
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', `#include <common>
         uniform float uSnow;
         uniform sampler2D uRoadMask, uRoadTex;
         ${SURFACE_UNIFORMS_GLSL}
         varying vec3 vSfW;
+        varying vec3 vSfN;
         ${NOISE_GLSL}
         ${PUDDLE_GLSL}`)
       .replace('#include <color_fragment>', `#include <color_fragment>
@@ -575,7 +582,7 @@ export function getGroundMaterial(normalMap) {
           vec3 rdCol = texture2D(uRoadTex, vSfW.xz * 0.23).rgb * (1.0 - 0.3 * rdM.g);
           diffuseColor.rgb = mix(diffuseColor.rgb, rdCol, rdM.r * 0.96);
         }
-        float snowK = uSnow * smoothstep(0.82, 0.96, normalize(vNormal).y);
+        float snowK = uSnow * smoothstep(0.82, 0.96, normalize(vSfN).y); // 世界坐标法线(以前误用了视空间法线)
         diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.86, 0.9, 0.95), snowK);
         // 雨天:泥土整体压暗,平地上积出水洼(见 gfx/surface.js;积雪处不积水)
         diffuseColor.rgb *= 1.0 - 0.24 * uWet;

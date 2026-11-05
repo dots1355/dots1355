@@ -44,7 +44,9 @@ const VERT = `
     if (uBlink > 1.5) vA *= 0.25 + 0.75 * pow(0.5 + 0.5 * sin(t * 2.3), 3.0);      // 萤火:一明一灭
     else if (uBlink > 0.5) vA *= 0.55 + 0.45 * sin(t * 9.0 + seed.y * 20.0);        // 余烬:噼啪闪
     vec4 mv = modelViewMatrix * vec4(p, 1.0);
-    gl_PointSize = uSize * uPix / max(0.5, -mv.z);
+    // 贴着镜头的粒子淡掉、尺寸封顶:以前 0.5m 内的一片落叶/雪花会糊成一两百像素的大光斑,像镜头上沾了东西
+    vA *= smoothstep(1.0, 2.6, -mv.z);
+    gl_PointSize = min(uSize * uPix / max(0.5, -mv.z), 26.0);
     gl_Position = projectionMatrix * mv;
   }`;
 const FRAG = `

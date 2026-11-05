@@ -126,10 +126,110 @@ def make_tree(name, kind, seed, trunk_len, trunk_r, depth, leaf_color, bark_colo
     print(f'{name}.glb faces≈{tris} → {os.path.getsize(path) // 1024}KB')
 
 
-make_tree('oak', 'oak', 7, trunk_len=2.6, trunk_r=0.34, depth=3,
-          leaf_color=(0.12, 0.15, 0.07), bark_color=(0.20, 0.15, 0.11), leaf_scale=1.15)
-make_tree('birch', 'oak', 23, trunk_len=3.1, trunk_r=0.22, depth=3,
-          leaf_color=(0.45, 0.32, 0.10), bark_color=(0.58, 0.57, 0.52), leaf_scale=0.9)
-make_tree('pine', 'pine', 11, trunk_len=4.8, trunk_r=0.24, depth=0,
-          leaf_color=(0.07, 0.11, 0.09), bark_color=(0.22, 0.16, 0.11), leaf_scale=1.05)
+def make_birch(seed=23):
+    """白桦:微弯的细高主干(白皮 + 一圈圈黑色皮孔斑),三四根斜上的主枝;树冠是沿上半截枝条撒开的
+    二三十团小叶簇(两种金黄),疏密有致、透光——不再是"白棍子顶一个黄球"的棒棒糖"""
+    import mathutils
+    reset()
+    rng = random.Random(seed)
+    bark = bmesh.new()
+    leaves = bmesh.new()
+    clumps = []  # (中心, 半径)
+
+    def limb(p0, d, length, r0, r1, segs, bark_marks=True):
+        pts = [mathutils.Vector(p0)]
+        d = mathutils.Vector(d).normalized()
+        for i in range(segs):
+            d = (d + mathutils.Vector((rng.uniform(-0.12, 0.12), rng.uniform(-0.12, 0.12), rng.uniform(0.0, 0.08)))).normalized()
+            pts.append(pts[-1] + d * (length / segs))
+        rings = []
+        for i, p in enumerate(pts):
+            t = i / segs
+            r = r0 + (r1 - r0) * t
+            dd = (pts[min(i + 1, segs)] - pts[max(i - 1, 0)]).normalized()
+            up = mathutils.Vector((0, 0, 1)) if abs(dd.z) < 0.95 else mathutils.Vector((1, 0, 0))
+            u = dd.cross(up).normalized()
+            w = dd.cross(u).normalized()
+            rings.append([bark.verts.new(p + (u * math.cos(a) + w * math.sin(a)) * r)
+                          for a in [k / 7 * math.pi * 2 for k in range(7)]])
+        for i in range(segs):
+            A, B = rings[i], rings[i + 1]
+            band = bark_marks and rng.random() < 0.45  # 这一节有没有黑色皮孔带
+            for k in range(7):
+                f = bark.faces.new((A[k], A[(k + 1) % 7], B[(k + 1) % 7], B[k]))
+                f.material_index = 1 if (band and rng.random() < 0.6) or (not band and rng.random() < 0.08) else 0
+        cap = bark.faces.new(list(reversed(rings[-1])))
+        cap.material_index = 0
+        return pts
+
+    # 主干:4.6m,带一点倾斜和弯
+    lean = mathutils.Vector((rng.uniform(-0.12, 0.12), rng.uniform(-0.12, 0.12), 1))
+    trunk = limb((0, 0, -0.15), lean, 4.9, 0.2, 0.07, 9)
+    # 主枝:从 45%~85% 高处斜上伸出
+    tips = []
+    for j in range(4):
+        i0 = 4 + j  # 第几节分枝
+        base = trunk[i0]
+        a = j * 2.2 + rng.uniform(-0.4, 0.4)
+        d = (math.cos(a) * 0.75, math.sin(a) * 0.75, 1.0)
+        L = rng.uniform(1.5, 2.2) * (1.0 - j * 0.12)
+        pts = limb(base, d, L, 0.075 - j * 0.008, 0.025, 4)
+        tips.append(pts)
+        # 每根主枝再分一两根细枝
+        for _ in range(rng.randint(1, 2)):
+            k = rng.randint(1, 3)
+            a2 = a + rng.uniform(-1.2, 1.2)
+            sub = limb(pts[k], (math.cos(a2), math.sin(a2), 0.9), L * 0.55, 0.03, 0.012, 3, bark_marks=False)
+            tips.append(sub)
+    tips.append(trunk[6:])
+    # 叶簇:沿每根枝的上半截撒,越靠枝梢越密;主干顶上再压一团
+    for pts in tips:
+        for i, p in enumerate(pts):
+            if i < len(pts) * 0.35:
+                continue
+            for _ in range(1 if i < len(pts) - 1 else 2):
+                c = p + mathutils.Vector((rng.uniform(-0.35, 0.35), rng.uniform(-0.35, 0.35), rng.uniform(-0.1, 0.3)))
+                clumps.append((c, rng.uniform(0.42, 0.68)))
+    clumps.append((trunk[-1] + mathutils.Vector((0, 0, 0.25)), 0.7))
+    for (c, r) in clumps:
+        ret = bmesh.ops.create_icosphere(leaves, subdivisions=1, radius=r)
+        mi = 1 if rng.random() < 0.35 else 0
+        vs = set(ret['verts'])
+        for v in ret['verts']:
+            v.co.x *= rng.uniform(0.85, 1.15)
+            v.co.y *= rng.uniform(0.85, 1.15)
+            v.co.z *= rng.uniform(0.6, 0.8)
+            v.co += c
+        for f in leaves.faces:
+            if f.verts[0] in vs:
+                f.material_index = mi
+    for name, bm, mats in (('birch_bark', bark, [mat('bark', (0.62, 0.61, 0.56), 0.95), mat('barkdark', (0.06, 0.055, 0.05), 0.95)]),
+                           ('birch_leaf', leaves, [mat('leaf', (0.45, 0.32, 0.10), 0.9), mat('leaflight', (0.5, 0.4, 0.12), 0.9)])):
+        me = bpy.data.meshes.new(name)
+        bm.to_mesh(me)
+        bm.free()
+        ob = bpy.data.objects.new(name, me)
+        for m in mats:
+            ob.data.materials.append(m)
+        bpy.context.collection.objects.link(ob)
+        for poly in ob.data.polygons:
+            poly.use_smooth = False
+    path = os.path.join(OUT, 'birch.glb')
+    bpy.ops.export_scene.gltf(filepath=path, export_format='GLB', export_apply=True, export_yup=True, export_texcoords=False)
+    lo = [min(c[0][k] - c[1] for c in clumps) for k in range(3)]
+    hi = [max(c[0][k] + c[1] for c in clumps) for k in range(3)]
+    print('birch crown bbox (blender xyz):', [round(v, 2) for v in lo], [round(v, 2) for v in hi], 'clumps', len(clumps))
+    print(f'birch.glb → {os.path.getsize(path) // 1024}KB')
+
+
+# 用法:不带参数 = 三种都重建;带参数(oak / birch / pine)= 只重建列出的那几种
+ONLY = set(sys.argv[1:])
+if not ONLY or 'oak' in ONLY:
+    make_tree('oak', 'oak', 7, trunk_len=2.6, trunk_r=0.34, depth=3,
+              leaf_color=(0.12, 0.15, 0.07), bark_color=(0.20, 0.15, 0.11), leaf_scale=1.15)
+if not ONLY or 'birch' in ONLY:
+    make_birch()
+if not ONLY or 'pine' in ONLY:
+    make_tree('pine', 'pine', 11, trunk_len=4.8, trunk_r=0.24, depth=0,
+              leaf_color=(0.07, 0.11, 0.09), bark_color=(0.22, 0.16, 0.11), leaf_scale=1.05)
 print('DONE')

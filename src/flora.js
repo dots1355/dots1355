@@ -83,22 +83,23 @@ const ROOTG = jitter(new THREE.ConeGeometry(0.16, 0.5, 5), 0.03, poolRng); // �
 // 枯枝/仙人掌部件池(单位尺寸,实例用 scale 变化;绝不在 build 时新建几何体)
 const BRANCHES = [];
 for (let i = 0; i < 4; i++) BRANCHES.push(jitter(new THREE.CylinderGeometry(0.03, 0.09, 1, 5), 0.015, poolRng));
-const CACTUS_BODY = jitter(new THREE.CylinderGeometry(0.28, 0.34, 1, 8), 0.008, poolRng);
-const CACTUS_CAP = (() => {
-  const g = new THREE.SphereGeometry(0.29, 8, 5, 0, Math.PI * 2, 0, Math.PI / 2);
-  g.userData.shared = true;
-  return g;
-})();
-const CACTUS_ELBOW = (() => {
-  const g = new THREE.CylinderGeometry(0.14, 0.14, 0.5, 7);
-  g.userData.shared = true;
-  return g;
-})();
-const CACTUS_ARM = (() => {
-  const g = new THREE.CylinderGeometry(0.14, 0.15, 1, 7);
-  g.userData.shared = true;
-  return g;
-})();
+// 仙人掌:柱身一圈纵棱(相邻两条边一凸一凹),顶上圆穹也跟着起棱——不再是一根光溜溜的绿管子
+function ribbed(geo, segs, depth = 0.14) {
+  const p = geo.attributes.position;
+  for (let i = 0; i < p.count; i++) {
+    const k = i % (segs + 1);
+    const s = k % 2 ? 1 - depth : 1;
+    p.setX(i, p.getX(i) * s);
+    p.setZ(i, p.getZ(i) * s);
+  }
+  geo.computeVertexNormals();
+  geo.userData.shared = true;
+  return geo;
+}
+const CACTUS_BODY = jitter(ribbed(new THREE.CylinderGeometry(0.28, 0.34, 1, 16, 3), 16), 0.008, poolRng);
+const CACTUS_CAP = ribbed(new THREE.SphereGeometry(0.29, 16, 5, 0, Math.PI * 2, 0, Math.PI / 2), 16);
+const CACTUS_ELBOW = ribbed(new THREE.CylinderGeometry(0.14, 0.14, 0.5, 10), 10, 0.12);
+const CACTUS_ARM = ribbed(new THREE.CylinderGeometry(0.14, 0.15, 1, 10, 2), 10, 0.12);
 const FLOWERG = (() => {
   const g = new THREE.SphereGeometry(0.12, 6, 4);
   g.userData.shared = true;
@@ -326,7 +327,7 @@ const FAR_TREE = {};
   };
   FAR_TREE.Tree_pine = mk([[new THREE.ConeGeometry(1.45, 5.3, 7).translate(0, 3.15, 0), leafP], [trunk(0, 1.2, 0, 0.18), barkD]]);
   FAR_TREE.Tree_oak = mk([[blob(-1.95, 5.65, 0.83, 2.6, 1.75, 1.9), leafO], [trunk(-1.5, 4.5, 0.6, 0.3), barkD]]);
-  FAR_TREE.Tree_birch = mk([[blob(-0.5, 6.6, -1.46, 2.4, 1.4, 1.9), leafB], [trunk(-0.4, 5.6, -1.2, 0.2), barkW]]);
+  FAR_TREE.Tree_birch = mk([[blob(0.46, 4.0, 0.37, 1.95, 1.6, 1.85), leafB], [trunk(0.25, 3.2, 0.2, 0.17), barkW]]); // 与 gen-assets.py 的白桦树冠包围盒对齐
   for (const k of Object.keys(FAR_TREE)) {
     NATURE['Far_' + k] = FAR_TREE[k];
     NATURE_SPEC['Far_' + k] = { r: 0, sink: 0.12 };

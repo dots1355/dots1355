@@ -241,4 +241,11 @@ CI 见 `.github/workflows/ci.yml`。
 - 树的远近两套:`flora.buildNatureInstances` 给 `Tree_*` 自动配远景树冠团(按格烘成一块网格,不投影),
   `updateNatureLOD` 按镜头到这一格树的包围盒距离切换。
 - `gfx/surface.js` 在模块加载期改写全局雾片段:高处雾淡、偏蓝灰(大气透视),所有带雾的材质一致。
+- 镜头近处的清场(`gfx/vpbr.js`):实例化静物在镜头落到其根部 2.6m 内时整件收起(顶点着色器,阴影深度材质不受影响);
+  其余静物 2m 内、草叶 1.8m 内按屏幕抖动淡出;环境粒子 2.6m 内淡出且像素尺寸封顶。GTAO 从主 pass 深度重建,不会留下"影子树"。
+- `landmarks.scatterCoreLandmarks` 末尾有几段手工布景(各用自己的确定性随机数,不动全局 `rand` 序列):
+  北境山脊岩峰(只长在比四周高出 3m 以上的脊线/峰顶)、城内院落的树与灌木、雾语沼泽的垂柳林;
+  群系地标密度按群系(`DENS`)放大,北境山体(`mountainH > 6`)不撒通用地标。荒野区块另按 `WILD_MULT` 放大。
+- 回响之镜的镜面材质 `world.mirrorGlass`(旋转雾光,时钟取 `surfaceUniforms.uTime`),`systems/mind.js` 的 `initMirror` 取用。
+- `tools/gen-assets.py birch` 只重建白桦(改了树冠就同步 `flora.js` 里 `FAR_TREE.Tree_birch` 的包围盒)。
 单文件打包在 `tools/bundle.mjs`(`build-desktop.mjs` 与 `bundle` 用例共用)。

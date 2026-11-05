@@ -69,8 +69,8 @@ export function archetype() {
 export const MIRROR_POS = { x: 0, z: -158 };
 export function initMirror() {
   const grp = new THREE.Group();
-  const glassMat = new THREE.MeshStandardMaterial({ color: 0x101018, emissive: 0x25384a,
-    emissiveIntensity: 0.7, roughness: 0.08, metalness: 0.9, side: THREE.DoubleSide });
+  const glassMat = world.mirrorGlass || new THREE.MeshStandardMaterial({ color: 0x101018, emissive: 0x25384a,
+    emissiveIntensity: 0.7, roughness: 0.08, metalness: 0.9, side: THREE.DoubleSide }); // 镜面雾光材质见 world.js
   const arch = world.texModel && world.texModel('MirrorArch'); // 两级石台 + 方柱 + 半圆拱(landmarks.glb)
   if (arch) {
     grp.add(arch);

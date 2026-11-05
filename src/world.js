@@ -6,7 +6,7 @@ import {
 } from './flora.js';
 import { lambert } from './entities.js';
 import { makeTextures } from './textures.js';
-import { worldTint } from './gfx/surface.js';
+import { surfaceUniforms, worldTint } from './gfx/surface.js';
 import { facetGeometry } from './gfx/facet.js';
 import { buildCropMesh } from './vegetation.js';
 import { waterMesh, polarWaterGeo, riverWaterGeo } from './gfx/water.js';
@@ -464,11 +464,96 @@ export function buildWorld(scene) {
   for (const [x, z, r, k] of housePlan) house(x, z, r, 6, 5, 3.2, k);
 
   // ---- 集市摊位 ----
+  // 篷布:植物染的宽条纹(茜草红 / 菘蓝 / 木犀黄 / 苔绿,间本色麻),前沿垂一圈波浪边——
+  // 以前是一整块没贴图的米白平面,侧面看过去像一块白板
+  const stallCanvas = (() => {
+    let geo = null, valanceGeo = null;
+    const mats = new Map();
+    // 垂边:沿篷布前沿(模板里较低的那条边,本地坐标)向下垂 0.2~0.3m 的波浪条
+    const makeValance = (src) => {
+      const p = src.attributes.position;
+      let yMin = Infinity, yMax = -Infinity;
+      for (let i = 0; i < p.count; i++) { yMin = Math.min(yMin, p.getY(i)); yMax = Math.max(yMax, p.getY(i)); }
+      const front = [];
+      for (let i = 0; i < p.count; i++) if (p.getY(i) < yMin + (yMax - yMin) * 0.3) front.push([p.getX(i), p.getY(i), p.getZ(i)]);
+      front.sort((a, b) => a[0] - b[0]);
+      const edge = front.filter((q, i) => i === 0 || Math.abs(q[0] - front[i - 1][0]) > 1e-3);
+      const at = (x) => { // 前沿在 x 处的点(折线插值)
+        for (let i = 1; i < edge.length; i++) {
+          if (x <= edge[i][0] || i === edge.length - 1) {
+            const a = edge[i - 1], b = edge[i], t = Math.min(1, Math.max(0, (x - a[0]) / ((b[0] - a[0]) || 1)));
+            return [x, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+          }
+        }
+        return edge[0];
+      };
+      const x0 = edge[0][0], x1 = edge[edge.length - 1][0];
+      const P = [], U = [], I = [];
+      const n = 14;
+      for (let i = 0; i <= n; i++) {
+        const t = i / n, [x, y, z] = at(x0 + (x1 - x0) * t);
+        const drop = i % 2 ? 0.3 : 0.19;
+        P.push(x, y + 0.01, z, x, y - drop, z + 0.02);
+        U.push(t, 1, t, 0);
+        if (i) { const a = (i - 1) * 2; I.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+      }
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
+      g.setAttribute('uv', new THREE.Float32BufferAttribute(U, 2));
+      g.setIndex(I);
+      g.computeVertexNormals();
+      return g;
+    };
+    return (hex) => {
+      if (!mats.has(hex)) {
+        const c = document.createElement('canvas');
+        c.width = 64; c.height = 8;
+        const g2 = c.getContext('2d');
+        for (let i = 0; i < 8; i++) {
+          g2.fillStyle = i % 2 ? '#d8cdb2' : '#' + hex.toString(16).padStart(6, '0');
+          g2.fillRect(i * 8, 0, 8, 8);
+        }
+        const tex = new THREE.CanvasTexture(c);
+        tex.colorSpace = THREE.SRGBColorSpace;
+        tex.magFilter = THREE.LinearFilter;
+        mats.set(hex, texMatFromMap(tex));
+      }
+      return { mat: mats.get(hex), uvGeo: (src) => {
+        if (geo) return geo;
+        geo = src.clone();
+        const p = geo.attributes.position, uv = new Float32Array(p.count * 2);
+        for (let i = 0; i < p.count; i++) { uv[i * 2] = (p.getX(i) + 1.4) / 2.8; uv[i * 2 + 1] = p.getY(i); }
+        geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+        valanceGeo = makeValance(src);
+        return geo;
+      }, valance: () => valanceGeo };
+    };
+  })();
+  function texMatFromMap(map) {
+    const m = new THREE.MeshStandardMaterial({ map, roughness: 0.95, metalness: 0, side: THREE.DoubleSide });
+    m.userData.wettable = true;
+    m.userData.baseRough = 0.95;
+    m.onBeforeCompile = worldTint;
+    return m;
+  }
+  const STALL_DYE = { 0xc0392b: 0x9a4032, 0x2980b9: 0x45607e, 0xe6b422: 0xb08a3c, 0x27ae60: 0x56704a };
   function stall(x, z, canopyColor) {
-    // Blender 市集摊位模板(未染帆布——诺德市集不用糖果篷)
+    // Blender 市集摊位模板;篷布换成条纹染布 + 波浪垂边
     const stpl = getBuildingModel('stall');
     if (stpl) {
       const g = stpl.clone();
+      const cv = stallCanvas(STALL_DYE[canopyColor] || 0x8a5a3a);
+      g.traverse((o) => {
+        if (!o.isMesh || !o.material || o.material.name !== 'canvas') return;
+        o.geometry = cv.uvGeo(o.geometry);
+        o.material = cv.mat;
+        const val = new THREE.Mesh(cv.valance(), cv.mat);
+        val.position.copy(o.position);
+        val.quaternion.copy(o.quaternion);
+        val.scale.copy(o.scale);
+        val.castShadow = true;
+        o.parent.add(val);
+      });
       g.position.set(x, 0, z);
       g.lookAt(0, 0, 5);
       scene.add(g);
@@ -1454,30 +1539,88 @@ export function buildWorld(scene) {
 
   // ---- 灰烬荒地(极西) ----
   zoneDisc(-380, -40, 74, 0x57524c, 'ash');
+  // 焦木:nature.glb 的扭曲枯树(5~6m、带枝杈)烧成炭黑——远看是一片烧秃的林子,不再是几根黑牙签。
+  // 随机数消耗与旧版一致:照旧调一次 buildDeadTree(只为消耗),再读同样的两次 rand
+  const charMat = lambert(0x1f1c1a, { roughness: 1 });
   for (let i = 0; i < 14; i++) {
     const a = rand() * 6.28, rr = 10 + rand() * 60;
     const bx = -380 + Math.cos(a) * rr, bz = -40 + Math.sin(a) * rr;
     const burnt = buildDeadTree(rand, { bark: 0x211d1a });
-    burnt.group.scale.setScalar(0.8 + rand() * 0.5);
-    burnt.group.position.set(bx, 0, bz);
-    burnt.group.rotation.y = rand() * 6.28;
-    scene.add(burnt.group);
+    const sc = 0.8 + rand() * 0.5, yaw = rand() * 6.28;
+    const snag = natureProp(i % 2 ? 'DeadTree1' : 'DeadTree2', () => (sc - 0.8) / 0.5, 0.6 + sc * 0.45, yaw);
+    const tree = snag ? snag.group : burnt.group;
+    if (snag) tree.traverse((m) => { if (m.isMesh) m.material = charMat; });
+    else { tree.scale.setScalar(sc); tree.rotation.y = yaw; }
+    tree.position.set(bx, 0, bz);
+    scene.add(tree);
     circle(bx, bz, 0.35);
     feat('tree', bx, bz, 1, 1);
   }
-  // 古战场:插地断剑与白骨
-  for (let i = 0; i < 9; i++) {
-    const a = rand() * 6.28, rr = rand() * 22;
-    const sx = -372 + Math.cos(a) * rr, sz = -52 + Math.sin(a) * rr;
-    const bl = new THREE.Mesh(new THREE.BoxGeometry(0.09, 1.3, 0.03),
-      lambert(0x8a8f96, { metalness: 0.7, roughness: 0.5 }));
-    bl.position.set(sx, 0.6, sz);
-    bl.rotation.z = (rand() - 0.5) * 0.7;
-    bl.rotation.y = rand() * 3;
-    scene.add(bl);
-    const bone = new THREE.Mesh(new THREE.SphereGeometry(0.22, 6, 5), lambert(0xe4ded0, { roughness: 0.9 }));
-    bone.position.set(sx + 0.5, 0.15, sz + 0.3);
-    scene.add(bone);
+  // 古战场:插地的锈剑(收尖剑身 + 护手 + 缠柄 + 剑首)、散落的长骨与半埋的头骨、几面破盾(共享几何,随机数消耗不变)
+  {
+    const nonIdx = (g) => (g.index ? g.toNonIndexed() : g);
+    const strip = (g) => { const n = nonIdx(g); n.deleteAttribute('uv'); return n; };
+    const steelG = mergeGeometries([
+      strip(new THREE.CylinderGeometry(0.045, 0.004, 0.95, 4, 1).rotateY(Math.PI / 4).scale(1, 1, 0.3).translate(0, 0.475, 0)),
+      strip(new THREE.BoxGeometry(0.27, 0.035, 0.045).translate(0, 0.967, 0)),
+      strip(new THREE.IcosahedronGeometry(0.032, 0).translate(0, 1.21, 0)),
+    ]);
+    steelG.computeVertexNormals();
+    const gripG = strip(new THREE.CylinderGeometry(0.019, 0.022, 0.2, 6).translate(0, 1.085, 0));
+    const longBoneG = mergeGeometries([
+      strip(new THREE.CylinderGeometry(0.03, 0.034, 0.44, 5).rotateZ(Math.PI / 2)),
+      ...[-0.23, 0.23].flatMap((x) => [-0.035, 0.035].map((z) => strip(new THREE.IcosahedronGeometry(0.05, 0).translate(x, 0, z)))),
+    ]);
+    longBoneG.computeVertexNormals();
+    const skullG = mergeGeometries([
+      strip(new THREE.IcosahedronGeometry(0.15, 1).scale(1, 0.86, 1.18)),
+      strip(new THREE.BoxGeometry(0.16, 0.07, 0.12).translate(0, -0.1, 0.11)),
+    ]);
+    skullG.computeVertexNormals();
+    const shieldG = strip(new THREE.CylinderGeometry(0.36, 0.36, 0.05, 9).rotateX(Math.PI / 2));
+    const steelM = lambert(0x7b7871, { metalness: 0.55, roughness: 0.62 });
+    const gripM = lambert(0x3e2e22, { roughness: 0.95 });
+    const boneM = lambert(0xd9d2c0, { roughness: 0.9 });
+    const shieldM = lambert(0x5a4330, { roughness: 0.95 });
+    const sockM = lambert(0x1a1714, { roughness: 1 });
+    for (let i = 0; i < 9; i++) {
+      const a = rand() * 6.28, rr = rand() * 22;
+      const sx = -372 + Math.cos(a) * rr, sz = -52 + Math.sin(a) * rr;
+      const sword = new THREE.Group();
+      for (const [g, m] of [[steelG, steelM], [gripG, gripM]]) {
+        const mesh = new THREE.Mesh(g, m);
+        mesh.castShadow = true;
+        sword.add(mesh);
+      }
+      sword.position.set(sx, -0.22, sz); // 剑尖扎进土里
+      sword.rotation.z = (rand() - 0.5) * 0.7;
+      sword.rotation.y = rand() * 3;
+      scene.add(sword);
+      const lie = new THREE.Mesh(i % 3 === 0 ? skullG : longBoneG, boneM);
+      lie.position.set(sx + 0.5, i % 3 === 0 ? 0.06 : 0.03, sz + 0.3);
+      lie.rotation.set(i % 3 === 0 ? 0.35 : 0, a * 2.3, i % 3 === 0 ? 0.2 : 0);
+      lie.castShadow = true;
+      scene.add(lie);
+      if (i % 3 === 0) { // 头骨的眼窝
+        for (const s of [-1, 1]) {
+          const eye = new THREE.Mesh(new THREE.IcosahedronGeometry(0.035, 0), sockM);
+          eye.position.set(0.055 * s, 0.03, 0.15);
+          lie.add(eye);
+        }
+      } else if (i % 3 === 1) { // 第二根骨头横搭在上面
+        const b2 = new THREE.Mesh(longBoneG, boneM);
+        b2.position.set(0.04, 0.05, 0.02);
+        b2.rotation.y = 1.1;
+        lie.add(b2);
+      }
+      if (i % 4 === 1) { // 半埋的破盾斜靠在剑边
+        const sh = new THREE.Mesh(shieldG, shieldM);
+        sh.position.set(sx - 0.55, 0.22, sz - 0.2);
+        sh.rotation.set(-1.05, a, 0.2);
+        sh.castShadow = true;
+        scene.add(sh);
+      }
+    }
   }
   feat('bone', -372, -52, 30, 30);
   road(-215, -42, -352, -40, 3);
@@ -1666,7 +1809,37 @@ export function buildWorld(scene) {
   box(0, -500020, 1000100, 40); box(0, 500020, 1000100, 40);
   box(-500020, 0, 40, 1000100); box(500020, 0, 40, 1000100);
 
+  // 回响之镜的镜面(systems/mind.js 的 initMirror 取用):深色黑曜石上一团缓缓旋转的雾光——中心亮、边缘沉,
+  // 冷蓝里带一点月白,像镜子里有东西在看你;金属感的镜面另外反一层天色。时间取表面补丁的共享时钟(天气系统每帧推进)
+  // 一丝自发光让它不算"朴素材质":静态合批不会把它烘进顶点色材质(那样就丢了这段着色器)
+  const mirrorGlass = new THREE.MeshStandardMaterial({ color: 0x0c121c, emissive: 0x020305, roughness: 0.14, metalness: 0.7, side: THREE.DoubleSide });
+  mirrorGlass.onBeforeCompile = (sh) => {
+    sh.uniforms.uMTime = surfaceUniforms.uTime;
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec2 vMP;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvMP = position.xy;');
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', `#include <common>
+        varying vec2 vMP;
+        uniform float uMTime;
+        float mH(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+        float mN(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+          return mix(mix(mH(i), mH(i + vec2(1.0, 0.0)), f.x), mix(mH(i + vec2(0.0, 1.0)), mH(i + vec2(1.0, 1.0)), f.x), f.y); }`)
+      .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
+        {
+          vec2 q = vMP - vec2(0.0, 2.25);
+          float r = length(q * vec2(1.0, 0.72));
+          float a = atan(q.y, q.x);
+          float sw = 0.5 + 0.5 * sin(a * 3.0 + r * 5.5 - uMTime * 0.55);
+          float n = mN(q * 2.4 + vec2(uMTime * 0.12, -uMTime * 0.09)) * 0.6 + mN(q * 6.0 - uMTime * 0.2) * 0.4;
+          float glow = (1.0 - smoothstep(0.05, 1.55, r)) * (0.35 + 0.45 * sw * n) + 0.1 * n;
+          totalEmissiveRadiance += mix(vec3(0.03, 0.06, 0.12), vec3(0.5, 0.68, 0.9), glow) * glow * 1.3;
+        }`);
+  };
+  mirrorGlass.customProgramCacheKey = () => 'mirror-glass-1';
+
   return {
+    mirrorGlass,
     ground, grassMesh, islandAltarMat,
     cryptLights,
     dungeon: { hatch: { x: 10, z: -50 }, inX0: 316, inZ0: -316, inW: 72, inD: 72,
