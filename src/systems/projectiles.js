@@ -10,6 +10,7 @@ import { scene } from '../gfx/core.js';
 import { hitFX, showDamage } from '../ui/feedback.js';
 import { toast } from '../ui/toast.js';
 import { bandits, guards, wolves } from './actors.js';
+import { applyDamage, flinch, magBurst } from './combat.js';
 import { damageDragon, dragonRT } from './dragon.js';
 import { EVO } from './evo.js';
 import { chickens, deers, killDeer, pokeChicken } from './fauna.js';
@@ -17,7 +18,6 @@ import { WEAPONS } from './gear.js';
 import { arrowBonus, dragonAim, explodeAt, skillLv, skillXp } from './magic.js';
 import { prologue } from './prologue.js';
 import { weather } from './weather.js';
-import { applyDamage, flinch, magBurst } from '../main.js';
 
 // ================= 箭矢与投射物 =================
 export const arrows = [];

@@ -6,8 +6,9 @@ import { SAVE_KEY } from '../core/save.js';
 import { player } from '../core/state.js';
 import { STYLE_PRESETS, renderer, styleKey } from '../gfx/core.js';
 import { QUALITY, nextStyle, qualityIdx, setQuality } from '../gfx/quality.js';
+import { cancelCharge } from '../systems/attack.js';
 import { hintVisible, toggleHint } from './hudview.js';
-import { cancelCharge, inputQ } from '../main.js';
+import { inputQ } from '../main.js';
 
 // ================= 暂停菜单(唯一系统菜单,ESC 弹出) =================
 const pauseEl = document.getElementById('pause');

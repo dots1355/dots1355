@@ -14,11 +14,11 @@ import { VILLAGERS } from '../story.js';
 import { flashing } from '../ui/feedback.js';
 import { initWilderness } from '../wilderness.js';
 import { wildSpots } from './activities.js';
+import { lockFoe, setLockFoe } from './combat.js';
 import { EVO } from './evo.js';
 import { addSheep } from './fauna.js';
 import { frostSlow } from './magic.js';
 import { addPickup, pickups } from './pickups.js';
-import { lockFoe, setLockFoe } from '../main.js';
 
 // ================= 马 =================
 export const horses = [];

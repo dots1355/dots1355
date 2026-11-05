@@ -4,10 +4,16 @@
 // initPickups() 启动装配调用一次;主循环调 updatePickups(dt)、updateCoinInstances(now)。
 import * as THREE from 'three';
 import { mergeGeometries } from '../../lib/jsm/utils/BufferGeometryUtils.js';
-import { groundH } from '../terrain.js';
+import { sfx } from '../audio.js';
 import { rand } from '../core/rng.js';
+import { saveGame } from '../core/save.js';
+import { player, world } from '../core/state.js';
+import { dist2 } from '../entities.js';
 import { scene } from '../gfx/core.js';
-import { world } from '../core/state.js';
+import { groundH } from '../terrain.js';
+import { toast } from '../ui/toast.js';
+import { stats } from './achievements.js';
+import { missions, quest } from './quests.js';
 
 // ================= 拾取物 =================
 export const pickups = [];
@@ -152,4 +158,59 @@ export function initPickups() {
   coinGlint.userData.noSnap = true;
   scene.add(coinGlint);
   for (const [x, z] of world.coinSpots) addPickup('coin', x, z);
+}
+
+export function updatePickups(dt) {
+  const radius = player.mounted ? 1.8 : 1.2;
+  for (let i = pickups.length - 1; i >= 0; i--) {
+    const p = pickups[i];
+    p.t += dt;
+    if (p.ttl !== Infinity) {
+      p.ttl -= dt;
+      if (p.ttl <= 0) { scene.remove(p.mesh); pickups.splice(i, 1); continue; }
+      p.mesh.visible = p.ttl > 5 || Math.floor(p.t * 8) % 2 === 0;
+    }
+    p.mesh.rotation.y += dt * 3.5;
+    // 金币磁吸:靠近就飞进口袋
+    if (p.type === 'coin' && !player.dead) {
+      const md = dist2(player.pos.x, player.pos.z, p.x, p.z);
+      if (md < 30 && md > 0.05) {
+        const d = Math.sqrt(md);
+        const pull = (12 * dt) / d;
+        p.x += (player.pos.x - p.x) * pull;
+        p.z += (player.pos.z - p.z) * pull;
+        p.mesh.position.x = p.x;
+        p.mesh.position.z = p.z;
+      }
+    }
+    if (p.type !== 'coin') p.mesh.position.y = (p.type === 'star' ? 1.4 : p.type === 'crest' ? 1.0 : 0.65) + Math.sin(p.t * 3) * 0.12;
+    if (!player.dead && dist2(player.pos.x, player.pos.z, p.x, p.z) < radius * radius &&
+        player.pos.y < 1.5) {
+      if (p.type === 'coin') {
+        player.coins++;
+        sfx.coin();
+        if (quest.active && missions[quest.idx].type === 'coins') quest.progress++;
+      } else if (p.type === 'heart') {
+        player.hp = Math.min(player.maxHp, player.hp + 2);
+        sfx.heart();
+      } else if (p.type === 'crest') {
+        crestsFound.push(p.id);
+        sfx.chest();
+        if (crestsFound.length >= world.crestSpots.length) {
+          player.coins += 100;
+          sfx.fanfare();
+          toast(`🛡️ 集齐 ${world.crestSpots.length} 枚皇家纹章!奖励 100 金币!`, 5);
+        } else {
+          toast(`🛡️ 皇家纹章 ${crestsFound.length}/${world.crestSpots.length}`, 3);
+        }
+        saveGame();
+      } else {
+        stats.starTaken = true; // 金狮勋章只领一次,记进档
+        sfx.fanfare();
+        toast('★ 恭喜通关!你成了王国传奇——世界仍然开放,继续撒欢吧!★', 8);
+      }
+      scene.remove(p.mesh);
+      pickups.splice(i, 1);
+    }
+  }
 }

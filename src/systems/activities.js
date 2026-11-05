@@ -18,6 +18,7 @@ import { toast } from '../ui/toast.js';
 import { ACH_DEFS, achUnlocked, stats, unlockAch } from './achievements.js';
 import { addBandit } from './actors.js';
 import { SEASONS, calendar, dayPhase, seasonDay, seasonIdx, todaySpecial } from './calendar.js';
+import { wolfKills } from './combat.js';
 import { EVO, legendText } from './evo.js';
 import { frostfang } from './fauna.js';
 import { recomputeMaxHp } from './gear.js';
@@ -29,7 +30,6 @@ import {
 import { crestsFound } from './pickups.js';
 import { missions, quest, stewardWhere } from './quests.js';
 import { spawnDust, weather } from './weather.js';
-import { wolfKills } from '../main.js';
 
 // ================= 野外热点:篝火(烤肉)/温泉(泡汤)/教堂(庇佑) =================
 export const wildSpots = [];

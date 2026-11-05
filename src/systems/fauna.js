@@ -16,10 +16,11 @@ import { stats, unlockAch } from './achievements.js';
 import {
   addBandit, bandits, entFar, guards, horses, moveEntity, retireEntity, villagers, wolves,
 } from './actors.js';
+import { applyDamage } from './combat.js';
 import { crime } from './law.js';
 import { remember } from './mind.js';
 import { spawnDust } from './weather.js';
-import { applyDamage, damagePlayer } from '../main.js';
+import { damagePlayer } from '../main.js';
 
 // ================= 鸡(惹不起的存在) =================
 export const chickens = [];

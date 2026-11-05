@@ -21,12 +21,12 @@ import { stats, unlockAch } from './achievements.js';
 import { choreProgress } from './activities.js';
 import { animateLimbs, entFar, horses, meleeSwing, moveEntity } from './actors.js';
 import { SEASONS, dayPhase, seasonIdx, todaySpecial } from './calendar.js';
+import { wolfKills } from './combat.js';
 import { arenaHost } from './events.js';
 import { wanted } from './law.js';
 import { remember, wsReport } from './mind.js';
 import { addPickup, crestsFound } from './pickups.js';
 import { missions, quest, questGiver } from './quests.js';
-import { wolfKills } from '../main.js';
 
 // ================= 具名 NPC =================
 const npcStyles = {

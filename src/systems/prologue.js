@@ -9,9 +9,9 @@ import { abHighlight } from '../ui/hudview.js';
 import { toast, toastNow } from '../ui/toast.js';
 import { addHorse, horses, wolves } from './actors.js';
 import { cam } from './camera.js';
+import { killWolf, lockFoe, setLockFoe } from './combat.js';
 import { clock } from './sky.js';
 import { spawnDust } from './weather.js';
-import { killWolf, lockFoe, setLockFoe } from '../main.js';
 
 // ================= 序章(天际式开场):狼袭教学 → 队长赏识 → 标题卡揭幕 =================
 export const prologue = { on: false, step: 0, t: 0, wolves: [] };

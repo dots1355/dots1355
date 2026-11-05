@@ -12,8 +12,8 @@ import { toast } from '../ui/toast.js';
 import { stats } from './achievements.js';
 import { animateLimbs, bandits, meleeSwing, moveEntity, retireEntity, wolves } from './actors.js';
 import { calendar } from './calendar.js';
+import { applyDamage } from './combat.js';
 import { remember } from './mind.js';
-import { applyDamage } from '../main.js';
 
 // ================= 佣兵(骑砍式:旅店雇剑士随行,按日发饷) =================
 export const mercs = [];

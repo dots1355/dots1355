@@ -9,6 +9,7 @@ import { stats, unlockAch } from '../systems/achievements.js';
 import {
   SEASONS, SEASON_ICON, dayPhase, isWinter, seasonDay, seasonIdx, todaySpecial,
 } from '../systems/calendar.js';
+import { lockFoe } from '../systems/combat.js';
 import { dragonRT } from '../systems/dragon.js';
 import { arenaRT } from '../systems/events.js';
 import { ARMORS, WEAPONS } from '../systems/gear.js';
@@ -17,10 +18,11 @@ import { SPELLS, shout } from '../systems/magic.js';
 import { crestsFound } from '../systems/pickups.js';
 import { prologue } from '../systems/prologue.js';
 import { canAcceptRemotely, missions, quest, questRT, stewardWhere } from '../systems/quests.js';
+import { warband } from '../systems/warband.js';
 import { weather } from '../systems/weather.js';
 import { CORE, wildRegionName } from '../wilderness.js';
 import { heartsHTML, iconHTML, manaHTML, richText, svgIcon, wantedHTML, weatherHTML } from './hud.js';
-import { lockFoe, promptText, warband } from '../main.js';
+import { promptText } from '../main.js';
 
 // ================= HUD 面板引用 =================
 const $hud = (id) => document.getElementById(id);
