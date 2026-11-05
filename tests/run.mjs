@@ -414,6 +414,9 @@ const TESTS = {
       const h = g.player.horse;
       const v = g.villagers.find((x) => !x.sleeping && !(x.downT > 0));
       if (h && v) {
+        // 挪到一片空地上再摆(村民原地的墙角/人堆会把玩家挤开、或有别人更近,结果就随开局而变)
+        v.pos.set(0, 0, 60); v.group.position.copy(v.pos); v.target = null; v.timer = 99; v.fleeT = 0;
+        h.target = null; h.timer = 99;
         g.player.pos.set(v.pos.x + 2.4, 0, v.pos.z);
         h.pos.set(v.pos.x + 3.6, 0, v.pos.z); h.group.position.copy(h.pos);
         g.step(1);
