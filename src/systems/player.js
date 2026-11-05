@@ -309,7 +309,7 @@ export function updatePlayer(dt) {
   if (player.blocking && !player.parts._attackAnim) {
     if (hasShield) {
       player.parts.armL.rotation.x = -1.3;
-      player.parts.armL.rotation.z = 0.55;
+      player.parts.armL.rotation.z = 0.85; // 盾往外侧送一点:镜头在身后时也看得见盾沿
       player.parts.armR.rotation.x = -0.45;
       player.parts.armR.rotation.z = -0.2;
     } else {
@@ -329,6 +329,7 @@ export function updatePlayer(dt) {
     }
   }
   playerShield.rotation.y = player.blocking ? -1.1 : 0; // 举盾时盾面转向正前
+  playerShield.scale.setScalar(player.blocking ? 1.15 : 1);
   // 施法:抬手前推(火球聚能时一直举着);抬起/放下用 0.08 秒过渡,不再一帧瞬切
   const casting = (player.castPoseT > 0 || player.fireCharging) && !player.parts._attackAnim && !player.blocking;
   player._castK = Math.max(0, Math.min(1, (player._castK || 0) + (casting ? dt : -dt) / 0.08));
