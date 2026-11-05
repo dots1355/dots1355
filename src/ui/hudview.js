@@ -19,7 +19,7 @@ import { SPELLS, shout } from '../systems/magic.js';
 import { crestsFound } from '../systems/pickups.js';
 import { prologue } from '../systems/prologue.js';
 import { canAcceptRemotely, missions, quest, questRT, stewardWhere } from '../systems/quests.js';
-import { warband } from '../systems/warband.js';
+import { playerFarFromTown, warband } from '../systems/warband.js';
 import { weather } from '../systems/weather.js';
 import { CORE, wildRegionName } from '../wilderness.js';
 import { heartsHTML, iconHTML, manaHTML, richText, svgIcon, wantedHTML, weatherHTML } from './hud.js';
@@ -156,10 +156,14 @@ export function updateHUD() {
   if (timer) missionText = `${timer}${quest.timer < 12 ? ' ⚠️' : ''}\n${missionText}`;
   if (dragonRT.on) missionText = `🐉 霜龙 ❤${Math.max(0, dragonRT.hp)}/${dragonRT.maxHp}` +
     `${dragonRT.phase === 'land' ? ' · 落地喘息:上刀!' : ' · 飞行中(弓/法术)'}\n` + missionText;
-  if (warband.active) { // 战况横幅:战团还剩几个,一眼可知
-    const wbAlive = warband.members.filter((b) => !b.dead).length;
-    missionText = `${warband.siege ? '🚨 攻城战' : '⚔️ 战团来袭'}:余 ${wbAlive}/${warband.members.length}` +
-      `${warband.duelOn ? ' · 单挑中!' : ''}\n` + missionText;
+  if (warband.active) { // 战况横幅:战团还剩几个,一眼可知;人在 300 米外时改报"王都遭袭,离你多远"
+    const wbAlive = warband.members.filter((b) => !b.dead);
+    const lead = wbAlive[0];
+    const far = playerFarFromTown() && lead;
+    missionText = (far
+      ? `${warband.siege ? '🚨 王都被围' : '⚔️ 王都遭袭'}(距你 ${Math.round(Math.hypot(lead.pos.x - player.pos.x, lead.pos.z - player.pos.z) / 10) * 10} 米):余 ${wbAlive.length}/${warband.members.length}`
+      : `${warband.siege ? '🚨 攻城战' : '⚔️ 战团来袭'}:余 ${wbAlive.length}/${warband.members.length}` +
+        `${warband.duelOn ? ' · 单挑中!' : ''}`) + '\n' + missionText;
   }
   missionText += `\n🛡️ 皇家纹章 ${crestsFound.length}/${world.crestSpots.length}`;
   const raining = weather.state === 'rain' || weather.state === 'storm';

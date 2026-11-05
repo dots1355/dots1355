@@ -614,6 +614,34 @@ const TESTS = {
     if (!r.aggroNear || !r.closing) throw new Error(`走进 10 米伏兵没转来打你:${JSON.stringify(r)}`);
     if (!r.aggroHit) throw new Error('远远打了伏兵一下,它没转来追你');
   },
+  // 战团行军走航点图:从正北来的战团绕过城角走到东门,不再贴着北墙横移;玩家远在 300 米外时横幅改报距离
+  async warband(page) {
+    await boot(page);
+    const r = await page.evaluate(() => {
+      const g = window.__gtm, wb = g.warband;
+      g.player.pos.set(0, 0, 200); g.player.hp = g.player.maxHp = 999;
+      g.quest.idx = 3;
+      g.spawnWarband();
+      wb.ax = 0; wb.az = -120; // 摆到正北 120 米,目标东门(北面来离它最近)
+      wb.path = [[82, 0], [70, 0], [0, 10]]; wb.wp = 0; wb.hop = null;
+      for (const b of wb.members) { b.pos.set(b._ox, 0, -120 + b._oz); b.home.set(b.pos.x, 0, b.pos.z); }
+      let minGateD = Infinity, crossed = false, prevZ = wb.az;
+      for (let i = 0; i < 300 && wb.active && minGateD > 10; i++) {
+        g.step(15, 1 / 30); // 0.5 秒
+        for (const b of wb.members) if (!b.dead) minGateD = Math.min(minGateD, Math.hypot(b.pos.x - 70, b.pos.z));
+        if (Math.abs(wb.ax) < 69 && prevZ < -56 && wb.az >= -54) crossed = true;
+        prevZ = wb.az;
+      }
+      const out = { minGateD, crossed, active: wb.active, ax: wb.ax, az: wb.az, wp: wb.wp };
+      g.player.pos.set(700, 0, 700);
+      g.step(2);
+      out.banner = document.getElementById('mission').textContent;
+      return out;
+    });
+    if (r.crossed) throw new Error('战团锚点直接穿过了北墙');
+    if (r.minGateD > 10) throw new Error(`北面来的战团 150 秒内没走到东门:${JSON.stringify(r)}`);
+    if (r.active && !/距你/.test(r.banner)) throw new Error(`人在 300 米外,战团横幅没报距离:${r.banner}`);
+  },
   // 提示分级:同 key 的进度只留最新一条;同一句不排两遍;委托完成/失败/重接时排队的委托提示作废;插队的排最前
   async toasts(page) {
     await boot(page);

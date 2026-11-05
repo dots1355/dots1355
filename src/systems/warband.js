@@ -15,6 +15,7 @@ import { addBandit, bandits } from './actors.js';
 import { calendar } from './calendar.js';
 import { addBarricade } from './magic.js';
 import { remember } from './mind.js';
+import { navNext } from './nav.js';
 import { prologue } from './prologue.js';
 import { quest } from './quests.js';
 
@@ -102,10 +103,13 @@ const WARLORD_REVENGE = [
   '记住这面旗,它会插在你坟头!',
   '我们回来了,这次带够了人手!',
 ];
+// 玩家离王都多远(战团只冲王都来:人在 300 米外时不再刷新战团,在途的横幅改报距离)
+export function playerFarFromTown() { return Math.hypot(player.pos.x, player.pos.z) > 300; }
 export function updateWarband(dt) {
   if (!started || player.dead) return;
   if (!warband.active) {
-    if (!prologue.on && quest.idx >= 3) warband.cd -= dt; // 新手先办完剿匪委托,战团才开始出没
+    // 新手先办完剿匪委托,战团才开始出没;人在远方时不刷(半路截不住、横幅白挂)
+    if (!prologue.on && quest.idx >= 3 && !playerFarFromTown()) warband.cd -= dt;
     if (warband.cd <= 0) spawnWarband();
     return;
   }
@@ -169,32 +173,44 @@ export function updateWarband(dt) {
     sfx.fanfare();
     return;
   }
-  // 行军:队伍的锚点沿航点(门外集结 → 城门 → 广场)稳步推进,成员按队形跟着锚点;
-  // 贴近玩家的成员自动切普通战斗 AI
+  // 行军:队伍的锚点沿航点(门外集结 → 城门 → 广场)稳步推进;每一段都走光柱用的同一张航点图(nav.js)——
+  // 从北面来就先绕到城角再到门,不再贴着北墙横移。成员按队形跟着锚点;贴近玩家的成员自动切普通战斗 AI
   const path = warband.path || [[0, 10]];
   const wpT = path[Math.min(warband.wp || 0, path.length - 1)];
+  const last = (warband.wp || 0) >= path.length - 1;
+  const hop = navNext(warband.ax, warband.az, wpT[0], wpT[1], warband.hop);
+  warband.hop = hop;
+  const hx = hop ? hop.x : wpT[0], hz = hop ? hop.z : wpT[1]; // 眼下这一步要去的点(航点或路标本身)
   {
-    const dx = wpT[0] - warband.ax, dz = wpT[1] - warband.az;
-    const d = Math.hypot(dx, dz);
-    const last = (warband.wp || 0) >= path.length - 1;
+    const d = Math.hypot(wpT[0] - warband.ax, wpT[1] - warband.az);
     if (d < (last ? 14 : 3) && !last) warband.wp++;
     else if (d > (last ? 14 : 0.5)) {
       // 锚点别跑出队伍太远:成员落后(被卡住/在打架)时锚点等人
       let lag = 0;
       for (const b of alive) lag = Math.max(lag, Math.hypot(b.pos.x - b.home.x, b.pos.z - b.home.z));
       const sp = lag > 14 ? 0.6 : 4.2;
-      warband.ax += (dx / d) * sp * dt;
-      warband.az += (dz / d) * sp * dt;
+      const ex = hx - warband.ax, ez = hz - warband.az, el = Math.hypot(ex, ez) || 1;
+      const step = Math.min(el, sp * dt);
+      warband.ax += (ex / el) * step;
+      warband.az += (ez / el) * step;
     }
   }
+  // 成员的落脚点 = 锚点 + 队形偏移;隔着城墙(锚点进了城门、人还在墙外)时先去航点图给的下一跳(门外点/门内点),
+  // 别顶着门楼塔和城墙挤。每人每 0.5 秒重查一次
   for (const b of alive) {
-    b.home.x = warband.ax + (b._ox || 0);
-    b.home.z = warband.az + (b._oz || 0);
+    const tx = warband.ax + (b._ox || 0), tz = warband.az + (b._oz || 0);
+    b._navT = (b._navT || 0) - dt;
+    if (b._navT <= 0) { b._navT = 0.5; b._hop = navNext(b.pos.x, b.pos.z, tx, tz, b._hop); }
+    b.home.x = b._hop ? b._hop.x : tx;
+    b.home.z = b._hop ? b._hop.z : tz;
   }
-  // 卡住兜底:60 秒没有朝广场推进 5 米以上,战团畏缩撤走(横幅一并清掉)
+  // 卡住兜底:60 秒没有朝眼下这一跳(城角/城门/广场)逼近 5 米以上,战团畏缩撤走(横幅一并清掉);
+  // 换了一跳就重新计——绕城角时离广场先远后近,不算卡住
   {
+    const hopKey = `${Math.round(hx)},${Math.round(hz)}`; // 按"量的是哪个点"认:换了目标就重新计
+    if (warband.hopKey !== hopKey) { warband.hopKey = hopKey; warband.bestD = Infinity; warband.stallT = 0; }
     let sum = 0;
-    for (const b of alive) sum += Math.hypot(b.pos.x, b.pos.z - 10);
+    for (const b of alive) sum += Math.hypot(b.pos.x - hx, b.pos.z - hz);
     const avg = sum / alive.length;
     const engaged = alive.some((b) => dist2(b.pos.x, b.pos.z, player.pos.x, player.pos.z) < 900); // 正和你交手:不算卡住
     if (avg < warband.bestD - 5 || engaged) { warband.bestD = Math.min(warband.bestD, avg); warband.stallT = 0; }
