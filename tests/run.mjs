@@ -405,6 +405,41 @@ const TESTS = {
     if (!/宝箱/.test(r.chestPrompt)) throw new Error(`宝箱旁的提示不对:${r.chestPrompt}`);
     if (!r.chestOpened) throw new Error('按 E 没有打开宝箱');
   },
+  // E 键找人:2.65 米内最近的那位;有委托可接时管家优先(夜里他和领主站在一起);信使的委托书骑在马上也能直接接
+  async ekey(page) {
+    await boot(page);
+    const r = await page.evaluate(() => {
+      const g = window.__gtm, out = {};
+      const king = g.namedNPCs.find((n) => n.key === 'king');
+      g.steward.pos.set(0, 0, -29.5); king.pos.set(0, 0, -30.6);
+      g.player.pos.set(0.3, 0, -31.4); // 领主 0.9 米、管家 1.9 米
+      g.quest.active = false;
+      g.step(1);
+      out.offer = g.getPrompt();
+      g.quest.active = true;
+      g.step(1);
+      out.busy = g.getPrompt();
+      g.quest.active = false;
+      // 信使:办完一单(下一单不计时)后骑在马上直接 E
+      g.quest.idx = g.missions.findIndex((m) => m.type === 'losthorse');
+      g.quest.active = true;
+      g.completeMission();
+      while (g.dialogOpen()) g.advanceDialog();
+      g.player.pos.set(30, 0, 40);
+      g.player.mounted = g.player.horse;
+      g.step(1);
+      out.remotePrompt = g.getPrompt();
+      g.tryInteract();
+      while (g.dialogOpen()) g.advanceDialog();
+      out.accepted = g.quest.active;
+      out.stillMounted = !!g.player.mounted;
+      return out;
+    });
+    if (!/埃隆/.test(r.offer)) throw new Error(`有委托可接时应先找管家,提示却是:${r.offer}`);
+    if (!/领主/.test(r.busy)) throw new Error(`委托在办时应找最近的人(领主),提示却是:${r.busy}`);
+    if (!/接下一单/.test(r.remotePrompt)) throw new Error(`骑在马上没给出接信使委托的提示:${r.remotePrompt}`);
+    if (!r.accepted || !r.stillMounted) throw new Error(`骑在马上按 E 没接下信使的委托:${JSON.stringify(r)}`);
+  },
   // 流程:自己的马比 NPC 近时 E=上马;走远对话自动收;城外穿城的光柱绕墙角;没委托时光柱指埃隆
   async playFlow(page) {
     await boot(page);

@@ -169,10 +169,10 @@ export function completeMission() {
   showReward('委 托 完 成', m.title, `🪙 +${m.reward} 金币`,
     !nx ? '全部委托完成!去喷泉广场领取金狮勋章,再去见领主。'
       : nx.time ? `下一单:${nx.title} —— ${nx.desc}\n限时委托:回${stewardWhere()}找管家埃隆接取(光柱指路)`
-        : `下一单:${nx.title} —— ${nx.desc}\n王室信使已在路上:按 E 原地接下(或回${stewardWhere()}找埃隆)`);
+        : `下一单:${nx.title} —— ${nx.desc}\n王室信使到了:20 秒内按 E 原地接下(骑在马上也行;错过了就回${stewardWhere()}找埃隆)`);
   quest.active = false;
   quest.idx++;
-  quest.offerT = nx && !nx.time ? 12 : 0;
+  quest.offerT = nx && !nx.time ? 20 : 0;
   dropQuestToasts(); // 上一单的过期提示作废
   if (player.parcel) { player.group.remove(player.parcel); player.parcel = null; }
   clearRaceRings();

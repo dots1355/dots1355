@@ -136,7 +136,7 @@ export function updateHUD() {
   else if (quest.idx >= missions.length) missionText = '🏆 全部委托完成 — 去谒见领主,王国是你的了!';
   else if (!quest.active) {
     missionText = canAcceptRemotely()
-      ? `📜 委托 ${quest.idx + 1}/${missions.length}:${missions[quest.idx].title} —— 按 E 原地接下(信使送来的委托书)`
+      ? `📜 委托 ${quest.idx + 1}/${missions.length}:${missions[quest.idx].title} —— 信使等你 ${Math.ceil(quest.offerT)} 秒:按 E 原地接下`
       : `📜 委托 ${quest.idx + 1}/${missions.length}:去${stewardWhere()}找管家埃隆(按 E,光柱指路)`;
   }
   else {
