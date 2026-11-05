@@ -1,13 +1,10 @@
-// 共享上下文:main.js 启动时把玩家、世界、碰撞体等"活对象"和少量回调登记进来;
-// 拆出去的系统模块通过它访问,而不是隐式依赖 main.js 的模块级变量。
+// 回调登记处:相机、天空、天气、地图这些底层模块不认识玩法模块,需要"锁定的是谁、是不是冬天、在不在地窖、
+// 世界心境、弹一条提示、地图要画哪些人"时,读 main.js 在装配时登记进来的回调,从而保持是依赖图里的叶子。
+// 玩家、世界、碰撞网格、是否开局这些共享根对象不在这里,在 core/state.js。
 // 这里给出安全的缺省值:登记之前被调用也不会崩(例如加载期设置天气)。
 export const ctx = {
-  player: null,
-  world: null,
-  colliders: null,
   getLockFoe: () => null,
   isWinter: () => false,
-  started: () => false,
   toast: () => {},
   mood: () => 0,
   inDungeon: () => false,

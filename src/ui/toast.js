@@ -3,10 +3,11 @@
 // toastNow(插队,教学用)/ updateToast(dt) 由主循环驱动;toastQueue 供测试清空。
 // 档位:委托(2)> 一般(1)> 氛围(0);排太久(>7 秒)的过期作废;队列最多 5 条,满了先挤掉低档的旧条。
 import { simNow } from '../core/timers.js';
-import { prologue } from '../systems/prologue.js';
-import { quest } from '../systems/quests.js';
 import { richText } from './hud.js';
 
+// "现在忙着呢"(有委托在办、序章里):启动装配时由 main 登记,本模块不认识玩法模块
+let ambientBusy = () => false;
+export function setAmbientGate(fn) { ambientBusy = fn; }
 // 顶部细条通知:队列化,一次一条,不遮挡视野
 const toastEl = document.getElementById('toast');
 let toastTimer = 0; // >0 显示中,<0 淡出间隔
@@ -30,7 +31,7 @@ export function toast(msg, dur = 2.6) { pushToast(msg, dur, 1, null); }
 export function toastQuest(msg, dur = 3.5) { pushToast(msg, dur, 2, 'quest'); }
 // 氛围类(世界的心声、闲笔):有委托在办、或队列已经排着两条以上时,直接不播
 export function toastAmbient(msg, dur = 3.5) {
-  if (quest.active || toastQueue.length >= 2 || prologue.on) return;
+  if (ambientBusy() || toastQueue.length >= 2) return;
   pushToast(msg, dur, 0, 'ambient');
 }
 export function dropQuestToasts() {

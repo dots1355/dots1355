@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import { camera } from '../gfx/core.js';
 import { groundH } from '../terrain.js';
 import { rand } from '../core/rng.js';
+import { colliders, player, world } from '../core/state.js';
 import { ctx } from '../core/ctx.js';
 import { angleLerp } from '../entities.js';
 
@@ -57,7 +58,6 @@ function pullCameraFromRocks(target, colliders) {
   }
 }
 export function updateCamera(dt) {
-  const { player, world, colliders } = ctx;
   const lockFoe = ctx.getLockFoe();
   const dist = player.mounted ? (player.mounted.sheep ? 6 : 9) : 6.2;
   const ty = player.pos.y + groundH(player.pos.x, player.pos.z) +

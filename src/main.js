@@ -8,7 +8,7 @@ import { initAmbient } from './ambient.js';
 import { ctx } from './core/ctx.js';
 import { frame } from './core/frame.js';
 import { applyProgress, loadGame } from './core/save.js';
-import { bindPlayer, bindWorld, colliders, player, started, world } from './core/state.js';
+import { bindPlayer, bindWorld, player, started, world } from './core/state.js';
 import { installTestHooks } from './core/testhooks.js';
 import { scaleDt } from './core/timefx.js';
 import { updateTimers } from './core/timers.js';
@@ -20,7 +20,7 @@ import { composer, renderer, scene } from './gfx/core.js';
 import { facetKind } from './gfx/facet.js';
 import { initLightPool, updateLightPool } from './gfx/pools.js';
 import { batchStaticWorld, poolSceneLights, warmShaders } from './gfx/prepare.js';
-import { autoQuality, initQuality, updateEntityLOD } from './gfx/quality.js';
+import { autoQuality, initQuality, trackEntityLists, updateEntityLOD } from './gfx/quality.js';
 import { snapScene, unsnapScene } from './gfx/snap.js';
 import { scatterCoreLandmarks } from './landmarks.js';
 import { MODELS_B64 } from './models-data.js';
@@ -28,7 +28,7 @@ import {
   inDungeon, initActivities, updateAltarGlow, updateCryptLights, updateFishing, updateRideMileage,
   updateSprings, updateTrial, wildSpots,
 } from './systems/activities.js';
-import { bandits, guards, horses, initActors } from './systems/actors.js';
+import { bandits, guards, horses, initActors, villagers, wolves } from './systems/actors.js';
 import { updateBandits, updateGuards, updateHorses, updateVillagers, updateWolves } from './systems/ai.js';
 import { initAttack, updateAttackInput } from './systems/attack.js';
 import { isWinter, updateAmbience, updateCalendar } from './systems/calendar.js';
@@ -40,22 +40,24 @@ import {
 import { updateDirector } from './systems/director.js';
 import { updateDragon } from './systems/dragon.js';
 import { initEvents, updateArena, updateBounty, updateStreetEvent } from './systems/events.js';
-import { initFauna, updateChickens, updateDeers, updateFrostfang } from './systems/fauna.js';
+import { chickens, deers, initFauna, updateChickens, updateDeers, updateFrostfang } from './systems/fauna.js';
 import { initHome, updateFirefly, updateHome } from './systems/home.js';
 import { drainInput, initInput } from './systems/input.js';
 import { initInteract, updateInteractMarker, updatePrompt } from './systems/interact.js';
 import { updateLawless, updateWanted, wanted } from './systems/law.js';
 import { updateFrostPatches, updateMagic } from './systems/magic.js';
-import { updateMercs } from './systems/mercs.js';
+import { mercs, updateMercs } from './systems/mercs.js';
 import { initMirror, updateIdle, updateWorkspace, workspace } from './systems/mind.js';
-import { initNPCs, steward, updateArm, updateNPCs } from './systems/npcs.js';
+import { funnyNPCs, initNPCs, namedNPCs, steward, updateArm, updateNPCs } from './systems/npcs.js';
 import { initPickups, updateCoinInstances, updatePickups } from './systems/pickups.js';
 import {
   enforceDeepWater, spawnPlayer, updateBuffs, updatePlayer, updateRegen, updateSquash,
 } from './systems/player.js';
 import { updateArrows } from './systems/projectiles.js';
-import { updatePrologue } from './systems/prologue.js';
-import { animateBeacon, beacon, beaconRouted, exGroup, initQuests, updateQuest } from './systems/quests.js';
+import { prologue, updatePrologue } from './systems/prologue.js';
+import {
+  animateBeacon, beacon, beaconRouted, exGroup, initQuests, quest, updateQuest,
+} from './systems/quests.js';
 import {
   animateScenery, animateWater, followUnderlay, followVista, tickFilmGrain, updateAmbientFX,
 } from './systems/scenery.js';
@@ -73,7 +75,7 @@ import { updateActionBar, updateHUD, updateRegion } from './ui/hudview.js';
 import { drawMinimap, mapState } from './ui/maps.js';
 import { paused } from './ui/pause.js';
 import { initTitle, loadLocalTitleArt, setTitleArt } from './ui/title.js';
-import { toast, updateToast } from './ui/toast.js';
+import { setAmbientGate, toast, updateToast } from './ui/toast.js';
 import { initVegetation, updateVegetation } from './vegetation.js';
 import { updateWilderness } from './wilderness.js';
 import { buildWorld } from './world.js';
@@ -189,16 +191,14 @@ initInput();                // 键鼠监听:玩法动作入队,tick 开头统一
 initCombat();               // 锁定标记
 initAttack();               // 蓄力光与圆盾挂上玩家手臂
 
-// ---- 共享上下文:相机/天空/天气/地图这些底层模块经 core/ctx.js 取活对象与回调(它们不依赖玩法模块) ----
-ctx.player = player;
-ctx.world = world;
-ctx.colliders = colliders;
+// ---- 回调登记:相机/天空/天气/地图这些底层模块经 core/ctx.js 取回调(它们不依赖玩法模块) ----
 ctx.getLockFoe = () => lockFoe;
 ctx.isWinter = isWinter;
-ctx.started = () => started;
 ctx.toast = toast;
 ctx.mood = () => workspace.mood.v;
 ctx.inDungeon = inDungeon;
+setAmbientGate(() => quest.active || prologue.on); // 氛围提示:有委托在办、序章里时不播
+trackEntityLists([villagers, guards, bandits, wolves, horses, namedNPCs, chickens, deers, funnyNPCs, mercs]); // 兜底远近分级
 // 地图快照:地图模块只读这些,不碰玩法状态
 ctx.mapView = () => ({ guards, bandits, horses, wanted, warband, beacon, beaconRouted,
   questGiver: exGroup.visible ? { x: steward.pos.x, z: steward.pos.z } : null, wildSpots });
@@ -319,11 +319,12 @@ function loop(now) {
   const dt = Math.min(0.05, (now - last) / 1000);
   last = now;
   frame.now = now;
-  if (started && !paused && !mapState.open) { // 暂停/看地图:世界冻结,仅渲染
+  const simulating = started && !paused && !mapState.open; // 暂停/看地图:世界冻结,仅渲染
+  if (simulating) {
     unsnapScene();
     tick(dt, now);
   }
-  autoQuality((now - lastFrameNow) / 1000);
+  autoQuality((now - lastFrameNow) / 1000, simulating);
   lastFrameNow = now;
   snapScene();
   fitViewDistance();

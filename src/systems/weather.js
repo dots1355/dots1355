@@ -1,6 +1,6 @@
 // 天气系统:晴/多云/雨/雷暴的马尔可夫轮换(世界心境轻推天色)、雷电(真正照亮场景 + 天边一道闪电)、
 // 环绕玩家的实例化雨丝面片(冬季变雪花,运动全在着色器)、地面水花与水面涟漪、雨后地面湿润与水洼
-// (gfx/surface.js 的 uWet)、地面扬尘(雨天不起尘)。只依赖 ctx 里的玩家与几个回调。
+// (gfx/surface.js 的 uWet)、地面扬尘(雨天不起尘)。玩家与开局状态读 core/state.js,其余经 ctx 的几个回调。
 import * as THREE from 'three';
 import { scene, camera } from '../gfx/core.js';
 import { groundH } from '../terrain.js';
@@ -8,6 +8,7 @@ import { waterBasin } from '../waterbodies.js';
 import { setWetness } from '../gfx/surface.js';
 import { getVegetationDensity } from '../vegetation.js';
 import { rand } from '../core/rng.js';
+import { player, started } from '../core/state.js';
 import { ctx } from '../core/ctx.js';
 import { cam } from './camera.js';
 import { weatherAudio } from '../audio.js';
@@ -31,7 +32,7 @@ export function setWeather(s) {
   weather.targetRain = def.rain;
   weather.targetCover = def.cover;
   weather.timer = def.dur[0] + rand() * (def.dur[1] - def.dur[0]);
-  if (ctx.started() && (s === 'rain' || s === 'storm')) {
+  if (started && (s === 'rain' || s === 'storm')) {
     if (ctx.isWinter()) ctx.toast(s === 'storm' ? '🌨️ 暴风雪来了!' : '🌨️ 下雪了……', 2.5);
     else ctx.toast(s === 'storm' ? '⛈️ 雷暴来袭!' : '🌧️ 下雨了…', 2.5);
   }
@@ -112,7 +113,7 @@ export function updateWeather(dt) {
   const step = (cur, tgt, rate) => cur + Math.max(-rate * dt, Math.min(rate * dt, tgt - cur));
   weather.rain = step(weather.rain, weather.targetRain, 0.12);
   weather.cover = step(weather.cover, weather.targetCover, 0.1);
-  weatherAudio.setRain(ctx.started() && !ctx.isWinter() ? weather.rain : 0); // 雪落无声
+  weatherAudio.setRain(started && !ctx.isWinter() ? weather.rain : 0); // 雪落无声
   if (weather.state === 'storm' && weather.rain > 0.7 && !ctx.isWinter()) {
     weather.boltT -= dt;
     if (weather.boltT <= 0) {
@@ -273,7 +274,7 @@ export function updateRain(dt) {
   splashU.uAlpha.value = on ? Math.min(0.36, k * 0.4) : 0;
   if (!on) return;
   const A = splashGeo.attributes.aPos, arr = A.array;
-  const cx = ctx.player.pos.x, cz = ctx.player.pos.z;
+  const cx = player.pos.x, cz = player.pos.z;
   for (let i = 0; i < splashGeo.instanceCount; i++) {
     splashLife[i] += dt * splashRate[i];
     if (splashLife[i] >= 1) {

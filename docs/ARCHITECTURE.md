@@ -23,8 +23,13 @@ core/state.js  core/frame.js  core/rng.js  core/timers.js  core/timefx.js  core/
 
 - **共享根对象** `core/state.js`:`world`(buildWorld 的产物)、`colliders`、`player`、`started`。main 在装配时各登记一次
   (`bindWorld` / `bindPlayer` / `markStarted`);系统模块从这里读,而不是从 main 读。
-- **底层模块经 `core/ctx.js` 拿回调**:相机、天空、天气、地图这些不认识玩法的模块需要"玩家在哪、开局没有、心境如何"时,
-  读 main 登记进 `ctx` 的活对象与回调(带安全缺省值),从而保持是叶子。
+- **底层模块经 `core/ctx.js` 拿回调**:相机、天空、天气、地图这些不认识玩法的模块直接读 `core/state.js` 的根对象;
+  需要"锁定的是谁、是不是冬天、在不在地窖、世界心境、弹一条提示、地图画哪些人"时,调 main 登记进 `ctx` 的回调
+  (带安全缺省值),从而保持是叶子。`ui/toast.js`、`gfx/quality.js` 同理:要知道"有没有委托在办""要给哪些实体分级"时,
+  用 main 登记的谓词/名单(`setAmbientGate`、`trackEntityLists`),不导入玩法模块。
+- **只有一个循环依赖环**:玩法 systems 与几个界面模块(对话、反馈、HUD、暂停、标题)加存档,共 33 个模块——
+  它们天然互相调用;环外的模块(core/*、gfx/*、世界构建、相机/天空/天气/地图、toast、布景)都只被依赖。
+  `node tools/check-modules.mjs --rings` 列出环里的成员。
 - **循环依赖的规矩**:systems/ui 之间互相导入是常态(战斗要通缉、通缉要卫兵 AI……),ES 模块允许循环,前提是
   **模块顶层"加载时就执行"的代码不读环里别的模块的绑定**(只在函数里读)。否则谁先求值取决于导入顺序——
   浏览器原生加载碰巧能跑,esbuild 打包版会把环排成另一个顺序,直接 TDZ 报错或读到 undefined。
@@ -48,7 +53,7 @@ core/state.js  core/frame.js  core/rng.js  core/timers.js  core/timefx.js  core/
 | `core/timers.js` | 游戏时钟 `simNow()` 与定时器 `later(sec, fn)`:按游戏 dt 结算,暂停即冻结、慢镜同步 |
 | `core/timefx.js` | 打击停顿 `hitStop` / 处决慢镜 `slowMo`;`scaleDt` 在 tick 开头统一缩放 dt |
 | `core/rng.js` | 可设种子的 `rand()`;玩法与世界生成的随机都走它,测试可复现 |
-| `core/ctx.js` | 给底层模块(相机/天空/天气/地图)的回调与活对象登记处,带安全缺省值 |
+| `core/ctx.js` | 给底层模块(相机/天空/天气/地图)的回调登记处(`getLockFoe / isWinter / inDungeon / mood / toast / mapView`),带安全缺省值 |
 | `core/save.js` | 存档格式的唯一定义处(带版本号 `v`,当前 v3);`saveGame`、分段 `loadGame`(任一段失败:停用自动存档、备份原档、提示)、`applyProgress`(读档后把进度落到世界里) |
 | `core/aitext.js` | 运行时 AI 文本 `aiLine`(离线/`?noai=1` 回退)、`AI_TEXT_OFF`、各输出口的忙碌标记 `aiBusy` |
 | `core/testhooks.js` | 测试/诊断句柄 `window.__gtm`(`step(n, dt)` 与主循环共用同一个 `tick`;`systems()` 列出系统表) |
@@ -91,7 +96,7 @@ core/state.js  core/frame.js  core/rng.js  core/timers.js  core/timefx.js  core/
 ### ui/ —— 界面(只读玩法状态,或调用玩法提供的函数)
 | 模块 | 职责 |
 | --- | --- |
-| `ui/toast.js` | 分档的顶部提示条队列(委托 > 一般 > 氛围,插队 `toastNow`) |
+| `ui/toast.js` | 分档的顶部提示条队列(委托 > 一般 > 氛围,插队 `toastNow`);氛围提示的"忙不忙"由 `setAmbientGate` 登记 |
 | `ui/dialog.js` | 对话组合引擎 `dbLine`、多页对话面板、追问、AI 肖像、闲聊气泡 |
 | `ui/feedback.js` | 伤害数字与战斗浮字、连杀、倒地动画、实例级受击闪白、击退、残血红晕 |
 | `ui/hudview.js` | HUD 刷新(签名串比对,没变不碰 DOM)、技能栏、操作说明、区域名 |
@@ -104,7 +109,7 @@ core/state.js  core/frame.js  core/rng.js  core/timers.js  core/timefx.js  core/
 | 模块 | 职责 |
 | --- | --- |
 | `gfx/core.js` | 渲染器、场景、相机;后处理链(Render → GTAO → Bloom → Output → 调色 → 画风 → SMAA);8 种画风预设 |
-| `gfx/quality.js` | 画质三档 `QUALITY`、`setQuality`、自动画质 `autoQuality`(p90 帧时 + 动态分辨率)、实体远近分级 `updateEntityLOD`、画风切换 `nextStyle`、`initQuality` |
+| `gfx/quality.js` | 画质三档 `QUALITY`、`setQuality`、自动画质 `autoQuality(frameDt, simulating)`(p90 帧时 + 动态分辨率)、实体远近分级 `updateEntityLOD`(名单由 `trackEntityLists` 登记)、画风切换 `nextStyle`、`initQuality` |
 | `gfx/snap.js` | 贴地 `unsnapScene / snapScene`(见约定 1) |
 | `gfx/prepare.js` | 开局最后的渲染准备:点光入池、静态合批 + 小件远景剔除、着色器预热 |
 | `gfx/pools.js` | 固定数量的点光池与特效材质池(不在游戏中途重编译着色器) |
@@ -127,7 +132,7 @@ core/state.js  core/frame.js  core/rng.js  core/timers.js  core/timefx.js  core/
    **也决定了实体名单的顺序**(例如 `bandits` 里先是灰烬荒地匪帮、再是地窖守墓者;测试按名单取实体)。
 4. `loadGame()`(分段读档)→ `applyProgress()` → `initTitle(hasSave)`(Delete 清档监听要先于玩法键盘监听)→
    `initInput()` → `initCombat()` → `initAttack()`。
-5. 登记 `ctx`(底层模块的回调与地图快照)→ `installTestHooks` → `poolSceneLights → batchStaticWorld → warmShaders` →
+5. 登记 `ctx`(底层模块要的回调与地图快照)、`setAmbientGate`(氛围提示何时闭嘴)、`trackEntityLists`(兜底远近分级的名单)→ `installTestHooks` → `poolSceneLights → batchStaticWorld → warmShaders` →
    `requestAnimationFrame(loop)`。
 
 ## 主循环与系统表

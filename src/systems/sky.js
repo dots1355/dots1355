@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import { scene, camera, renderer, bloom, styleExp, styleBloomMul } from '../gfx/core.js';
 import { biomeWeights } from '../terrain.js';
 import { NIGHT_GLOW } from '../flora.js';
+import { player, world } from '../core/state.js';
 import { ctx } from '../core/ctx.js';
 import { rand } from '../core/rng.js';
 import { weather } from './weather.js';
@@ -193,7 +194,7 @@ const _atmoT = BIOME_ATMO[0].slice();
 function updateBiomeAtmo(dt) {
   if (atmoScan-- <= 0) { // 每 10 帧取一次群系权重
     atmoScan = 10;
-    biomeWeights(ctx.player.pos.x, ctx.player.pos.z, _atmoW);
+    biomeWeights(player.pos.x, player.pos.z, _atmoW);
     for (let k = 0; k < ATMO_N; k++) {
       let v = 0;
       for (let b = 0; b < 8; b++) v += _atmoW[b] * BIOME_ATMO[b][k];
@@ -214,8 +215,8 @@ export function updateDayNight(dt) {
   const night = 1 - day;
   const sx = Math.cos(ang) * 250, sy = elev * 220, sz = 80;
   // 阴影相机纹素对齐:把目标点量化到光空间纹素网格,消除移动时阴影边缘抖动
-  _sunPosV.set(ctx.player.pos.x + sx * 0.4, Math.max(20, sy), ctx.player.pos.z + sz * 0.4);
-  _snapT.set(ctx.player.pos.x, 0, ctx.player.pos.z);
+  _sunPosV.set(player.pos.x + sx * 0.4, Math.max(20, sy), player.pos.z + sz * 0.4);
+  _snapT.set(player.pos.x, 0, player.pos.z);
   _snapM.lookAt(_sunPosV, _snapT, _UP);
   _snapInv.copy(_snapM).invert();
   const texel = (sun.shadow.camera.right - sun.shadow.camera.left) / sun.shadow.mapSize.x;
@@ -223,7 +224,7 @@ export function updateDayNight(dt) {
   _snapT.x = Math.round(_snapT.x / texel) * texel;
   _snapT.y = Math.round(_snapT.y / texel) * texel;
   _snapT.applyMatrix4(_snapM);
-  const snapDx = _snapT.x - ctx.player.pos.x, snapDz = _snapT.z - ctx.player.pos.z;
+  const snapDx = _snapT.x - player.pos.x, snapDz = _snapT.z - player.pos.z;
   sun.position.set(_sunPosV.x + snapDx, _sunPosV.y, _sunPosV.z + snapDz);
   sun.target.position.copy(_snapT);
   const rainDim = 1 - 0.72 * weather.rain;
@@ -248,7 +249,7 @@ export function updateDayNight(dt) {
   envIntensity = (0.1 + 0.25 * day) * rainDim * (ctx.inDungeon() ? 0.25 : 1);
   // 随身提灯:入夜自动点起一圈暖光(地窖里已有火把,不重复)
   lantern.intensity = night * 1.2 * (ctx.inDungeon() ? 0 : 1);
-  lantern.position.set(ctx.player.pos.x, 2.4, ctx.player.pos.z);
+  lantern.position.set(player.pos.x, 2.4, player.pos.z);
 
   // 天空穹顶
   _sunDir.set(sx, sy, sz).normalize();
@@ -325,7 +326,7 @@ export function updateDayNight(dt) {
   // 路灯与神龛烛火:入夜才亮
   for (const m of NIGHT_GLOW) m.emissiveIntensity = 0.12 + night * 2.6;
   // 火把与窗户
-  for (const t of ctx.world.torches) {
+  for (const t of world.torches) {
     const flick = 0.8 + Math.sin(performance.now() * 0.013 + (t.light ? t.light.position.x : 0)) * 0.2;
     if (t.light) t.light.intensity = t.base * night * flick;
     if (t.window) t.flame.material.emissiveIntensity = night * 1.8;

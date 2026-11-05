@@ -4,6 +4,7 @@
 // 动态数据每次绘制时经 ctx.mapView() 取一份快照,本模块不持有任何玩法状态。
 import { mapColor, dominantBiome, groundH } from '../terrain.js';
 import { REGIONS } from '../story.js';
+import { player, world } from '../core/state.js';
 import { ctx } from '../core/ctx.js';
 import { wildMarks, wildRegionName } from '../wilderness.js';
 
@@ -99,7 +100,7 @@ function buildBigBase() {
   const g = c.getContext('2d');
   const k = 720 / (BIG_R * 2);
   g.drawImage(terrainCanvas(0, 0), 0, 0);
-  for (const f of ctx.world.features) {
+  for (const f of world.features) {
     const mx = (f.x + BIG_R) * k, mz = (f.z + BIG_R) * k;
     if (f.type === 'road') {
       g.save(); g.translate(mx, mz); g.rotate(-f.rot);
@@ -150,8 +151,8 @@ function drawBigMap() {
   const V = ctx.mapView();
   const g = bigmapCv.getContext('2d');
   const k = 720 / (BIG_R * 2);
-  const wild = Math.max(Math.abs(ctx.player.pos.x), Math.abs(ctx.player.pos.z)) > BIG_R;
-  const ox = wild ? Math.round(ctx.player.pos.x / 256) * 256 : 0, oz = wild ? Math.round(ctx.player.pos.z / 256) * 256 : 0;
+  const wild = Math.max(Math.abs(player.pos.x), Math.abs(player.pos.z)) > BIG_R;
+  const ox = wild ? Math.round(player.pos.x / 256) * 256 : 0, oz = wild ? Math.round(player.pos.z / 256) * 256 : 0;
   if (wild) {
     const key = ox + ',' + oz;
     if (key !== wildKey) { wildBase = buildWildBase(ox, oz); wildKey = key; }
@@ -185,10 +186,10 @@ function drawBigMap() {
     g.strokeStyle = '#ffd75e'; g.lineWidth = 2.5; g.beginPath(); g.arc(x, z, pulse + 4, 0, 6.28); g.stroke();
     g.fillStyle = '#ffd75e'; g.beginPath(); g.arc(x, z, 4, 0, 6.28); g.fill();
   }
-  const [px, pz] = at(ctx.player.pos.x, ctx.player.pos.z);
+  const [px, pz] = at(player.pos.x, player.pos.z);
   g.save();
   g.translate(px, pz);
-  g.rotate(-ctx.player.yaw + Math.PI);
+  g.rotate(-player.yaw + Math.PI);
   g.fillStyle = '#ffd75e'; g.strokeStyle = '#1a120a'; g.lineWidth = 2;
   g.beginPath(); g.moveTo(0, -9); g.lineTo(6, 7); g.lineTo(0, 3); g.lineTo(-6, 7); g.closePath();
   g.stroke(); g.fill();
@@ -244,7 +245,7 @@ export function drawMinimap() {
   const V = ctx.mapView();
   const S = 200, range = 240, k = S / range;
   mm.clearRect(0, 0, S, S);
-  const px = ctx.player.pos.x, pz = ctx.player.pos.z;
+  const px = player.pos.x, pz = player.pos.z;
   const toMap = (x, z) => [S / 2 + (x - px) * k, S / 2 + (z - pz) * k];
   mm.save();
   mm.beginPath();
@@ -260,7 +261,7 @@ export function drawMinimap() {
     mm.imageSmoothingEnabled = true;
     mm.drawImage(tc, (px - range / 2 - ox + BIG_R) * tk, (pz - range / 2 - oz + BIG_R) * tk, range * tk, range * tk, 0, 0, S, S);
   }
-  for (const f of ctx.world.features) {
+  for (const f of world.features) {
     const [mx, mz] = toMap(f.x, f.z);
     if (mx < -30 || mx > S + 30 || mz < -30 || mz > S + 30) continue;
     if (f.type === 'road') {
@@ -365,7 +366,7 @@ export function drawMinimap() {
   // 玩家箭头
   mm.save();
   mm.translate(S / 2, S / 2);
-  mm.rotate(-(ctx.player.mounted ? ctx.player.mounted.yaw : ctx.player.yaw) + Math.PI);
+  mm.rotate(-(player.mounted ? player.mounted.yaw : player.yaw) + Math.PI);
   mm.fillStyle = '#fff';
   mm.beginPath();
   mm.moveTo(0, -6); mm.lineTo(4.5, 5); mm.lineTo(-4.5, 5);

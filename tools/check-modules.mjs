@@ -4,7 +4,7 @@
 //  3. 加载期安全:模块顶层"加载时就执行"的代码(不在函数体里的部分)不得读取同一个循环依赖环里
 //     别的模块的绑定——环里谁先求值取决于导入顺序,打包版(esbuild 会把环排成一个固定顺序)里
 //     这就是 TDZ 报错或读到 undefined。需要别的系统的状态时,把代码包进 initX(),由 main 在装配时调用。
-// 用法:node tools/check-modules.mjs   (有问题时退出码 1)
+// 用法:node tools/check-modules.mjs [--rings]   (有问题时退出码 1;--rings 列出各个循环依赖环)
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -113,6 +113,8 @@ if (problems.length) {
   process.exit(1);
 }
 const cycles = new Map();
-for (const [f, c] of comp) if (mods.get(f).scope) cycles.set(c, (cycles.get(c) || 0) + 1);
-const biggest = Math.max(...cycles.values());
-console.log(`模块检查通过:${mods.size} 个模块,导入/导出一致,无人导入 main.js,加载期无环内读取(最大的环 ${biggest} 个模块)`);
+for (const [f, c] of comp) if (mods.get(f).scope) (cycles.get(c) || cycles.set(c, []).get(c)).push(rel(f));
+const rings = [...cycles.values()].filter((v) => v.length > 1).sort((a, b) => b.length - a.length);
+console.log(`模块检查通过:${mods.size} 个模块,导入/导出一致,无人导入 main.js,加载期无环内读取` +
+  `(循环依赖环 ${rings.length} 个,最大 ${rings[0] ? rings[0].length : 0} 个模块)`);
+if (process.argv.includes('--rings')) for (const r of rings) console.log(`  环(${r.length}):${r.sort().join(' ')}`);

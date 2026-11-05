@@ -3,15 +3,8 @@
 // 实体远近分级 updateEntityLOD()(每 12 帧按画质档的距离给实体/小件/树林分级)、画风切换 nextStyle()。
 // initQuality() 启动装配时读回上次的档位。
 import { updatePropLOD } from '../batch.js';
-import { started } from '../core/state.js';
 import { updateNatureLOD } from '../flora.js';
-import { bandits, guards, horses, villagers, wolves } from '../systems/actors.js';
-import { chickens, deers } from '../systems/fauna.js';
-import { mercs } from '../systems/mercs.js';
-import { funnyNPCs, namedNPCs } from '../systems/npcs.js';
 import { sun } from '../systems/sky.js';
-import { mapState } from '../ui/maps.js';
-import { paused } from '../ui/pause.js';
 import { toast } from '../ui/toast.js';
 import { setVegetationDensity } from '../vegetation.js';
 import { setWildViewDistance } from '../wilderness.js';
@@ -95,7 +88,8 @@ export function nextStyle() {
   return nm;
 }
 function autoNote() { toast(`⚙️ 画质已自动调为「${QUALITY[qualityIdx].name}」(暂停菜单可手动改)`, 3); }
-export function autoQuality(frameDt) {
+// simulating:这一帧世界在不在走(已开局、没暂停、没看地图)——只有那时的帧时才拿来升降档
+export function autoQuality(frameDt, simulating) {
   const q = QUALITY[qualityIdx];
   // 每帧都要落实的档位细节(主循环在模拟之后、渲染之前调用):视距上限、阴影隔帧更新
   if (scene.fog && scene.fog.far > q.viewCap - 30) { // 雾每帧由天色重设;这里只往近收,幂等
@@ -104,7 +98,7 @@ export function autoQuality(frameDt) {
   }
   if (q.shadowEvery > 1) sun.shadow.needsUpdate = ++shadowTick % q.shadowEvery === 0;
   // 自动升降档
-  if (qualityManual || !started || paused || mapState.open || document.hidden) return;
+  if (qualityManual || !simulating || document.hidden) return;
   if (frameDt > 2) { perfWin.n = 0; perfWin.t = 0; return; } // 切后台回来:这一帧不算,窗口重开
   perfWin.clock += frameDt;
   if (perfWin.cool > 0) { perfWin.cool -= frameDt; return; }
@@ -153,6 +147,9 @@ function applyEntityLOD(e, lv) {
     if (o.userData.lodDetail) o.visible = lv === 0;
   });
 }
+// 要兜底分级的实体名单(人群、动物、NPC、佣兵……):启动装配时由 main 登记一次,本模块不认识玩法模块
+let entityLists = [];
+export function trackEntityLists(lists) { entityLists = lists; }
 export function updateEntityLOD() {
   if (lodScan-- > 0) return;
   lodScan = 12;
@@ -162,8 +159,7 @@ export function updateEntityLOD() {
   updateNatureLOD(cx, cz, q.propFar, q.propShadow, q.bigFar);
   updatePropLOD(cx, cz, q.propFar);
   _lodSeen.clear();
-  const lists = [villagers, guards, bandits, wolves, horses, namedNPCs, chickens, deers, funnyNPCs, mercs];
-  for (const list of lists) {
+  for (const list of entityLists) {
     for (const e of list) {
       if (!e || !e.group || e.group._skin || _lodSeen.has(e)) continue;
       _lodSeen.add(e);
