@@ -4,11 +4,11 @@
 // 狼群换代的数值读 EVO.wolfGen/wolfSpeed(actors.addWolf、ai.updateWolves)。
 import { AI_TEXT_OFF, aiLine } from '../core/aitext.js';
 import { rand } from '../core/rng.js';
+import { saveGame } from '../core/save.js';
 import * as BANKS from '../dialogue-banks.js';
 import { toast } from '../ui/toast.js';
 import { SEASONS, seasonDay, seasonIdx, todaySpecial } from './calendar.js';
 import { chronicle, remember, wsReport } from './mind.js';
-import { saveGame } from '../main.js';
 
 // ================= 内容自进化:传说 × 生态 × 导演 =================
 // 游戏内容自己长:你的事迹像谣言一样代代变异(文化演化);狼群在猎杀压力下

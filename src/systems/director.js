@@ -22,10 +22,10 @@ import { arenaRT } from './events.js';
 import { EVO, seedLegend } from './evo.js';
 import { addChicken, chickens, revengeT, startChickenRiot } from './fauna.js';
 import { MIND, remember, workspace } from './mind.js';
+import { addPickup, dropCoins } from './pickups.js';
 import { quest } from './quests.js';
 import { vendetta } from './vendetta.js';
 import { spawnDust, weather } from './weather.js';
-import { addPickup, dropCoins } from '../main.js';
 
 // ================= 事件导演:永无止境的随机事件 =================
 // 每 45~105 秒按权重与条件(时辰/位置/进度)抽取一个事件在玩家附近上演

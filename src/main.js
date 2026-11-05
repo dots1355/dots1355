@@ -5,26 +5,26 @@ import {
   makeHumanoid, resolveCollisions, angleLerp, dist2, setHumanModel, setFaunaModel, setWeaponModels,
   disposeEntityGroup,
 } from './entities.js';
-import { INTRO, REGIONS, DIALOGS, LORE } from './story.js';
-import { initAudio, sfx, startMusic, toggleMusic, setCombatMusic } from './audio.js';
+import { INTRO, DIALOGS, LORE } from './story.js';
+import { initAudio, sfx, startMusic, setCombatMusic } from './audio.js';
 import { preloadAIAssets, generateRemoteAITextures } from './textures.js';
-import { updateWilderness, wildRegionName, CORE, LANDMARKS, BIG_PROP, setWildViewDistance } from './wilderness.js';
-import * as BANKS from './dialogue-banks.js';
+import { updateWilderness, CORE, LANDMARKS, BIG_PROP } from './wilderness.js';
 import { GLTFLoader } from '../lib/jsm/loaders/GLTFLoader.js';
 import { setTreeModel, setBuildingModel, setRockGeos, setNatureModels, hasNature, buildNatureInstances, NATURE_SPEC, specCols, registerNatureTemplate } from './flora.js';
 import { MODELS_B64 } from './models-data.js';
 import { buildMasks, buildCoreGround, getGroundMaterial, groundH, maskAt, vegAllowed, dominantBiome, biomeWeights } from './terrain.js';
-import { initVegetation, updateVegetation, setVegetationDensity } from './vegetation.js';
-import { staticBatch, registerSmallProps, updatePropLOD } from './batch.js';
+import { initVegetation, updateVegetation } from './vegetation.js';
+import { staticBatch, registerSmallProps } from './batch.js';
 import { later, updateTimers, pendingTimers, simNow } from './core/timers.js';
 import { hitStop, slowMo, scaleDt } from './core/timefx.js';
 import { rand, seed as seedRng } from './core/rng.js';
 import { initAmbient, updateAmbient } from './ambient.js';
 import { cam, updateCamera } from './systems/camera.js';
 import { weather, setWeather, updateWeather, updateRain, spawnDust, updateDust } from './systems/weather.js';
-import { clock, sun, lantern, vistaFar, vistaNear, updateDayNight, updateEnvIntensity, fitViewDistance } from './systems/sky.js';
+import {
+  clock, lantern, vistaFar, vistaNear, updateDayNight, updateEnvIntensity, fitViewDistance,
+} from './systems/sky.js';
 import { mapState, toggleBigMap, drawMinimap } from './ui/maps.js';
-import { iconHTML, heartsHTML, weatherHTML, manaHTML, svgIcon, richText, wantedHTML } from './ui/hud.js';
 import { facetKind } from './gfx/facet.js';
 import { ctx } from './core/ctx.js';
 import { frame } from './core/frame.js';
@@ -33,10 +33,10 @@ import { EPITAPHS, COMEDY_LINES } from './content-packs.js';
 import {
   LIGHT_POOL, lightPool, initLightPool, addLightSource, updateLightPool, pooledMat, releaseMat,
 } from './gfx/pools.js';
-import { mergeGeometries } from '../lib/jsm/utils/BufferGeometryUtils.js';
-import { renderer, scene, camera, LOWFX, composer, gtao, bloom, gradePass, STYLE_PRESETS, stylePass, smaa, styleKey, applyStyle, cycleStyle } from './gfx/core.js';
-import { updateSkinLOD } from './gfx/skin.js';
-import { updateNatureLOD } from './flora.js';
+import {
+  renderer, scene, camera, composer, bloom, gradePass, STYLE_PRESETS, styleKey, applyStyle,
+  cycleStyle,
+} from './gfx/core.js';
 import {
   awakenDragon, damageDragon, dragonRT, telegraphArea, updateDragon,
 } from './systems/dragon.js';
@@ -60,23 +60,21 @@ import {
 } from './systems/calendar.js';
 import {
   MIND, MIND_WISHES, MIRROR_POS, archetype, chronicle, chronicleDeeds, consolidate, habitFactor,
-  idle, initMirror, mindFavorite, mindLoad, mindMakeWish, mindReport, mindSave, mindTick,
-  mirrorTalk, moodWord, recallLine, remember, updateIdle, updateWorkspace, workspace, wsReport,
+  idle, initMirror, mindFavorite, mindMakeWish, mindReport, mindSave, mindTick, mirrorTalk,
+  moodWord, recallLine, remember, updateIdle, updateWorkspace, workspace, wsReport,
 } from './systems/mind.js';
 import {
-  addBandit, addGuard, addHorse, animHorseLegs, animateLimbs, bandits, entFar, guards, horses,
-  initActors, meleeSwing, moveEntity, moveEntityHorse, retireEntity, villagers, wolves,
+  addBandit, addHorse, animHorseLegs, animateLimbs, bandits, entFar, guards, horses, initActors,
+  meleeSwing, moveEntity, moveEntityHorse, villagers, wolves,
 } from './systems/actors.js';
 import {
   EVO, evolveLegends, evolveTactics, growCorpus, legendText, mutateLegend, seedLegend,
 } from './systems/evo.js';
 import {
-  ARMORS, WEAPONS, cycleWeapon, openShop, recomputeMaxHp, refreshShop, setArmorVisual, setWeaponVisual,
+  WEAPONS, cycleWeapon, openShop, recomputeMaxHp, refreshShop, setArmorVisual, setWeaponVisual,
   shopOpen,
 } from './systems/gear.js';
-import {
-  hireMerc, hireMercSilent, mercs, payMercs, updateMercs,
-} from './systems/mercs.js';
+import { hireMerc, mercs, payMercs, updateMercs } from './systems/mercs.js';
 import {
   arrowGeo, arrowMat, arrows, shootArrow, updateArrows, wetSpread,
 } from './systems/projectiles.js';
@@ -90,23 +88,22 @@ import {
 } from './systems/fauna.js';
 import {
   BOAT_ISLE, BOAT_PIER, CHORE_POS, DGN, FISH_SPOT, FISH_SPOT_ISLE, NOTICE_POS, TRIAL_FLAG,
-  blessedToday, choreBoard, choreProgress, choreReady, composeProclaimOffline, endTrial, enterDungeon,
-  exitDungeon, fishing, fishingReel, inDungeon, initActivities, lakeBlessed, loreRead, loreStones,
-  nearestSpot, openJournal, prayAltar, prayAtChapel, proclaimText, queueDream, readLore,
-  refreshProclaim, rowTo, setLakeBlessed, sideQuest, startFishing, startTrial, takeRelic, togglePhoto,
-  trialRT, updateAltarGlow, updateCryptLights, updateFishing, updateRideMileage, updateSprings,
-  updateTrial, wildSpots,
+  blessedToday, choreBoard, choreProgress, choreReady, composeProclaimOffline, endTrial,
+  enterDungeon, exitDungeon, fishing, fishingReel, inDungeon, initActivities, lakeBlessed,
+  loreRead, loreStones, nearestSpot, openJournal, prayAltar, prayAtChapel, proclaimText,
+  queueDream, readLore, refreshProclaim, rowTo, sideQuest, startFishing, startTrial, takeRelic,
+  togglePhoto, trialRT, updateAltarGlow, updateCryptLights, updateFishing, updateRideMileage,
+  updateSprings, updateTrial, wildSpots,
 } from './systems/activities.js';
 import {
   updateVendetta, vendetta, vendettaLetter, vendettaRead,
 } from './systems/vendetta.js';
 import {
   beacon, beaconRouted, canAcceptRemotely, completeMission, dismissMinions, exGroup, initQuests,
-  missions, quest, questRT, stewardWhere, talkQuestGiver, updateQuest,
+  missions, quest, questRT, talkQuestGiver, updateQuest,
 } from './systems/quests.js';
 import {
-  HOME, fireflyMesh, homeInteract, homeRT, initHome, paintHomeSign, refreshTrophies, updateFirefly,
-  updateHome,
+  HOME, fireflyMesh, homeInteract, homeRT, initHome, refreshTrophies, updateFirefly, updateHome,
 } from './systems/home.js';
 import {
   HOST_LINES, arenaHost, arenaRT, bountyRT, initEvents, startArenaWave, streetEvent, takeBounty,
@@ -123,6 +120,18 @@ import {
   NPC_DESC_EN, VILLAGER_DESC_EN, advanceDialog, dbLine, deepTalk, dialog, dismissDialog, npcTalk,
   openDialog, showBubble, updateBubble, updateDialogRange, villagerChatter, witchFortune,
 } from './ui/dialog.js';
+import { toggleHint, updateActionBar, updateHUD, updateHintFade, updateRegion } from './ui/hudview.js';
+import { autoQuality, initQuality, nextStyle, qualityIdx, updateEntityLOD } from './gfx/quality.js';
+import {
+  paused, setPaused,
+} from './ui/pause.js';
+import {
+  FRESH_START, SAVE_KEY, loadGame, saveBlocked, saveGame,
+} from './core/save.js';
+import { addPickup, crestsFound, dropCoins, initPickups, pickups, updateCoinInstances } from './systems/pickups.js';
+import {
+  clearWanted, crime, downGuard, lawlessT, resetEvade, updateLawless, updateWanted, wanted,
+} from './systems/law.js';
 
 // ================= 基础渲染 =================
 initLightPool(scene); // 固定数量的点光池(火把/篝火等光源只登记,由它代为发光)
@@ -326,13 +335,8 @@ generateRemoteAITextures({
 
 // ================= HUD 引用 =================
 const $ = (id) => document.getElementById(id);
-const heartsEl = $('hearts'), coinsEl = $('coins'), wantedEl = $('wanted'),
-  missionEl = $('mission'), promptEl = $('prompt'),
-  flashEl = $('flash'), titleEl = $('title'),
-  gameoverEl = $('gameover'), gameoverText = $('gameover-text'),
-  weatherEl = $('weather'), equipEl = $('equip'),
-  bosshpEl = $('bosshp'), bosshpFillEl = $('bosshp-fill'),
-  staminaEl = $('stamina'), staminaFillEl = $('stamina-fill');
+const flashEl = $('flash'), titleEl = $('title'),
+  gameoverEl = $('gameover'), gameoverText = $('gameover-text');
 
 // ================= 玩家 =================
 bindPlayer({
@@ -380,232 +384,12 @@ initHome(); // 湖畔小屋(原本在悬赏板与角斗场之间建;互不依赖
 
 
 initNPCs();
-// @@NPCS_END@@
-// ================= 操作说明:按 H 弹出的分组面板(不再常驻字墙) =================
-const hintEl = document.getElementById('controls-hint');
-let hintVisible = false;
-function updateHintFade() { /* 面板由 H 键开关,不再自动淡出 */ }
-function toggleHint() {
-  hintVisible = !hintVisible;
-  hintEl.style.opacity = hintVisible ? 1 : 0;
-}
 
-// ================= 技能栏:按键 + 图标 + 冷却遮罩(新玩家一眼看懂能干什么) =================
-const abEl = document.getElementById('actionbar');
-function abHighlight(key) {
-  for (const sl of AB_SLOTS) if (sl.el) sl.el.classList.toggle('hint', !!key && sl.key === key);
-}
-const AB_SLOTS = [
-  { key: 'F', name: '攻击', icon: () => WEAPONS[player.weapon].icon,
-    cd: () => (player.attackT > 0 ? player.attackT / (player.attackDur || 0.3) : 0) },
-  { key: '右键', name: '格挡', icon: () => '🛡️', on: () => player.blocking, off: () => player.weapon === 'bow' },
-  { key: 'C', name: '翻滚', icon: () => '🌀', cd: () => Math.max(0, player.rollCd || 0) / 0.95 },
-  { key: 'R', name: () => (player.spells.length ? SPELLS[player.spells[player.spellIdx]].name : '法术'),
-    icon: () => (player.spells.length ? SPELLS[player.spells[player.spellIdx]].icon : '✴️'),
-    cd: () => (player.spells.length ? Math.max(0, player.castT) / SPELLS[player.spells[player.spellIdx]].cd : 0),
-    sub: () => `${Math.floor(player.mp)}`, off: () => !player.spells.length },
-  { key: 'X', name: '战吼', icon: () => '🐉', show: () => shout.learned,
-    cd: () => Math.max(0, shout.cd) / (stats.dragonSlain ? 22.5 : 45) },
-  { key: 'Tab', name: '锁定', icon: () => '🎯', on: () => !!lockFoe },
-  { key: 'Z', name: '潜行', icon: () => '🤫', on: () => player.sneaking },
-  { key: 'Q', name: '换武器', icon: () => '🔄', show: () => player.weaponsOwned.length > 1 },
-];
-for (const sl of AB_SLOTS) {
-  const d = document.createElement('div');
-  d.className = 'ab-slot';
-  d.innerHTML = '<div class="ab-icon"></div><div class="ab-cd"></div><div class="ab-key"></div>' +
-    '<div class="ab-sub"></div><div class="ab-name"></div>';
-  abEl.appendChild(d);
-  sl.el = d;
-  sl.iconEl = d.children[0]; sl.cdEl = d.children[1]; sl.subEl = d.children[3]; sl.nameEl = d.children[4];
-  d.children[2].textContent = sl.key;
-  sl.last = {};
-}
-function updateActionBar() {
-  abEl.style.display = started && !player.dead ? 'flex' : 'none';
-  for (const sl of AB_SLOTS) {
-    const L = sl.last;
-    const show = !sl.show || sl.show();
-    if (L.show !== show) { L.show = show; sl.el.style.display = show ? 'block' : 'none'; }
-    if (!show) continue;
-    const icon = sl.icon();
-    if (L.icon !== icon) { L.icon = icon; sl.iconEl.innerHTML = iconHTML(icon); }
-    const nm = typeof sl.name === 'function' ? sl.name() : sl.name;
-    if (L.name !== nm) { L.name = nm; sl.nameEl.textContent = nm; }
-    const cdv = sl.cd ? Math.round(Math.min(1, sl.cd()) * 20) * 5 : 0;
-    if (L.cd !== cdv) { L.cd = cdv; sl.cdEl.style.height = `${cdv}%`; }
-    const cls = `ab-slot${sl.on && sl.on() ? ' on' : ''}${sl.off && sl.off() ? ' off' : ''}`;
-    if (L.cls !== cls) { L.cls = cls; sl.el.className = cls; }
-    const sub = sl.sub ? sl.sub() : '';
-    if (L.sub !== sub) { L.sub = sub; sl.subEl.textContent = sub; }
-  }
-}
 
-// ================= 暂停菜单(唯一系统菜单,ESC 弹出) =================
-const pauseEl = document.getElementById('pause');
-let paused = false;
-let fxHigh = !LOWFX;
-function setPaused(p) {
-  paused = p;
-  pauseEl.style.display = p ? 'flex' : 'none';
-  if (p) { // 暂停:丢掉排队的输入,松开蓄力(否则恢复时会凭空蓄满一记重击)
-    inputQ.length = 0;
-    player.atkHeld = false;
-    cancelCharge();
-  }
-}
-// 画质三档:流畅(集显/老机器)、均衡(默认)、精致(独显:环境光遮蔽 + 高分辨率)
-// 流畅档省的不只是 GPU:视距上限(雾收近、远裁剪面随之收)、实体更早停投影/更早隐藏、小件地标更早剔除
-// 且不投影、阴影框收窄并隔帧更新、荒野只装 3×3 块、草更稀——CPU 每帧要遍历/提交的东西一起变少。
-// lodNear/lodHide:实体投影/整体隐藏的距离(米);halfD:实体隔帧更新的距离;propFar:小件(灌木/树桩/木箱、碑、牌…)
-// 的可见距离;bigFar:树林/岩石实例块的可见距离;viewCap:视距上限(米);shadowBox:阴影正交框半宽;
-// shadowEvery:阴影图每几帧更新一次;wildD:荒野区块加载距离(米)
-const QUALITY = [
-  { key: 'lo', name: '流畅', gtao: false, bloom: false, smaa: false, pr: 0.8, veg: 0.3, shadow: 1024, shadowBox: 30,
-    shadowEvery: 2, lodNear: 14, lodHide: 56, halfD: 14, propFar: 40, bigFar: 140, propShadow: false, viewCap: 250, wildD: 160 },
-  { key: 'mid', name: '均衡', gtao: false, bloom: true, smaa: true, pr: 1, veg: 0.65, shadow: 2048, shadowBox: 70,
-    shadowEvery: 1, lodNear: 40, lodHide: 160, halfD: 30, propFar: 150, bigFar: Infinity, propShadow: true, viewCap: 1600, wildD: 256 },
-  { key: 'hi', name: '精致', gtao: true, bloom: true, smaa: true, pr: 1.5, veg: 1, shadow: 2048, shadowBox: 70,
-    shadowEvery: 1, lodNear: 50, lodHide: 220, halfD: 40, propFar: 220, bigFar: Infinity, propShadow: true, viewCap: 1600, wildD: 256 },
-];
-let qualityIdx = LOWFX ? 0 : 1;
-let qualityManual = false;
-let dynRes = 1; // 最低档仍然卡时的动态分辨率(0.6~1)
-let shadowTick = 0;
-function setQuality(idx, manual = false) {
-  qualityIdx = Math.max(0, Math.min(QUALITY.length - 1, idx));
-  if (manual) qualityManual = true;
-  const q = QUALITY[qualityIdx];
-  fxHigh = q.smaa;
-  setVegetationDensity(q.veg);
-  setWildViewDistance(q.wildD);
-  gtao.enabled = q.gtao;
-  bloom.enabled = q.bloom;
-  smaa.enabled = q.smaa && STYLE_PRESETS[styleKey].mode !== 4; // 像素风不要抗锯齿糊掉方块
-  gradePass.enabled = true; // 调色很便宜,三档都保留画风
-  const pr = Math.min(window.devicePixelRatio || 1, q.pr) * dynRes;
-  if (Math.abs(renderer.getPixelRatio() - pr) > 0.01) {
-    renderer.setPixelRatio(pr);
-    composer.setPixelRatio(pr);
-    stylePass.uniforms.uRes.value.set(window.innerWidth * pr, window.innerHeight * pr);
-  }
-  if (sun.shadow.mapSize.x !== q.shadow) {
-    sun.shadow.mapSize.set(q.shadow, q.shadow);
-    if (sun.shadow.map) { sun.shadow.map.dispose(); sun.shadow.map = null; }
-  }
-  const sc = sun.shadow.camera; // 框收窄后纹素密度不降(30m/1024 比 70m/2048 还密);sky.js 的纹素对齐按框宽自适应
-  if (sc.right !== q.shadowBox) {
-    sc.left = sc.bottom = -q.shadowBox;
-    sc.right = sc.top = q.shadowBox;
-    sc.updateProjectionMatrix();
-  }
-  sun.shadow.autoUpdate = q.shadowEvery <= 1;
-  sun.shadow.needsUpdate = true;
-  document.getElementById('btn-quality').textContent = `画质:${q.name}`;
-  try {
-    // 只有手选的档永久记住;自动档只当下次开局的起点,记 24 小时
-    if (qualityManual) localStorage.setItem('gth-fx', q.key + '!');
-    else localStorage.setItem('gth-fx-auto', JSON.stringify({ i: qualityIdx, r: dynRes, t: Date.now() }));
-  } catch { /* 忽略 */ }
-}
-try {
-  const sv = localStorage.getItem('gth-fx') || '';
-  const k = QUALITY.findIndex((q) => sv.startsWith(q.key));
-  if (k >= 0 && sv.endsWith('!')) { qualityManual = true; setQuality(k); }
-  else {
-    if (sv) localStorage.removeItem('gth-fx'); // 旧版把自动降的档也永久写在这里:作废,交给自动档重新判断
-    const a = JSON.parse(localStorage.getItem('gth-fx-auto') || 'null');
-    if (a && Date.now() - a.t < 864e5 && a.i >= 0 && a.i <= qualityIdx) {
-      dynRes = Math.max(0.6, Math.min(1, +a.r || 1));
-      setQuality(a.i);
-    } else setQuality(qualityIdx);
-  }
-} catch { setQuality(qualityIdx); }
-// ---- 自动画质 ----
-// 每个观察窗(≥4 秒且 ≥12 帧,或满 10 秒)取帧间隔的 p90。超长帧也算(单帧按 1 秒封顶),
-// 跑不动的机器(每帧几百毫秒)照样能降下来;切后台回来的那一帧、暂停与看地图期间不计。
-//  - p90 > 36ms(慢于 ~28fps 的帧超过一成):降一档;已是最低档就降渲染分辨率(1 → 0.85 → 0.7 → 0.6)
-//  - p90 < 21ms:先把分辨率一级级升回去(每个好窗口一级),再连续 upNeed 个好窗口升一档(自动最多升到默认档"均衡";精致只能手选)
-//  - 迟滞:刚升档的 15 秒内门槛收紧到 26ms(升上去掉到 30fps 就退回),退回一次 upNeed 翻倍(2 → 4 → … → 16)
-const AUTO_TOP = LOWFX ? 0 : 1;
-const PW_CAP = 900;
-const pwBuf = new Float32Array(PW_CAP);
-const perfWin = { n: 0, t: 0, cool: 6, good: 0, upNeed: 2, upAt: -1e9, clock: 0 };
-function autoNote() { toast(`⚙️ 画质已自动调为「${QUALITY[qualityIdx].name}」(暂停菜单可手动改)`, 3); }
-function autoQuality(frameDt) {
-  const q = QUALITY[qualityIdx];
-  // 每帧都要落实的档位细节(主循环在模拟之后、渲染之前调用):视距上限、阴影隔帧更新
-  if (scene.fog && scene.fog.far > q.viewCap - 30) { // 雾每帧由天色重设;这里只往近收,幂等
-    scene.fog.far = q.viewCap - 30;
-    scene.fog.near = Math.min(scene.fog.near, scene.fog.far * 0.45);
-  }
-  if (q.shadowEvery > 1) sun.shadow.needsUpdate = ++shadowTick % q.shadowEvery === 0;
-  // 自动升降档
-  if (qualityManual || !started || paused || mapState.open || document.hidden) return;
-  if (frameDt > 2) { perfWin.n = 0; perfWin.t = 0; return; } // 切后台回来:这一帧不算,窗口重开
-  perfWin.clock += frameDt;
-  if (perfWin.cool > 0) { perfWin.cool -= frameDt; return; }
-  if (perfWin.n < PW_CAP) pwBuf[perfWin.n++] = Math.min(1, frameDt);
-  perfWin.t += frameDt;
-  if (!((perfWin.t >= 4 && perfWin.n >= 12) || perfWin.t >= 10)) return;
-  const n = perfWin.n;
-  const p90 = pwBuf.subarray(0, n).sort()[Math.min(n - 1, Math.floor(n * 0.9))];
-  perfWin.n = 0;
-  perfWin.t = 0;
-  const justUp = perfWin.clock - perfWin.upAt < 15;
-  if (p90 > (justUp ? 0.026 : 0.036)) {
-    perfWin.good = 0;
-    if (justUp) perfWin.upNeed = Math.min(16, perfWin.upNeed * 2);
-    perfWin.upAt = -1e9;
-    if (qualityIdx > 0) { setQuality(qualityIdx - 1); autoNote(); }
-    else if (dynRes > 0.6) { dynRes = Math.max(0.6, +(dynRes - 0.15).toFixed(2)); setQuality(0); }
-    else return;
-    perfWin.cool = 3;
-  } else if (p90 < 0.021) {
-    perfWin.good++;
-    // 分辨率一个好窗口就往回升一级(升错了代价小);升档要连续 upNeed 个好窗口
-    const tierUp = dynRes >= 1 && qualityIdx < AUTO_TOP && perfWin.good >= perfWin.upNeed;
-    if (dynRes < 1) dynRes = Math.min(1, +(dynRes + 0.15).toFixed(2));
-    else if (!tierUp) return;
-    perfWin.good = 0;
-    setQuality(qualityIdx + (tierUp ? 1 : 0));
-    if (tierUp) autoNote();
-    perfWin.upAt = perfWin.clock;
-    perfWin.cool = 3;
-  } else perfWin.good = 0;
-}
-document.getElementById('btn-resume').onclick = () => {
-  setPaused(false);
-  renderer.domElement.requestPointerLock();
-};
-document.getElementById('btn-quality').onclick = () => setQuality((qualityIdx + 1) % QUALITY.length, true);
-document.getElementById('btn-style').textContent = `画风:${STYLE_PRESETS[styleKey].name}`;
-document.getElementById('btn-style').onclick = () => {
-  document.getElementById('btn-style').textContent = `画风:${cycleStyle()}`;
-  smaa.enabled = fxHigh && STYLE_PRESETS[styleKey].mode !== 4;
-};
-document.getElementById('btn-music').onclick = (ev) => {
-  ev.target.textContent = `音乐:${toggleMusic() ? '开' : '关'}`;
-};
-document.getElementById('btn-help').onclick = () => {
-  if (!hintVisible) toggleHint();
-  setPaused(false);
-  renderer.domElement.requestPointerLock();
-};
-// 清除存档要点两次:第一次只变成确认按钮,3 秒内再点才真删(防手滑)
-let wipeArmT = 0;
-document.getElementById('btn-wipe').onclick = (ev) => {
-  const btn = ev.currentTarget;
-  if (performance.now() > wipeArmT) {
-    wipeArmT = performance.now() + 3000;
-    const old = btn.textContent;
-    btn.textContent = '⚠️ 再点一次确认清除(不可恢复)';
-    setTimeout(() => { if (performance.now() > wipeArmT) btn.textContent = old; }, 3100);
-    return;
-  }
-  localStorage.removeItem(SAVE_KEY);
-  location.reload();
-};
+
+initQuality();
+
+
 
 // ================= 交互目标标记(头顶金色小箭头) =================
 const interactMarker = new THREE.Mesh(new THREE.ConeGeometry(0.15, 0.3, 4),
@@ -617,41 +401,6 @@ let promptTargetPos = null;
 
 // ================= 命中反馈:白闪 + 击退 =================
 
-// ================= 实体远近分级(LOD) =================
-// 合并成蒙皮网格的实体(gfx/skin.js,覆盖所有人形/动物,含任务 NPC、导演事件路人):
-// lodNear 内投影,之外不投影,lodHide 外整个不画(距离随画质档)。每 12 帧扫一遍,级别变了才改。
-// 没能合并的实体(兜底)仍走旧规则:近处投影、远处收起眼珠/腰带等细件。
-let lodScan = 0;
-const _lodSeen = new Set();
-function applyEntityLOD(e, lv) {
-  e._lod = lv;
-  e.group.traverse((o) => {
-    if (!o.isMesh) return;
-    if (o.userData.cast0 === undefined) o.userData.cast0 = o.castShadow;
-    o.castShadow = lv === 0 && o.userData.cast0;
-    if (o.userData.lodDetail) o.visible = lv === 0;
-  });
-}
-function updateEntityLOD() {
-  if (lodScan-- > 0) return;
-  lodScan = 12;
-  const q = QUALITY[qualityIdx];
-  const cx = camera.position.x, cz = camera.position.z;
-  updateSkinLOD(cx, cz, q.lodNear, q.lodHide, q.halfD);
-  updateNatureLOD(cx, cz, q.propFar, q.propShadow, q.bigFar);
-  updatePropLOD(cx, cz, q.propFar);
-  _lodSeen.clear();
-  const lists = [villagers, guards, bandits, wolves, horses, namedNPCs, chickens, deers, funnyNPCs, mercs];
-  for (const list of lists) {
-    for (const e of list) {
-      if (!e || !e.group || e.group._skin || _lodSeen.has(e)) continue;
-      _lodSeen.add(e);
-      const d = Math.hypot(e.group.position.x - cx, e.group.position.z - cz);
-      const lv = d < q.lodNear ? 0 : d < q.lodNear + 6 && e._lod === 0 ? 0 : 1; // 6m 回差,免得边界上来回切
-      if (e._lod !== lv) applyEntityLOD(e, lv);
-    }
-  }
-}
 
 // ================= 人群软碰撞(不再穿过 NPC) =================
 function pushCrowd() {
@@ -677,316 +426,68 @@ function pushCrowd() {
   softly(horses, 1.05);
 }
 
-// ================= 区域浮现(GTA 式) =================
-const regionEl = document.getElementById('region');
-let curRegion = '';
-let regionCheckT = 0;
-function updateRegion(dt) {
-  regionCheckT -= dt;
-  if (regionCheckT > 0) return;
-  regionCheckT = 0.5;
-  let name = '艾尔德里亚原野';
-  for (const r of REGIONS) {
-    if (r.band !== undefined) { if (player.pos.z < r.band) { name = r.name; break; } continue; }
-    if (dist2(player.pos.x, player.pos.z, r.x, r.z) < r.r * r.r) { name = r.name; break; }
-  }
-  // 核心之外:程序化荒野群系命名
-  if ((name === '艾尔德里亚原野' || name === '北境群山') &&
-      (Math.abs(player.pos.x) > CORE || Math.abs(player.pos.z) > CORE)) {
-    name = wildRegionName(player.pos.x, player.pos.z);
-    if (Math.max(Math.abs(player.pos.x), Math.abs(player.pos.z)) > 10000) unlockAch('navigator');
-  }
-  if (name !== curRegion) {
-    curRegion = name;
-    regionEl.textContent = name;
-    regionEl.classList.remove('show');
-    void regionEl.offsetWidth; // 重启 CSS 动画
-    regionEl.classList.add('show');
-  }
-}
 
 initMirror(); // 回响之镜立进场景(启动装配:原位调用,保持建场顺序)
 
-// ================= 存档 =================
-const SAVE_KEY = 'gth-save-v1';
-const FRESH_START = !localStorage.getItem(SAVE_KEY); // 新档才演序章
-const crestsFound = [];
-let saveIconTimer = null;
-let saveBlocked = false; // 读档失败时置真:不自动覆盖原档
-const SAVE_VERSION = 3; // v3:委托③④互换(剿匪提前到竞速之前)
-function saveGame() {
-  if (saveBlocked) return;
-  const icon = document.getElementById('save-icon');
-  icon.style.opacity = 1;
-  clearTimeout(saveIconTimer);
-  saveIconTimer = setTimeout(() => { icon.style.opacity = 0; }, 1000);
-  try {
-    localStorage.setItem(SAVE_KEY, JSON.stringify({
-      v: SAVE_VERSION,
-      coins: player.coins, questIdx: quest.idx, crests: crestsFound,
-      swordLv: player.swordLv, royalHorse: player.royalHorse,
-      kingRewarded: namedNPCs.find((n) => n.key === 'king')?.rewarded || false,
-      ach: achUnlocked, stats, day: calendar.day, chron: chronicle, fday: calendar.festGrantedDay,
-      wolf: frostfang.tamed, wolfFeed: frostfang.feed, lake: lakeBlessed, relic: player.relic,
-      chore: sideQuest.active ? sideQuest : null,
-      herbs: player.herbs, venison: player.venison, lore: loreRead,
-      weapon: player.weapon, weaponsOwned: player.weaponsOwned, armor: player.armor,
-      home: player.home, homeDay: player.homeDay, firefly: player.firefly,
-      mind: mindSave(),
-      evo: { legends: EVO.legends, wolfGen: EVO.wolfGen, wolfPressure: EVO.wolfPressure,
-        wolfSpeed: EVO.wolfSpeed, eventFit: EVO.eventFit,
-        tactics: EVO.tactics, corpus: EVO.corpus },
-      spells: player.spells,
-      skills: player.skills, shout: shout.learned, mercN: mercs.length,
-      loot: player.loot, vendetta: vendetta.stage, bsToken: player.blackstoneToken,
-    }));
-  } catch { /* 隐私模式等 */ }
-}
-function loadGame() {
-  let s;
-  try {
-    s = JSON.parse(localStorage.getItem(SAVE_KEY));
-  } catch {
-    // 存档本身坏了(不是合法 JSON):保留原文备份,不读也不覆盖
-    saveBlocked = true;
-    try { localStorage.setItem(SAVE_KEY + '-bak', localStorage.getItem(SAVE_KEY)); } catch { /* 忽略 */ }
-    setTimeout(() => toast('⚠️ 存档已损坏:已备份原文件,本局不会覆盖它', 6), 1500);
-    return false;
-  }
-  if (!s || typeof s !== 'object') return false;
-  // 分段读档:每段各自 try,一段坏了不拖累其他段;有段失败就停用本局自动存档并备份原档
-  const failed = [];
-  const section = (name, fn) => { try { fn(); } catch (err) { failed.push(name); console.error(`读档[${name}]失败`, err); } };
-  section('进度', () => {
-    player.coins = s.coins || 0;
-    quest.idx = Math.min(s.questIdx || 0, missions.length);
-    // v2 及更早:旧序 ①金币 ②快递 ③竞速 ④剿匪;旧档停在"剿匪待接"(3)的,新序里剿匪是第 2 单
-    if ((s.v || 1) < 3 && quest.idx === 3) quest.idx = 2;
-    crestsFound.splice(0, Infinity, ...(Array.isArray(s.crests) ? s.crests : []));
-    player.swordLv = s.swordLv || 1;
-    player.royalHorse = !!s.royalHorse;
-    if (s.kingRewarded) {
-      const king = namedNPCs.find((n) => n.key === 'king');
-      if (king) king.rewarded = true;
+
+
+initPickups();
+
+function updatePickups(dt) {
+  const radius = player.mounted ? 1.8 : 1.2;
+  for (let i = pickups.length - 1; i >= 0; i--) {
+    const p = pickups[i];
+    p.t += dt;
+    if (p.ttl !== Infinity) {
+      p.ttl -= dt;
+      if (p.ttl <= 0) { scene.remove(p.mesh); pickups.splice(i, 1); continue; }
+      p.mesh.visible = p.ttl > 5 || Math.floor(p.t * 8) % 2 === 0;
     }
-  });
-  section('成就统计', () => {
-    if (Array.isArray(s.ach)) achUnlocked.splice(0, Infinity, ...s.ach);
-    if (s.stats) Object.assign(stats, s.stats);
-    stats.lastStomp = -99; // 时间戳不跨会话:performance.now 重置会误发"弹簧靴"成就
-    calendar.day = Math.max(1, s.day || 1);
-  });
-  section('物品', () => {
-    player.herbs = s.herbs || 0;
-    player.venison = s.venison || 0;
-    if (Array.isArray(s.lore)) loreRead.splice(0, Infinity, ...s.lore);
-    if (Array.isArray(s.chron)) chronicle.splice(0, Infinity, ...s.chron);
-    calendar.festGrantedDay = s.fday || 0;
-    frostfang.feed = s.wolfFeed || 0;
-    player.relic = !!s.relic;
-    if (s.chore && s.chore.active) Object.assign(sideQuest, s.chore);
-    if (s.lake) setLakeBlessed(true);
-  });
-  section('伙伴', () => {
-    if (s.wolf && !frostfang.tamed) {
-      frostfang.tamed = true;
-      frostfang.ent = frostfang.wary;
-      frostfang.wary = null;
-      if (frostfang.ent) frostfang.ent.pos.set(world.playerSpawn.x + 2, 0, world.playerSpawn.z + 2);
-    }
-  });
-  section('装备与家', () => {
-    if (Array.isArray(s.weaponsOwned)) player.weaponsOwned = s.weaponsOwned;
-    if (s.weapon && player.weaponsOwned.includes(s.weapon)) player.weapon = s.weapon;
-    if (s.home) {
-      player.home = true;
-      player.homeDay = s.homeDay || 0;
-      paintHomeSign();
-      refreshTrophies();
-    }
-    player.firefly = !!s.firefly;
-  });
-  section('世界记忆', () => {
-    mindLoad(s.mind); // 这颗心接着上次的样子继续长
-    if (s.evo) { // 自进化的内容也接着长
-      if (Array.isArray(s.evo.legends)) EVO.legends = s.evo.legends.filter((l) => l && l.base);
-      EVO.wolfGen = s.evo.wolfGen || 1;
-      EVO.wolfPressure = s.evo.wolfPressure || 0;
-      EVO.wolfSpeed = s.evo.wolfSpeed || 0;
-      if (s.evo.eventFit && typeof s.evo.eventFit === 'object') EVO.eventFit = s.evo.eventFit;
-      if (s.evo.tactics) EVO.tactics = { block: +s.evo.tactics.block || 0, dodge: +s.evo.tactics.dodge || 0 };
-      // 只留写好的传闻:旧档里"剪开重缝"出来的病句一并清掉
-      if (Array.isArray(s.evo.corpus)) EVO.corpus = s.evo.corpus.filter((t) => typeof t === 'string' && BANKS.RUMORS.includes(t));
-      for (const w of wolves) if (!w.dead) { // 在世的狼也是这一代的:速度和皮实一起补
-        w.speed = 7.2 + EVO.wolfSpeed;
-        w.hp = Math.max(w.hp, EVO.wolfGen >= 3 ? 4 : 3);
+    p.mesh.rotation.y += dt * 3.5;
+    // 金币磁吸:靠近就飞进口袋
+    if (p.type === 'coin' && !player.dead) {
+      const md = dist2(player.pos.x, player.pos.z, p.x, p.z);
+      if (md < 30 && md > 0.05) {
+        const d = Math.sqrt(md);
+        const pull = (12 * dt) / d;
+        p.x += (player.pos.x - p.x) * pull;
+        p.z += (player.pos.z - p.z) * pull;
+        p.mesh.position.x = p.x;
+        p.mesh.position.z = p.z;
       }
     }
-  });
-  section('技能法术', () => {
-    if (Array.isArray(s.spells)) player.spells = s.spells.filter((k) => SPELLS[k]);
-    if (lakeBlessed && !player.spells.includes('frost')) player.spells.push('frost'); // 旧档补授
-    player.spellIdx = Math.min(player.spellIdx, Math.max(0, player.spells.length - 1));
-    if (s.skills) {
-      for (const k of Object.keys(SKILL_DEFS)) {
-        if (s.skills[k] && s.skills[k].lv >= 1) player.skills[k] = { lv: Math.min(10, s.skills[k].lv), xp: s.skills[k].xp || 0 };
+    if (p.type !== 'coin') p.mesh.position.y = (p.type === 'star' ? 1.4 : p.type === 'crest' ? 1.0 : 0.65) + Math.sin(p.t * 3) * 0.12;
+    if (!player.dead && dist2(player.pos.x, player.pos.z, p.x, p.z) < radius * radius &&
+        player.pos.y < 1.5) {
+      if (p.type === 'coin') {
+        player.coins++;
+        sfx.coin();
+        if (quest.active && missions[quest.idx].type === 'coins') quest.progress++;
+      } else if (p.type === 'heart') {
+        player.hp = Math.min(player.maxHp, player.hp + 2);
+        sfx.heart();
+      } else if (p.type === 'crest') {
+        crestsFound.push(p.id);
+        sfx.chest();
+        if (crestsFound.length >= world.crestSpots.length) {
+          player.coins += 100;
+          sfx.fanfare();
+          toast(`🛡️ 集齐 ${world.crestSpots.length} 枚皇家纹章!奖励 100 金币!`, 5);
+        } else {
+          toast(`🛡️ 皇家纹章 ${crestsFound.length}/${world.crestSpots.length}`, 3);
+        }
+        saveGame();
+      } else {
+        stats.starTaken = true; // 金狮勋章只领一次,记进档
+        sfx.fanfare();
+        toast('★ 恭喜通关!你成了王国传奇——世界仍然开放,继续撒欢吧!★', 8);
       }
+      scene.remove(p.mesh);
+      pickups.splice(i, 1);
     }
-  });
-  section('战吼与佣兵', () => {
-    shout.learned = !!s.shout;
-    for (let i = 0; i < Math.min(2, s.mercN || 0); i++) hireMercSilent(); // 佣兵跟着存档回来
-    player.loot = s.loot || 0;
-    vendetta.stage = [0, 1, 2, 3].includes(s.vendetta) ? s.vendetta : 0;
-    player.blackstoneToken = !!s.bsToken;
-    if (s.armor && ARMORS[s.armor]) player.armor = s.armor;
-  });
-  recomputeMaxHp();
-  player.hp = player.maxHp;
-  if (failed.length) {
-    // 有段没读好:本局不自动存档,免得把半截状态写回去覆盖好档;原档另存一份备份
-    saveBlocked = true;
-    try { localStorage.setItem(SAVE_KEY + '-bak', localStorage.getItem(SAVE_KEY)); } catch { /* 存储已满等 */ }
-    setTimeout(() => toast(`⚠️ 存档部分读取失败(${failed.join('、')}):本局不会覆盖原存档,备份已保留`, 6), 1500);
   }
-  return true;
 }
 
-
-// ================= 拾取物 =================
-const pickups = [];
-const coinMat = new THREE.MeshStandardMaterial({
-  color: 0xffd83d, emissive: 0x8a5c00, emissiveIntensity: 0.55, metalness: 0.9, roughness: 0.22 });
-const heartMat = new THREE.MeshStandardMaterial({
-  color: 0xe83a4e, emissive: 0x7a0f1c, emissiveIntensity: 0.6, metalness: 0.15, roughness: 0.35 });
-
-function heartGeo() {
-  const s = new THREE.Shape();
-  s.moveTo(0, 0.5); s.bezierCurveTo(0.5, 1.1, 1.4, 0.5, 0, -0.7);
-  s.bezierCurveTo(-1.4, 0.5, -0.5, 1.1, 0, 0.5);
-  return new THREE.ExtrudeGeometry(s, { depth: 0.3, bevelEnabled: false }).scale(0.45, 0.45, 0.45);
-}
-const heartG = heartGeo();
-
-function starGeoBig() {
-  const s = new THREE.Shape();
-  for (let i = 0; i < 10; i++) {
-    const a = (i / 10) * Math.PI * 2 - Math.PI / 2;
-    const r = i % 2 === 0 ? 1 : 0.45;
-    if (i === 0) s.moveTo(Math.cos(a) * r, -Math.sin(a) * r);
-    else s.lineTo(Math.cos(a) * r, -Math.sin(a) * r);
-  }
-  s.closePath();
-  return new THREE.ExtrudeGeometry(s, { depth: 0.35, bevelEnabled: false });
-}
-
-// 皇家纹章(盾形收集品)
-function crestGeo() {
-  const s = new THREE.Shape();
-  s.moveTo(0, 0.6);
-  s.lineTo(0.5, 0.42);
-  s.lineTo(0.5, -0.05);
-  s.quadraticCurveTo(0.45, -0.45, 0, -0.65);
-  s.quadraticCurveTo(-0.45, -0.45, -0.5, -0.05);
-  s.lineTo(-0.5, 0.42);
-  s.closePath();
-  return new THREE.ExtrudeGeometry(s, { depth: 0.12, bevelEnabled: false }).scale(0.7, 0.7, 0.7);
-}
-const crestG = crestGeo();
-const crestMat = new THREE.MeshStandardMaterial({
-  color: 0x3f6fd0, emissive: 0x1a3a88, emissiveIntensity: 0.7, metalness: 0.8, roughness: 0.25 });
-
-// ---- 金币:落在地上的一小摞(实例化:全图几百枚金币只占一次绘制) + 一层闪光点 ----
-// 逻辑上每枚金币仍是一个 Object3D 代理(进场景、可 scene.remove),渲染时汇总进 InstancedMesh
-const COIN_MAX = 1024;
-const coinStackGeo = (() => {
-  const parts = [];
-  for (const [x, y, z, rx, rz] of [[0, 0.018, 0, 0, 0], [0.05, 0.053, 0.03, 0.05, -0.04], [-0.02, 0.088, -0.01, -0.03, 0.06], [0.2, 0.1, -0.05, 1.2, 0.3]]) {
-    const c = new THREE.CylinderGeometry(0.15, 0.15, 0.035, 14);
-    c.rotateX(rx); c.rotateZ(rz);
-    c.translate(x, y, z);
-    parts.push(c);
-  }
-  return mergeGeometries(parts, false);
-})();
-const coinIM = new THREE.InstancedMesh(coinStackGeo, coinMat, COIN_MAX);
-coinIM.count = 0;
-coinIM.frustumCulled = false;
-coinIM.receiveShadow = true;
-coinIM.userData.noSnap = true;
-scene.add(coinIM);
-const glintTex = (() => { // 四芒星闪光
-  const c = document.createElement('canvas');
-  c.width = c.height = 64;
-  const g = c.getContext('2d');
-  const grd = g.createRadialGradient(32, 32, 0, 32, 32, 30);
-  grd.addColorStop(0, 'rgba(255,255,240,1)');
-  grd.addColorStop(0.25, 'rgba(255,230,150,0.55)');
-  grd.addColorStop(1, 'rgba(255,200,80,0)');
-  g.fillStyle = grd;
-  g.fillRect(0, 0, 64, 64);
-  g.fillStyle = 'rgba(255,255,230,0.9)';
-  g.fillRect(31, 4, 2, 56);
-  g.fillRect(4, 31, 56, 2);
-  return new THREE.CanvasTexture(c);
-})();
-const coinGlintPos = new Float32Array(COIN_MAX * 3);
-const coinGlintGeo = new THREE.BufferGeometry();
-coinGlintGeo.setAttribute('position', new THREE.BufferAttribute(coinGlintPos, 3));
-const coinGlint = new THREE.Points(coinGlintGeo, new THREE.PointsMaterial({ size: 0.55, map: glintTex, color: 0xffe7a0,
-  transparent: true, opacity: 0.8, depthWrite: false, blending: THREE.AdditiveBlending }));
-coinGlint.frustumCulled = false;
-coinGlint.userData.noSnap = true;
-scene.add(coinGlint);
-const coinProxies = new Set();
-const _cM = new THREE.Matrix4(), _cQ = new THREE.Quaternion(), _cV = new THREE.Vector3(), _cS = new THREE.Vector3(1, 1, 1);
-const _cUp = new THREE.Vector3(0, 1, 0);
-function updateCoinInstances(now) {
-  let i = 0;
-  for (const p of coinProxies) {
-    if (!p.parent) { coinProxies.delete(p); continue; }
-    if (!p.visible || i >= COIN_MAX) continue;
-    const u = p.userData;
-    if (u.cx !== p.position.x || u.cz !== p.position.z) { u.cx = p.position.x; u.cz = p.position.z; u.cy = groundH(u.cx, u.cz); }
-    _cQ.setFromAxisAngle(_cUp, u.yaw);
-    _cM.compose(_cV.set(u.cx, u.cy + 0.01, u.cz), _cQ, _cS);
-    coinIM.setMatrixAt(i, _cM);
-    // 闪光点:各自错开相位地一闪一闪(高度随相位轻轻起伏)
-    const ph = Math.sin(now * 0.004 + u.yaw * 7);
-    coinGlintPos[i * 3] = u.cx;
-    coinGlintPos[i * 3 + 1] = u.cy + 0.32 + ph * 0.06;
-    coinGlintPos[i * 3 + 2] = u.cz;
-    i++;
-  }
-  coinIM.count = i;
-  coinIM.instanceMatrix.needsUpdate = true;
-  coinGlintGeo.setDrawRange(0, i);
-  coinGlintGeo.attributes.position.needsUpdate = true;
-  coinGlint.material.size = 0.45 + 0.15 * Math.sin(now * 0.006);
-}
-function addPickup(type, x, z, ttl = Infinity, id = -1, chunk = null) {
-  let mesh;
-  if (type === 'coin') {
-    mesh = new THREE.Object3D(); // 代理:真正的绘制交给 coinIM
-    mesh.userData.yaw = rand() * Math.PI * 2;
-    // 代理只提供 x/z 与可见性:不贴地(地面高度在 updateCoinInstances 里算)、不更新矩阵,
-    // 转动(拾取动画每帧改 rotation.y)也不必同步成四元数
-    mesh.userData.noSnap = true;
-    mesh.matrixAutoUpdate = false;
-    mesh.matrixWorldAutoUpdate = false;
-    mesh.rotation._onChange(() => {});
-    coinProxies.add(mesh);
-  } else if (type === 'heart') mesh = new THREE.Mesh(heartG, heartMat);
-  else if (type === 'crest') mesh = new THREE.Mesh(crestG, crestMat);
-  else mesh = new THREE.Mesh(starGeoBig(), new THREE.MeshStandardMaterial({
-    color: 0xffd83d, emissive: 0xaa7700, emissiveIntensity: 0.9, metalness: 0.7, roughness: 0.25 }));
-  mesh.position.set(x, type === 'coin' ? 0 : type === 'star' ? 1.4 : type === 'crest' ? 1.0 : 0.65, z);
-  if (type === 'star') mesh.scale.setScalar(1.4);
-  mesh.castShadow = type !== 'coin';
-  scene.add(mesh);
-  pickups.push({ mesh, type, x, z, ttl, id, chunk, t: rand() * 6 });
-}
-for (const [x, z] of world.coinSpots) addPickup('coin', x, z);
 
 // 读档,然后生成未收集的纹章
 const hasSave = loadGame();
@@ -1063,10 +564,7 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyT' && dialog.open) deepTalk();
   if (e.code === 'KeyH') toggleHint();
   if (e.code === 'KeyK') { // 画风随手切:写实/油画/卡通/水墨/像素/版画/电影/复古
-    const nm = cycleStyle();
-    smaa.enabled = fxHigh && STYLE_PRESETS[styleKey].mode !== 4;
-    document.getElementById('btn-style').textContent = `画风:${nm}`;
-    toast(`🎨 画风:${nm}(K 键继续切换)`, 1.6);
+    toast(`🎨 画风:${nextStyle()}(K 键继续切换)`, 1.6);
   }
   if (e.code === 'KeyQ') queueInput(cycleWeapon);
   // 施法键做冗余判定:部分输入法/键盘布局下 e.code 会被吞,补上 e.key 兜底
@@ -1140,67 +638,7 @@ titleEl.addEventListener('click', () => {
   if (!prologue.on) toast('欢迎来到艾尔德里亚!去喷泉广场找管家埃隆接取委托吧(按 E 互动)', 5);
 });
 
-// ================= 通缉系统 =================
-let wanted = 0, evadeT = 0;
-function crime(n, msg) {
-  const old = wanted;
-  wanted = Math.min(5, wanted + n);
-  evadeT = 0;
-  stats.crimes = (stats.crimes || 0) + n;
-  if (old === 0 && wanted > 0) remember('第一次上了王国的通缉令', 'firstwanted');
-  if (msg) toast(msg, 2.5);
-  if (wanted > old) {
-    sfx.wanted();
-    if (lawlessT > 0) return; // 无法无天期:卫兵队被打空了,没有增援可派
-    // 增援:从最近的城门出动
-    const gate = world.gates.reduce((a, b) =>
-      dist2(a.x, a.z, player.pos.x, player.pos.z) < dist2(b.x, b.z, player.pos.x, player.pos.z) ? a : b);
-    const extras = guards.filter((g) => g.extra).length;
-    const want = Math.min(wanted * 2, 8);
-    for (let i = extras; i < want; i++) {
-      addGuard(gate.x + (rand() * 6 - 3), gate.z + (rand() * 6 - 3),
-        [[gate.x, gate.z]], wanted >= 3, true);
-    }
-  }
-}
-function resetEvade() { evadeT = 0; } // 卫兵看见你了:脱逃计时归零
-function clearWanted() {
-  wanted = 0;
-  for (let i = guards.length - 1; i >= 0; i--) {
-    if (guards[i].extra) retireEntity(guards[i], guards); // 增援卫兵撤走:头盔/佩剑等独占资源一并释放
-    else guards[i].state = 'patrol';
-  }
-}
 
-// ================= 无法无天(卫兵剿灭)=================
-// 卫兵倒地统一出口:240 秒起不来;全城放倒=成就+通缉没人执行自动烟消+增援停发
-let lawlessT = 0, lawlessPending = false;
-function downGuard(g) {
-  g.downT = 240;
-  g.stunT = 0;
-  g.windupT = 0;
-  g.swingT = 0;
-  g.group.rotation.z = 0;
-  g.wantedHit = false;
-  startFall(g);
-  registerKill();
-  dropCoins(g.pos, 3);
-  if (guards.length && guards.every((x) => x.downT > 0)) lawlessPending = true;
-}
-function updateLawless(dt) {
-  if (lawlessPending) { // 在横扫判定外处理:clearWanted 会拆增援卫兵,别在遍历中动数组
-    lawlessPending = false;
-    lawlessT = 240;
-    unlockAch('lawless');
-    if (wanted > 0) {
-      clearWanted();
-      toast('🌘 全城卫兵都倒下了——通缉令没人执行,烟消云散。', 4.5);
-    } else toast('🌘 全城卫兵都倒下了。这座城暂时没有王法。', 4);
-    sfx.fanfare();
-    remember('把全城卫兵放倒,过了一阵子无法无天的日子', 'lawless');
-  }
-  if (lawlessT > 0) lawlessT -= dt;
-}
 
 // ================= 交互 =================
 let promptText = '';
@@ -3026,12 +2464,6 @@ function chargedShot() {
   toast('🏹 满月!', 1);
 }
 
-function dropCoins(pos, n) {
-  for (let i = 0; i < n; i++) {
-    const a = rand() * 6.28;
-    addPickup('coin', pos.x + Math.cos(a) * (0.6 + rand()), pos.z + Math.sin(a) * (0.6 + rand()), 25);
-  }
-}
 
 // 挨打硬直:打断自己正在出的刀(判定帧未到的作废)、散掉蓄力与火球聚能,身子后仰一下
 function playerHitStagger(t) {
@@ -4136,156 +3568,11 @@ function tryRob() {
   toast('附近没有可以抢的人。(你在想什么?)', 2);
 }
 
-// ================= 拾取 =================
-function updatePickups(dt) {
-  const radius = player.mounted ? 1.8 : 1.2;
-  for (let i = pickups.length - 1; i >= 0; i--) {
-    const p = pickups[i];
-    p.t += dt;
-    if (p.ttl !== Infinity) {
-      p.ttl -= dt;
-      if (p.ttl <= 0) { scene.remove(p.mesh); pickups.splice(i, 1); continue; }
-      p.mesh.visible = p.ttl > 5 || Math.floor(p.t * 8) % 2 === 0;
-    }
-    p.mesh.rotation.y += dt * 3.5;
-    // 金币磁吸:靠近就飞进口袋
-    if (p.type === 'coin' && !player.dead) {
-      const md = dist2(player.pos.x, player.pos.z, p.x, p.z);
-      if (md < 30 && md > 0.05) {
-        const d = Math.sqrt(md);
-        const pull = (12 * dt) / d;
-        p.x += (player.pos.x - p.x) * pull;
-        p.z += (player.pos.z - p.z) * pull;
-        p.mesh.position.x = p.x;
-        p.mesh.position.z = p.z;
-      }
-    }
-    if (p.type !== 'coin') p.mesh.position.y = (p.type === 'star' ? 1.4 : p.type === 'crest' ? 1.0 : 0.65) + Math.sin(p.t * 3) * 0.12;
-    if (!player.dead && dist2(player.pos.x, player.pos.z, p.x, p.z) < radius * radius &&
-        player.pos.y < 1.5) {
-      if (p.type === 'coin') {
-        player.coins++;
-        sfx.coin();
-        if (quest.active && missions[quest.idx].type === 'coins') quest.progress++;
-      } else if (p.type === 'heart') {
-        player.hp = Math.min(player.maxHp, player.hp + 2);
-        sfx.heart();
-      } else if (p.type === 'crest') {
-        crestsFound.push(p.id);
-        sfx.chest();
-        if (crestsFound.length >= world.crestSpots.length) {
-          player.coins += 100;
-          sfx.fanfare();
-          toast(`🛡️ 集齐 ${world.crestSpots.length} 枚皇家纹章!奖励 100 金币!`, 5);
-        } else {
-          toast(`🛡️ 皇家纹章 ${crestsFound.length}/${world.crestSpots.length}`, 3);
-        }
-        saveGame();
-      } else {
-        stats.starTaken = true; // 金狮勋章只领一次,记进档
-        sfx.fanfare();
-        toast('★ 恭喜通关!你成了王国传奇——世界仍然开放,继续撒欢吧!★', 8);
-      }
-      scene.remove(p.mesh);
-      pickups.splice(i, 1);
-    }
-  }
-}
 
 
-// ================= 通缉衰减 =================
-function updateWanted(dt) {
-  if (wanted <= 0) return;
-  evadeT += dt;
-  if (evadeT > 13) {
-    wanted--;
-    evadeT = 6;
-    if (wanted === 0) {
-      clearWanted();
-      sfx.clear();
-      toast('通缉解除,卫兵放弃了追捕', 3);
-    }
-  }
-}
 
 // ================= 相机 =================
 
-// ================= HUD =================
-let hudCache = '';
-function updateHUD() {
-  // 体力条每帧直刷(绕过 hudCache):打斗中它一直在动
-  if (started && !player.dead) {
-    staminaEl.style.display = 'block';
-    staminaFillEl.style.width = `${(player.sta / player.maxSta) * 100}%`;
-    staminaFillEl.className = player.gaspT > 0 ? 'gasp' : '';
-  } else staminaEl.style.display = 'none';
-  const full = Math.floor(player.hp / 2);
-  const half = player.hp % 2;
-  const heartsMax = Math.ceil(player.maxHp / 2);
-  const hearts = '❤️'.repeat(full) + (half ? '💔' : '') + '🖤'.repeat(Math.max(0, heartsMax - full - half));
-  const stars = wanted > 0 ? '⭐'.repeat(wanted) + '✩'.repeat(5 - wanted) : '';
-  let missionText;
-  if (prologue.on) missionText = '⚔️ 序章:击退冲进村子的狼群';
-  else if (quest.idx >= missions.length) missionText = '🏆 全部委托完成 — 去谒见领主,王国是你的了!';
-  else if (!quest.active) {
-    missionText = canAcceptRemotely()
-      ? `📜 委托 ${quest.idx + 1}/${missions.length}:${missions[quest.idx].title} —— 按 E 原地接下(信使送来的委托书)`
-      : `📜 委托 ${quest.idx + 1}/${missions.length}:去${stewardWhere()}找管家埃隆(按 E,光柱指路)`;
-  }
-  else {
-    const m = missions[quest.idx];
-    let prog = '';
-    if (m.type === 'coins') prog = ` (${Math.min(quest.progress, m.goal)}/${m.goal})` + (quest.progress >= m.goal ? ' — 回去交任务!' : '');
-    if (m.type === 'bandits' || m.type === 'wolves') prog = ` (${quest.progress}/${m.goal})`;
-    if (m.type === 'race') prog = ` (金环 ${questRT.ringIdx}/${world.raceRoute.length})`;
-    if (m.type === 'escort' && questRT.merchant) prog = ` (商人 ❤×${Math.max(0, questRT.merchant.hp)})`;
-    missionText = `📜 ${m.title}:${m.desc}${prog}`;
-  }
-  if (arenaRT.active) missionText = `🏟️ 竞技场:第 ${arenaRT.wave} 波(走出沙圈=认输)\n${missionText}`;
-  const timerType = quest.active && (missions[quest.idx].type === 'deliver' || missions[quest.idx].type === 'race');
-  const timer = timerType ? `⏱ ${Math.ceil(quest.timer)} 秒` : '';
-  if (timer) missionText = `${timer}${quest.timer < 12 ? ' ⚠️' : ''}\n${missionText}`;
-  if (dragonRT.on) missionText = `🐉 霜龙 ❤${Math.max(0, dragonRT.hp)}/${dragonRT.maxHp}` +
-    `${dragonRT.phase === 'land' ? ' · 落地喘息:上刀!' : ' · 飞行中(弓/法术)'}\n` + missionText;
-  if (warband.active) { // 战况横幅:战团还剩几个,一眼可知
-    const wbAlive = warband.members.filter((b) => !b.dead).length;
-    missionText = `${warband.siege ? '🚨 攻城战' : '⚔️ 战团来袭'}:余 ${wbAlive}/${warband.members.length}` +
-      `${warband.duelOn ? ' · 单挑中!' : ''}\n` + missionText;
-  }
-  missionText += `\n🛡️ 皇家纹章 ${crestsFound.length}/${world.crestSpots.length}`;
-  const raining = weather.state === 'rain' || weather.state === 'storm';
-  const wIcon = isWinter() && raining ? '🌨️' : { clear: '☀️', cloudy: '⛅', rain: '🌧️', storm: '⛈️' }[weather.state];
-  const phaseIcon = { dawn: '🌅', day: '🌞', dusk: '🌇', night: '🌙' }[dayPhase()];
-  const sp = todaySpecial();
-  const calText = `${SEASON_ICON[seasonIdx()]}${SEASONS[seasonIdx()]}·${seasonDay()}日${sp ? '·' + sp.name : ''}`;
-  const bossHp = questRT.boss && !questRT.boss.dead && quest.active ? questRT.boss.hp : -1;
-  const key = hearts + '|' + player.coins + '|' + player.weapon + player.armor + (player.relic ? 'R' : '') + '|' + stars + '|' + missionText + '|' + timer + '|' + promptText + '|' + wIcon + phaseIcon + calText + '|' + bossHp + '|' + Math.floor(player.mp) + player.spellIdx + player.spells.length;
-  if (key === hudCache) return;
-  hudCache = key;
-  weatherEl.innerHTML = weatherHTML(seasonIdx(), `${SEASONS[seasonIdx()]}·${seasonDay()}日${sp ? '·' + sp.name : ''}`,
-    dayPhase(), weather.state, isWinter() && raining);
-  heartsEl.innerHTML = heartsHTML(full, half, heartsMax - full - half);
-  coinsEl.innerHTML = `${svgIcon('coin')}<span>${player.coins}</span>`;
-  wantedEl.innerHTML = wantedHTML(wanted);
-  wantedEl.style.display = wanted > 0 ? 'block' : 'none';
-  missionEl.innerHTML = richText(missionText);
-  const wDef = WEAPONS[player.weapon];
-  equipEl.innerHTML = // 法术/冷却改由底部技能栏显示,这里只留装备与法力(统一 SVG 图标)
-    `${iconHTML(wDef.icon, 'ico-s')}<span>${wDef.name}${player.swordLv >= 2 ? '+1' : ''}</span>${player.relic ? svgIcon('relic', 'ico-s') : ''}` +
-    (player.armor ? `<span class="eq-sep">·</span>${svgIcon('armor', 'ico-s')}<span>${ARMORS[player.armor].name}</span>` : '') +
-    (player.spells.length
-      ? `<span class="eq-sep">·</span><span>法力</span>${manaHTML(Math.floor(player.mp), player.maxMp)}` : '');
-  promptEl.innerHTML = richText(promptText);
-  promptEl.style.display = promptText ? 'block' : 'none';
-  // Boss 血条(仅 Boss 战期间)
-  const boss = questRT.boss;
-  if (boss && !boss.dead && quest.active) {
-    bosshpEl.style.display = 'block';
-    bosshpFillEl.style.width = `${Math.max(0, (boss.hp / 12) * 100)}%`;
-  } else {
-    bosshpEl.style.display = 'none';
-  }
-}
 
 function computePrompt() {
   promptText = '';
@@ -4691,7 +3978,6 @@ requestAnimationFrame(loop);
 
 // ==== 供拆出的系统模块使用的绑定 ====
 export {
-  abEl, abHighlight, addPickup, applyDamage, crestG, crestsFound, crime, damagePlayer, dangerFX,
-  dangerMat, dropCoins, faceNearestFoe, flinch, keys, killWolf, lockFoe, magBurst, midHeld, paused,
-  pickups, saveGame, setLockFoe, telegraphFlash, wanted, wolfKills,
+  applyDamage, cancelCharge, damagePlayer, dangerFX, dangerMat, faceNearestFoe, flinch, inputQ, keys,
+  killWolf, lockFoe, magBurst, midHeld, promptText, setLockFoe, telegraphFlash, warband, wolfKills,
 };

@@ -3,6 +3,7 @@
 // recomputeMaxHp() —— 生命上限唯一的计算处(护甲 + 湖神恩赐 + 屠龙者),读档/买甲/奇遇都走它。
 import * as THREE from 'three';
 import { sfx } from '../audio.js';
+import { saveGame } from '../core/save.js';
 import { player } from '../core/state.js';
 import { getWeaponModel, lambert } from '../entities.js';
 import { renderer } from '../gfx/core.js';
@@ -10,7 +11,6 @@ import { callout } from '../ui/feedback.js';
 import { toast } from '../ui/toast.js';
 import { stats } from './achievements.js';
 import { lakeBlessed } from './activities.js';
-import { saveGame } from '../main.js';
 
 // ================= 武器与护甲系统 =================
 export const WEAPONS = {

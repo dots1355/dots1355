@@ -2,11 +2,11 @@
 // 对外:unlockAch(key) —— 解锁即播报、记进编年史、挂上家里的战利品墙、存档。
 // stats 的字段由各系统自己累加(stats.kills/stats.deer/…),这里只声明初值。
 import { sfx } from '../audio.js';
+import { saveGame } from '../core/save.js';
 import { player } from '../core/state.js';
 import { toast } from '../ui/toast.js';
 import { refreshTrophies } from './home.js';
 import { remember } from './mind.js';
-import { saveGame } from '../main.js';
 
 // ================= 无意义成就(奖励瞎玩) =================
 export const ACH_DEFS = {

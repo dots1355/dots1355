@@ -7,6 +7,7 @@ import { sfx } from '../audio.js';
 import { PACK_HOST_LINES } from '../content-packs.js';
 import { AI_TEXT_OFF, aiLine } from '../core/aitext.js';
 import { rand } from '../core/rng.js';
+import { saveGame } from '../core/save.js';
 import { colliders, player, started, world } from '../core/state.js';
 import { dist2, lambert, makeHumanoid } from '../entities.js';
 import { scene } from '../gfx/core.js';
@@ -20,7 +21,6 @@ import {
 import { calendar } from './calendar.js';
 import { remember } from './mind.js';
 import { quest } from './quests.js';
-import { saveGame } from '../main.js';
 
 // ================= 街头随机事件(GTA 式) =================
 export const streetEvent = { type: null, t: 0, villager: null, bandit: null, horse: null, cooldown: 130 };

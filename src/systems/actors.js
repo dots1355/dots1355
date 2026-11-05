@@ -17,7 +17,8 @@ import { wildSpots } from './activities.js';
 import { EVO } from './evo.js';
 import { addSheep } from './fauna.js';
 import { frostSlow } from './magic.js';
-import { addPickup, lockFoe, pickups, setLockFoe } from '../main.js';
+import { addPickup, pickups } from './pickups.js';
+import { lockFoe, setLockFoe } from '../main.js';
 
 // ================= 马 =================
 export const horses = [];

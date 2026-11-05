@@ -3,6 +3,7 @@
 // 状态在 vendetta{stage, boss}(stage 随存档;模块加载时即初始化,读档可直接写)。
 // 对外:vendettaLetter()(换日时塞信)、vendettaRead()(读信)、updateVendetta()(主循环)。攻城事件本身在导演事件表里。
 import { sfx } from '../audio.js';
+import { saveGame } from '../core/save.js';
 import { player } from '../core/state.js';
 import { dist2 } from '../entities.js';
 import { toast } from '../ui/toast.js';
@@ -13,7 +14,8 @@ import { cam } from './camera.js';
 import { seedLegend } from './evo.js';
 import { refreshTrophies } from './home.js';
 import { remember, workspace } from './mind.js';
-import { dropCoins, saveGame, telegraphFlash } from '../main.js';
+import { dropCoins } from './pickups.js';
+import { telegraphFlash } from '../main.js';
 
 // ================= 黑石的报复(守城胜利的后续剧情链) =================
 export const vendetta = { stage: 0, boss: null }; // 黑石的报复:0 无仇 → 1 记仇 → 2 伏击上膛 → 3 两清

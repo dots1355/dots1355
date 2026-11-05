@@ -3,6 +3,7 @@
 import * as THREE from 'three';
 import { sfx } from '../audio.js';
 import { rand } from '../core/rng.js';
+import { saveGame } from '../core/save.js';
 import { player, world } from '../core/state.js';
 import { dist2, makeHumanoid } from '../entities.js';
 import { scene } from '../gfx/core.js';
@@ -12,7 +13,7 @@ import { stats } from './achievements.js';
 import { animateLimbs, bandits, meleeSwing, moveEntity, retireEntity, wolves } from './actors.js';
 import { calendar } from './calendar.js';
 import { remember } from './mind.js';
-import { applyDamage, saveGame } from '../main.js';
+import { applyDamage } from '../main.js';
 
 // ================= 佣兵(骑砍式:旅店雇剑士随行,按日发饷) =================
 export const mercs = [];

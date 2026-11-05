@@ -4,6 +4,7 @@
 import * as THREE from 'three';
 import { sfx } from '../audio.js';
 import { rand } from '../core/rng.js';
+import { saveGame } from '../core/save.js';
 import { player } from '../core/state.js';
 import { hitStop, slowMo } from '../core/timefx.js';
 import { later } from '../core/timers.js';
@@ -19,7 +20,7 @@ import { recomputeMaxHp } from './gear.js';
 import { DRAGON_SKULL, addFrostPatch, explodeAt } from './magic.js';
 import { remember } from './mind.js';
 import { spawnDust } from './weather.js';
-import { damagePlayer, dangerFX, dangerMat, saveGame } from '../main.js';
+import { damagePlayer, dangerFX, dangerMat } from '../main.js';
 
 // ================= 霜龙苏醒(龙骨之地终局 Boss)=================
 // 学会战吼后,夜里再触龙颅——骨翼重聚血肉。空中盘旋/俯冲/三段吐息;掉血落地喘息时才能近战。

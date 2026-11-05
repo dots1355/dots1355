@@ -16,13 +16,14 @@ import { stats, unlockAch } from '../systems/achievements.js';
 import { guards, villagers } from '../systems/actors.js';
 import { calendar, dayPhase, seasonIdx, todaySpecial } from '../systems/calendar.js';
 import { EVO } from '../systems/evo.js';
+import { wanted } from '../systems/law.js';
 import { MIND, archetype, recallLine, remember, workspace, wsReport } from '../systems/mind.js';
 import { funnyNPCs } from '../systems/npcs.js';
 import { quest } from '../systems/quests.js';
 import { weather } from '../systems/weather.js';
 import { groundH } from '../terrain.js';
+import { abEl } from './hudview.js';
 import { toast } from './toast.js';
-import { abEl, wanted } from '../main.js';
 
 // ================= 运行时对话组合引擎(数亿字组合空间,零加载) =================
 // 情境开场 × 语气前缀 × 内容主体(12 类语料)× 口头禅收尾,按角色声线现场拼装;

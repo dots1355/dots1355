@@ -10,6 +10,7 @@ import { colliders, player, started } from '../core/state.js';
 import { dist2, lambert } from '../entities.js';
 import { scene } from '../gfx/core.js';
 import { dialog, openDialog } from '../ui/dialog.js';
+import { paused } from '../ui/pause.js';
 import { toast, toastAmbient } from '../ui/toast.js';
 import { CORE } from '../wilderness.js';
 import { stats, unlockAch } from './achievements.js';
@@ -19,10 +20,11 @@ import { calendar, dayPhase, isWinter, todaySpecial } from './calendar.js';
 import { cam } from './camera.js';
 import { shopOpen } from './gear.js';
 import { HOME } from './home.js';
+import { wanted } from './law.js';
 import { learnSpell } from './magic.js';
+import { crestsFound } from './pickups.js';
 import { missions, quest } from './quests.js';
 import { weather } from './weather.js';
-import { crestsFound, paused, wanted } from '../main.js';
 
 // ================= 世界的意识(它记得你) =================
 // 编年史:世界替玩家记下值得记住的时刻,存档随身;

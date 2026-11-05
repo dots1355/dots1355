@@ -4,6 +4,7 @@
 // initQuests() 启动装配调用一次。
 import * as THREE from 'three';
 import { sfx } from '../audio.js';
+import { saveGame } from '../core/save.js';
 import { player, world } from '../core/state.js';
 import { angleLerp, dist2, lambert, makeHumanoid } from '../entities.js';
 import { scene } from '../gfx/core.js';
@@ -16,8 +17,8 @@ import { dayPhase } from './calendar.js';
 import { bountyRT } from './events.js';
 import { remember } from './mind.js';
 import { steward } from './npcs.js';
+import { addPickup } from './pickups.js';
 import { prologue } from './prologue.js';
-import { addPickup, saveGame } from '../main.js';
 
 // ================= 任务系统 =================
 export const missions = MISSIONS;

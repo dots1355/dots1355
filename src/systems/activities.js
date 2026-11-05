@@ -8,6 +8,7 @@ import { sfx } from '../audio.js';
 import { PACK_PROCLAIM } from '../content-packs.js';
 import { AI_TEXT_OFF, aiBusy, aiLine } from '../core/aitext.js';
 import { rand } from '../core/rng.js';
+import { saveGame } from '../core/save.js';
 import { player, started, world } from '../core/state.js';
 import { dist2, lambert } from '../entities.js';
 import { scene } from '../gfx/core.js';
@@ -25,9 +26,10 @@ import { mercs } from './mercs.js';
 import {
   archetype, chronicle, dayTopSurprise, dayTopThought, recallLine, remember, workspace,
 } from './mind.js';
+import { crestsFound } from './pickups.js';
 import { missions, quest, stewardWhere } from './quests.js';
 import { spawnDust, weather } from './weather.js';
-import { crestsFound, saveGame, wolfKills } from '../main.js';
+import { wolfKills } from '../main.js';
 
 // ================= 野外热点:篝火(烤肉)/温泉(泡汤)/教堂(庇佑) =================
 export const wildSpots = [];

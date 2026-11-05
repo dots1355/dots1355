@@ -5,6 +5,7 @@
 import * as THREE from 'three';
 import { sfx } from '../audio.js';
 import { frame } from '../core/frame.js';
+import { saveGame } from '../core/save.js';
 import { colliders, player } from '../core/state.js';
 import { lambert } from '../entities.js';
 import { scene } from '../gfx/core.js';
@@ -12,8 +13,9 @@ import { openDialog } from '../ui/dialog.js';
 import { achUnlocked, stats, unlockAch } from './achievements.js';
 import { queueDream } from './activities.js';
 import { calendar, dayPhase, sleepToMorning } from './calendar.js';
+import { wanted } from './law.js';
 import { remember } from './mind.js';
-import { crestG, saveGame, wanted } from '../main.js';
+import { crestG } from './pickups.js';
 
 // ================= 置业:湖畔小屋(玩家自己的家) =================
 export const HOME = { x: -82, z: 66, doorX: -82, doorZ: 68.6, price: 200 };

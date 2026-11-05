@@ -10,6 +10,7 @@ import {
 } from '../content-packs.js';
 import { AI_TEXT_OFF, aiBusy, aiLine } from '../core/aitext.js';
 import { rand } from '../core/rng.js';
+import { saveGame } from '../core/save.js';
 import { player, world } from '../core/state.js';
 import { angleLerp, dist2, makeHumanoid } from '../entities.js';
 import { scene } from '../gfx/core.js';
@@ -21,9 +22,11 @@ import { choreProgress } from './activities.js';
 import { animateLimbs, entFar, horses, meleeSwing, moveEntity } from './actors.js';
 import { SEASONS, dayPhase, seasonIdx, todaySpecial } from './calendar.js';
 import { arenaHost } from './events.js';
+import { wanted } from './law.js';
 import { remember, wsReport } from './mind.js';
+import { addPickup, crestsFound } from './pickups.js';
 import { missions, quest, questGiver } from './quests.js';
-import { addPickup, crestsFound, saveGame, wanted, wolfKills } from '../main.js';
+import { wolfKills } from '../main.js';
 
 // ================= 具名 NPC =================
 const npcStyles = {
