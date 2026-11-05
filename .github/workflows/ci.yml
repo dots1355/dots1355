@@ -5,14 +5,16 @@ on:
 jobs:
   lint-and-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
-      # 跳过 electron 的安装脚本(CI 不需要下载桌面运行时)
-      - run: npm install --no-audit --no-fund --ignore-scripts
+          node-version: 22
+          cache: npm
+      # 依赖按 package-lock.json 精确安装;跳过安装脚本(CI 不需要下载 electron 桌面运行时)
+      - run: npm ci --no-audit --no-fund --ignore-scripts
       - run: npm run lint
-      - run: npx playwright@1.49.1 install --with-deps chromium
+      # 浏览器版本跟随锁定的 playwright-core(不另写版本号,免得两边对不上)
+      - run: npx playwright-core install --with-deps chromium
       - run: npm test

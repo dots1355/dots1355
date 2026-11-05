@@ -14,14 +14,14 @@
     "lint": "eslint src tests tools && node tools/check-modules.mjs"
   },
   "devDependencies": {
-    "electron": "^28.2.0",
-    "electron-builder": "^24.13.3",
-    "esbuild": "^0.24.0",
-    "playwright-core": "^1.49.0",
-    "eslint": "^9.39.0",
-    "globals": "^15.0.0",
-    "espree": "^10.4.0",
-    "eslint-scope": "^8.4.0"
+    "electron": "28.3.3",
+    "electron-builder": "24.13.3",
+    "esbuild": "0.24.2",
+    "playwright-core": "1.64.1",
+    "eslint": "9.39.5",
+    "globals": "15.15.0",
+    "espree": "10.4.0",
+    "eslint-scope": "8.4.0"
   },
   "build": {
     "appId": "com.eldoria.grandthefthorse",
