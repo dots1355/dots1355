@@ -234,7 +234,7 @@ for pts in limb_tips:
     domes.append((c, r3.uniform(1.5, 1.9)))
 domes.append((Vector((0.35, 0.1, 4.6)), 1.9))
 for (c, R) in domes:
-    ret = bmesh.ops.create_icosphere(bm, subdivisions=2, radius=1.0)
+    ret = bmesh.ops.create_icosphere(bm, subdivisions=1, radius=1.0)
     for v in ret['verts']:
         v.co.x *= R
         v.co.y *= R
@@ -243,8 +243,8 @@ for (c, R) in domes:
         v.co += c
 # 柳丝:从每团树冠的下沿一圈一圈垂下(内圈短、外圈长),条带略向外飘
 for (c, R) in domes:
-    for i in range(22):
-        a = i / 22 * math.pi * 2 + r3.uniform(-0.12, 0.12)
+    for i in range(18):
+        a = i / 18 * math.pi * 2 + r3.uniform(-0.12, 0.12)
         ring = r3.uniform(0.55, 0.95)
         out = Vector((math.cos(a), math.sin(a), 0))
         top_p = c + out * R * ring + Vector((0, 0, -R * 0.3 * ring))

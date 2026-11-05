@@ -563,14 +563,15 @@ export function getGroundMaterial(normalMap) {
     sh.uniforms.uRoadTex = roadUniforms.uRoadTex;
     bindSurfaceUniforms(sh);
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vSfW;')
-      .replace('#include <project_vertex>', '#include <project_vertex>\nvSfW = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+      .replace('#include <common>', '#include <common>\nvarying vec3 vSfW;\nvarying vec3 vSfN;')
+      .replace('#include <project_vertex>', '#include <project_vertex>\nvSfW = (modelMatrix * vec4(transformed, 1.0)).xyz;\nvSfN = normalize(mat3(modelMatrix) * objectNormal);');
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', `#include <common>
         uniform float uSnow;
         uniform sampler2D uRoadMask, uRoadTex;
         ${SURFACE_UNIFORMS_GLSL}
         varying vec3 vSfW;
+        varying vec3 vSfN;
         ${NOISE_GLSL}
         ${PUDDLE_GLSL}`)
       .replace('#include <color_fragment>', `#include <color_fragment>
@@ -581,7 +582,7 @@ export function getGroundMaterial(normalMap) {
           vec3 rdCol = texture2D(uRoadTex, vSfW.xz * 0.23).rgb * (1.0 - 0.3 * rdM.g);
           diffuseColor.rgb = mix(diffuseColor.rgb, rdCol, rdM.r * 0.96);
         }
-        float snowK = uSnow * smoothstep(0.82, 0.96, normalize(vNormal).y);
+        float snowK = uSnow * smoothstep(0.82, 0.96, normalize(vSfN).y); // 世界坐标法线(以前误用了视空间法线)
         diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.86, 0.9, 0.95), snowK);
         // 雨天:泥土整体压暗,平地上积出水洼(见 gfx/surface.js;积雪处不积水)
         diffuseColor.rgb *= 1.0 - 0.24 * uWet;

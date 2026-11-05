@@ -243,7 +243,7 @@ function beardGeo() { // 络腮胡:沿下颌的一圈 + 唇上的八字须
     let y = jp.getY(i);
     const front = Math.max(0, z / 0.205);
     y = Math.min(y, -0.04 - 0.085 * front * front);
-    jp.setXYZ(i, x * 1.08, y - (y < -0.15 ? 0.035 * front : 0), z * 1.1 + 0.006);
+    jp.setXYZ(i, x * 1.05, y - (y < -0.15 ? 0.03 * front : 0), z * 1.05 + 0.004); // 贴着下颌,不向外翻成一圈"碗沿"
   }
   jaw.computeVertexNormals();
   const mus = [];
@@ -324,9 +324,9 @@ function applyHumanProps(g, parts, opts) {
     const st = hairStyleOf(opts);
     const hm = hatMat(hair, { roughness: 0.95 });
     head.add(new THREE.Mesh(hairGeo(st.kind), hm));
-    if (st.beard) head.add(new THREE.Mesh(beardGeo(), hm));
+    if (st.beard) head.add(new THREE.Mesh(beardGeo(), hatMat(hair, { roughness: 0.95, side: THREE.DoubleSide }))); // 双面:内侧也是胡子色,不像张开的嘴
   }
-  if ((cap || straw || helmet) && hairStyleOf(opts).beard) head.add(new THREE.Mesh(beardGeo(), hatMat(hair, { roughness: 0.95 })));
+  if ((cap || straw || helmet) && hairStyleOf(opts).beard) head.add(new THREE.Mesh(beardGeo(), hatMat(hair, { roughness: 0.95, side: THREE.DoubleSide })));
   if (mask) head.add(new THREE.Mesh(maskGeo(), hatMat(0x7a3b2a, { side: THREE.DoubleSide }))); // 蒙面:锈红布巾
   if (sword) {
     const swordGroup = new THREE.Group();

@@ -520,9 +520,11 @@ function* chunkJob(cx, cz) {
     for (let i = 0; i < 6; i++) drop(px + (rng() - 0.5) * 4, pz + (rng() - 0.5) * 4);
   }
 
-  // 群系地标(避开兴趣点中心,免得把营地/窝点压住)
+  // 群系地标(避开兴趣点中心,免得把营地/窝点压住)。没有成片树林的群系每块多撒几件:
+  // 白霜旷野的冰碛石与枯木、平原的露头与灌丛、荒漠的台地、焦土的玄武柱——一眼望去不再是一整片空地
+  const WILD_MULT = { snow: 2.4, plains: 1.7, desert: 1.9, ash: 2.1, hills: 1.5, rock: 1.6, swamp: 1.3 };
   for (const [name, expect] of LANDMARKS[biome] || []) {
-    const n = Math.floor(expect + rng());
+    const n = Math.floor(expect * (WILD_MULT[biome] || 1) + rng());
     for (let i = 0; i < n; i++) {
       const x = baseX + 6 + rng() * (CHUNK - 12), z = baseZ + 6 + rng() * (CHUNK - 12);
       if (Math.hypot(x - px, z - pz) < 14) continue;

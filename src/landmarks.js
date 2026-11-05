@@ -110,10 +110,10 @@ export function scatterCoreLandmarks() {
     const clear = (x, z, r) => !colliders.boxes.some((b) => x > b.minX - r && x < b.maxX + r && z > b.minZ - r && z < b.maxZ + r) &&
       !colliders.circles.some((c) => Math.hypot(x - c.x, z - c.z) < c.r + r);
     let trees = 0, bushes = 0;
-    for (let k = 0; k < 900 && (trees < 20 || bushes < 26); k++) {
+    for (let k = 0; k < 900 && (trees < 14 || bushes < 16); k++) {
       const x = -65 + rng() * 130, z = -51 + rng() * 103;
-      const bush = trees >= 20 || rng() < 0.5;
-      if (bush ? bushes >= 26 : trees >= 20) continue;
+      const bush = trees >= 14 || rng() < 0.5;
+      if (bush ? bushes >= 16 : trees >= 14) continue;
       if (Math.hypot(x, z - 5) < 18 || (z < -20 && Math.abs(x) < 36)) continue; // 广场、城堡
       if (Math.abs(x) < 7 || Math.abs(z) < 6) continue; // 南北、东西两条主街
       if (inRect(x, z, bush ? 1.4 : 2.6) || !clear(x, z, bush ? 1.3 : 2.8)) continue;
