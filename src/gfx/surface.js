@@ -62,6 +62,13 @@ export const ENTITY_DETAIL_COLOR = `
     diffuseColor.rgb *= edK;
   }`;
 
+// 静物(树石、地标、道具,同一个顶点色 PBR 材质)的手绘斑驳:一层低频深浅,让纯色刻面也有笔触密度
+export const STATIC_DETAIL_COLOR = `
+  {
+    float sdN = edN(vObjP * 1.3 + 3.7);
+    diffuseColor.rgb *= 0.9 + 0.2 * sdN;
+  }`;
+
 export const surfaceUniforms = {
   uWet: { value: 0 },      // 0 干 → 1 湿透
   uTime: { value: 0 },

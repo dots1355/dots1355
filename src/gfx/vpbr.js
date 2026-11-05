@@ -3,7 +3,7 @@
 // 着色器里再乘回来。实体合批(skin.js)、静态合批(batch.js)、地标实例化(flora.js)与荒野区块共用。
 // 同一个补丁里还带"单骨刚体蒙皮"(只在 USE_SKINNING 时生效):骨骼行号放在 bindMatrix[3][3]。
 import * as THREE from 'three';
-import { ENTITY_DETAIL_COLOR, ENTITY_DETAIL_PARS } from './surface.js';
+import { ENTITY_DETAIL_COLOR, ENTITY_DETAIL_PARS, STATIC_DETAIL_COLOR } from './surface.js';
 
 const SKIN_BASE = `#ifdef USE_SKINNING
 	mat4 boneMatX = getBoneMatrix( bindMatrix[ 3 ][ 3 ] + skinIndex.x );
@@ -42,13 +42,13 @@ export class VertexPBRMaterial extends THREE.MeshStandardMaterial {
       .replace('#include <color_vertex>', '#include <color_vertex>\n#ifdef USE_COLOR\n\tvColor *= vColor;\n#endif\n\tvRM = aRM;\n\tvObjP = position;\n' +
         '#ifdef USE_SKINNING\n\tvEdOn = 1.0;\n#else\n\tvEdOn = 0.0;\n#endif');
     sh.fragmentShader = 'varying vec3 vRM;\nvarying float vEdOn;\n' + ENTITY_DETAIL_PARS + '\n' + sh.fragmentShader
-      .replace('#include <color_fragment>', '#include <color_fragment>\n\tif ( vEdOn > 0.5 ) ' + ENTITY_DETAIL_COLOR)
+      .replace('#include <color_fragment>', '#include <color_fragment>\n\tif ( vEdOn > 0.5 ) ' + ENTITY_DETAIL_COLOR + '\n\telse ' + STATIC_DETAIL_COLOR)
       .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n\troughnessFactor *= vRM.x;')
       .replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\n\tmetalnessFactor *= vRM.y;')
       .replace('#include <emissivemap_fragment>',
         '#include <emissivemap_fragment>\n#ifdef USE_COLOR\n\ttotalEmissiveRadiance += vColor * ( vRM.z * 4.0 );\n#endif');
   }
-  customProgramCacheKey() { return 'vpbr-2'; }
+  customProgramCacheKey() { return 'vpbr-3'; }
 }
 // 阴影深度:只需要刚体蒙皮的补丁(实例化/普通网格用渲染器自带的深度材质即可)
 export class RigidDepthMaterial extends THREE.MeshDepthMaterial {

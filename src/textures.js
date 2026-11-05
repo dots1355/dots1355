@@ -319,19 +319,21 @@ export function makeTextures() {
     return [r, g, b, base * 0.5 + fine * 0.5];
   }, 1.6);
 
-  // 石墙:砖缝
+  // 石墙:砖缝——手绘低对比:灰缝浅而软(石块边缘有一圈柔和的倒角暗边),石面斑驳但不"照片化",
+  // 与刻面的树石、顶点色的角色道具同一个画风密度
   T.stone = texPair(512, 1, (u, v, x, y) => {
     const row = Math.floor(v * 12);
     const off = (row % 2) * 0.5;
     const bu = ((u * 6 + off) % 1), bv = (v * 12) % 1;
     const edge = Math.min(bu, 1 - bu, bv * 2, (1 - bv) * 2);
-    const mortar = edge < 0.07 ? 1 : 0;
+    const mortar = edge < 0.06 ? 1 : 0;
+    const bevel = Math.min(1, edge / 0.16);
     const grain = n2((u + row * 0.13) * 40, v * 40, 3);
     const tone = n1(Math.floor((u * 6 + off)) * 0.9, row * 0.7, 1);
-    let base = mix(138, 176, tone) + grain * 24 - 12;
-    if (mortar) base = 96 + grain * 14;
-    return [base, base * 0.97, base * 0.9, mortar ? 0.1 : 0.5 + grain * 0.5];
-  }, 2.4);
+    let base = mix(144, 170, tone) + grain * 14 - 7 - (1 - bevel) * 10;
+    if (mortar) base = 122 + grain * 8;
+    return [base, base * 0.97, base * 0.91, mortar ? 0.2 : 0.45 + bevel * 0.15 + grain * 0.3];
+  }, 1.7);
 
   // 屋瓦:错缝叠瓦(中性灰,颜色交给材质:陶红/青石板/木瓦各户不同)
   T.roof = texPair(256, 1, (u, v) => {
