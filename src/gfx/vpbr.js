@@ -18,6 +18,25 @@ const SKIN_NORMAL = `#ifdef USE_SKINNING
 const SKINNING = `#ifdef USE_SKINNING
 	transformed = ( bindMatrixInverse * ( boneMatX * vec4( transformed, 1.0 ) ) ).xyz;
 #endif`;
+// 静物近镜头淡出:离镜头 2m 内的片元按屏幕抖动逐渐丢弃(0.6m 内全丢)——镜头贴着墙角、篱笆、
+// 合批布景时不会被一块面糊住。只对静物(树石地标、合批布景),角色与生物不受影响;阴影照旧
+export const NEAR_FADE_GLSL = (d0, d1) => `{
+  float nfD = length(vViewPosition);
+  if (nfD < ${d1.toFixed(2)}) {
+    float nfN = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+    if (nfN > smoothstep(${d0.toFixed(2)}, ${d1.toFixed(2)}, nfD)) discard;
+  }
+}`;
+const NEAR_FADE_STATIC = `if ( vEdOn < 0.5 ) ${NEAR_FADE_GLSL(0.6, 2.0)}`;
+// 实例化静物(树、岩、灌木、营地道具……):镜头落到这一件的根部 2.6m 以内(且不在它头顶高处)时整件收起——
+// 跟随镜头钻进树里不会糊满半屏,也不会剩一大片抖动的网点;阴影深度用自己的材质,影子照旧
+const NEAR_COLLAPSE = `#if defined( USE_INSTANCING ) && ! defined( USE_SKINNING )
+	{
+		vec3 ncP = ( modelMatrix * vec4( instanceMatrix[ 3 ].xyz, 1.0 ) ).xyz;
+		vec2 ncD = cameraPosition.xz - ncP.xz;
+		if ( dot( ncD, ncD ) < 6.76 && cameraPosition.y < ncP.y + 12.0 ) transformed = vec3( 0.0 );
+	}
+#endif`;
 function patchSkinning(src) {
   return src.replace('#include <skinbase_vertex>', SKIN_BASE)
     .replace('#include <skinnormal_vertex>', SKIN_NORMAL)
@@ -39,16 +58,18 @@ export class VertexPBRMaterial extends THREE.MeshStandardMaterial {
     // 蒙皮实体(角色/生物)另带程序化质感(gfx/surface.js):骨骼本地坐标交给片元;片元里没有 USE_SKINNING,
     // 用一个整批相同的 varying 开关(静态合批/实例化走同一个材质类,但不画质感)
     sh.vertexShader = 'attribute vec3 aRM;\nvarying vec3 vRM;\nvarying vec3 vObjP;\nvarying float vEdOn;\n' + patchSkinning(sh.vertexShader)
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\n' + NEAR_COLLAPSE)
       .replace('#include <color_vertex>', '#include <color_vertex>\n#ifdef USE_COLOR\n\tvColor *= vColor;\n#endif\n\tvRM = aRM;\n\tvObjP = position;\n' +
         '#ifdef USE_SKINNING\n\tvEdOn = 1.0;\n#else\n\tvEdOn = 0.0;\n#endif');
     sh.fragmentShader = 'varying vec3 vRM;\nvarying float vEdOn;\n' + ENTITY_DETAIL_PARS + '\n' + sh.fragmentShader
+      .replace('#include <clipping_planes_fragment>', '#include <clipping_planes_fragment>\n' + NEAR_FADE_STATIC)
       .replace('#include <color_fragment>', '#include <color_fragment>\n\tif ( vEdOn > 0.5 ) ' + ENTITY_DETAIL_COLOR + '\n\telse ' + STATIC_DETAIL_COLOR)
       .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n\troughnessFactor *= vRM.x;')
       .replace('#include <metalnessmap_fragment>', '#include <metalnessmap_fragment>\n\tmetalnessFactor *= vRM.y;')
       .replace('#include <emissivemap_fragment>',
         '#include <emissivemap_fragment>\n#ifdef USE_COLOR\n\ttotalEmissiveRadiance += vColor * ( vRM.z * 4.0 );\n#endif');
   }
-  customProgramCacheKey() { return 'vpbr-3'; }
+  customProgramCacheKey() { return 'vpbr-5'; }
 }
 // 阴影深度:只需要刚体蒙皮的补丁(实例化/普通网格用渲染器自带的深度材质即可)
 export class RigidDepthMaterial extends THREE.MeshDepthMaterial {

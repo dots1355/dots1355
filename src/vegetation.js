@@ -8,6 +8,7 @@
 import * as THREE from 'three';
 import { groundH, groundNormalY, biomeWeights, vegAllowed, BIOME } from './terrain.js';
 import { waterProx } from './waterbodies.js';
+import { NEAR_FADE_GLSL } from './gfx/vpbr.js';
 
 const CELL = 16;
 
@@ -252,7 +253,7 @@ const COLOR = {
   deadbush: { def: [0.07, 0.1, 0.28, 0.3, 0.42], [BIOME.ash]: [0.05, 0.08, 0.1, 0.12, 0.2] },
   icecrystal: { def: [0.52, 0.57, 0.4, 0.74, 0.88] },
   fern: { def: [0.25, 0.31, 0.45, 0.22, 0.34], [BIOME.swamp]: [0.2, 0.26, 0.35, 0.2, 0.3] },
-  reed: { def: [0.12, 0.16, 0.32, 0.32, 0.44] },
+  reed: { def: [0.17, 0.25, 0.33, 0.27, 0.38] }, // 橄榄绿到莎草绿(以前是麦秆黄:沼泽远看像一片麦田)
   dry: { def: [0.08, 0.11, 0.38, 0.45, 0.6], [BIOME.ash]: [0.06, 0.08, 0.08, 0.16, 0.24],
     [BIOME.rock]: [0.09, 0.12, 0.2, 0.42, 0.52] },
   snowtuft: { def: [0.55, 0.6, 0.1, 0.72, 0.86] },
@@ -301,6 +302,8 @@ function makeMaterial(u = uniforms) {
         if (uInner > 0.0) fade *= smoothstep(uInner * 0.78, uInner, dc); // 中远景草片:近处让给细草
         transformed *= fade;`);
     sh.fragmentShader = sh.fragmentShader
+      // 贴着镜头的草叶(低机位时一两片就占半个画面)按屏幕抖动淡出
+      .replace('#include <clipping_planes_fragment>', `#include <clipping_planes_fragment>\n${NEAR_FADE_GLSL(0.45, 1.8)}`)
       .replace('#include <normal_fragment_begin>', `#include <normal_fragment_begin>
         normal = normalize(vNormal); // 草叶不分正反面:一律按朝上的法线受光,避免背面发黑`)
       .replace('#include <common>', `#include <common>
