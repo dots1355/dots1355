@@ -1,5 +1,5 @@
 // 城中随机事件与竞技:街头事件(抢劫路人/受惊的马,每日限额与导演共享 calendar.dailyEvents)、
-// 悬赏板(无限重复的通缉要犯)、荒沙角斗场(波次生存,场主血牙)、掰手腕之外的赌斗都在 npcs.js。
+// 悬赏板(无限重复的通缉要犯)、荒沙角斗场(波次生存,场主血牙)。骰子与掰手腕这类小赌局在 npcs.js。
 // 对外:streetEvent/bountyRT/arenaRT 状态;trySpawnStreetEvent、takeBounty、startArenaWave;
 // initEvents() 启动装配调用一次;主循环调 updateStreetEvent/updateBounty/updateArena。
 import * as THREE from 'three';

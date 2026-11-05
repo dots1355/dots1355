@@ -1,3 +1,5 @@
+// 测试/诊断句柄 window.__gtm:tests/run.mjs 用它驱动固定步长模拟(step)、摆场景、读状态。
+// 只在启动装配的最后安装一次;这里只取引用、不持有状态。step(n, dt) 与主循环共用同一个 tick。
 import { resolveCollisions } from '../entities.js';
 import {
   STYLE_PRESETS, applyStyle, bloom, camera, cycleStyle, gradePass, renderer, scene, styleKey,
@@ -67,8 +69,6 @@ import { loadGame, saveBlocked, saveGame } from './save.js';
 import { colliders, player, world } from './state.js';
 import { pendingTimers, simNow } from './timers.js';
 
-// 测试/诊断句柄 window.__gtm:tests/run.mjs 用它驱动固定步长模拟(step)、摆场景、读状态。
-// 只在启动装配的最后安装一次;这里只取引用、不持有状态。step(n, dt) 与主循环共用同一个 tick。
 export function installTestHooks({ tick, systems, worldTops }) {
   window.__gtm = {
   player, quest, questRT, horses, guards, bandits, villagers, wolves, namedNPCs, steward,

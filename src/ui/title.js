@@ -1,3 +1,6 @@
+// 标题画面:世界观开场(INTRO)、存档信息与 Delete 连按两次清档、点击开局(startGame);
+// 以及标题/倒下画面的背景图——本地 assets/ai/title.jpg 优先,否则用 AI 现画的那张(setTitleArt)。
+// 对外:loadLocalTitleArt()、setTitleArt(bitmap)、titleArtURL(倒下画面复用)、initTitle(hasSave)(启动装配读档后调用)。
 import { initAudio, startMusic } from '../audio.js';
 import { FRESH_START, SAVE_KEY } from '../core/save.js';
 import { markStarted, player, started, world } from '../core/state.js';
@@ -9,9 +12,6 @@ import { crestsFound } from '../systems/pickups.js';
 import { prologue, startPrologue } from '../systems/prologue.js';
 import { missions, quest } from '../systems/quests.js';
 import { toast } from './toast.js';
-// 标题画面:世界观开场(INTRO)、存档信息与 Delete 连按两次清档、点击开局(startGame);
-// 以及标题/倒下画面的背景图——本地 assets/ai/title.jpg 优先,否则用 AI 现画的那张(setTitleArt)。
-// 对外:loadLocalTitleArt()、setTitleArt(bitmap)、titleArtURL(倒下画面复用)、initTitle(hasSave)(启动装配读档后调用)。
 const titleEl = document.getElementById('title');
 let localTitleArt = false;
 export function loadLocalTitleArt() {

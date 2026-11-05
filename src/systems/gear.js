@@ -1,6 +1,6 @@
 // 装备:武器表 WEAPONS(伤害/距离/冷却/击退/体力倍率)、护甲表 ARMORS、手中武器与护甲的外观、铁匠铺商店。
-// 对外:setWeaponVisual/setArmorVisual、applyArmor、cycleWeapon(Q)、openShop/refreshShop、shopOpen(商店开着时不收玩法输入);
-// recomputeMaxHp() —— 生命上限唯一的计算处(护甲 + 湖神恩赐 + 屠龙者),读档/买甲/奇遇都走它。
+// 对外:setWeaponVisual/setArmorVisual、applyArmor、cycleWeapon(Q)、openShop/refreshShop、shopOpen(商店开着时不收玩法输入)。
+// 买甲后的生命上限由 player.recomputeMaxHp() 统一重算(派生属性只在 systems/player.js 里算)。
 import * as THREE from 'three';
 import { sfx } from '../audio.js';
 import { saveGame } from '../core/save.js';
