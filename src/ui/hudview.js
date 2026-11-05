@@ -35,7 +35,6 @@ const heartsEl = $hud('hearts'), coinsEl = $hud('coins'), wantedEl = $hud('wante
 // ================= 操作说明:按 H 弹出的分组面板(不再常驻字墙) =================
 const hintEl = document.getElementById('controls-hint');
 export let hintVisible = false;
-export function updateHintFade() { /* 面板由 H 键开关,不再自动淡出 */ }
 export function toggleHint() {
   hintVisible = !hintVisible;
   hintEl.style.opacity = hintVisible ? 1 : 0;

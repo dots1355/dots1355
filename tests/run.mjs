@@ -11,9 +11,11 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css',
   '.json': 'application/json', '.png': 'image/png', '.jpg': 'image/jpeg', '.glb': 'model/gltf-binary', '.wasm': 'application/wasm' };
 
+const memRoutes = new Map(); // 内存里的页面(bundle 用例的单文件打包版)
 function serve() {
   const srv = http.createServer((req, res) => {
     const u = decodeURIComponent(new URL(req.url, 'http://x').pathname);
+    if (memRoutes.has(u)) { res.writeHead(200, { 'Content-Type': 'text/html' }); res.end(memRoutes.get(u)); return; }
     const f = path.join(ROOT, u === '/' ? 'index.html' : u);
     if (!f.startsWith(ROOT) || !fs.existsSync(f) || fs.statSync(f).isDirectory()) { res.writeHead(404); res.end(); return; }
     res.writeHead(200, { 'Content-Type': MIME[path.extname(f)] || 'application/octet-stream' });
@@ -504,6 +506,52 @@ const TESTS = {
     if (!k.blocked) throw new Error('坏档没有锁定自动存档');
     if (k.raw !== '{坏掉的存档') throw new Error('坏档被覆盖了');
     if (k.bak !== '{坏掉的存档') throw new Error('坏档没有备份');
+  },
+  // 主循环系统表:tick 只做 dt 缩放 + 按序遍历;顺序就是语义(先计时器、再玩家、再 AI,HUD 最后读状态)。
+  // 改了顺序请同步改这里与 docs/ARCHITECTURE.md
+  async systems(page) {
+    await boot(page);
+    const names = await page.evaluate(() => window.__gtm.systems());
+    const want = ['toast', 'dialogRange', 'hitFlash', 'timers', 'interactMarker',
+      'player', 'regen', 'attackInput', 'knockback', 'buffs', 'rideMileage', 'deepWater',
+      'frostfang', 'springs', 'timeTrial', 'cryptLights', 'altarGlow',
+      'guards', 'bandits', 'wolves', 'chickens', 'villagers', 'horses', 'deer',
+      'pickups', 'quest', 'wanted', 'fishing', 'projectiles', 'damageNumbers', 'combo', 'falls',
+      'arena', 'director', 'streetEvent', 'bounty', 'armWrestle', 'home', 'firefly', 'vista',
+      'magic', 'frostPatches', 'trails', 'telegraphs', 'lockOn', 'prologue', 'lawless', 'warband',
+      'dragon', 'combatMusic', 'squash', 'mercs', 'vendetta',
+      'weather', 'ambience', 'region', 'bubble', 'chatter', 'npcs', 'rain', 'ambientFX', 'dust',
+      'dayNight', 'lightPool', 'calendar', 'workspace', 'idle',
+      'wilderness', 'vegetation', 'underlay', 'camera', 'scenery', 'beacon', 'water', 'envLight',
+      'lowHp', 'coins', 'entityLOD', 'prompt', 'hud', 'actionBar', 'minimap', 'filmGrain', 'frameCount'];
+    if (names.join(',') !== want.join(',')) {
+      const i = names.findIndex((n, k) => n !== want[k]);
+      throw new Error(`系统表顺序变了(第 ${i} 项:${names[i]} ≠ ${want[i]})`);
+    }
+    // 隔帧系统按帧计数错开:一步 = 一帧
+    const r = await page.evaluate(() => { const g = window.__gtm; const n0 = g.frameNo(); g.step(5); return g.frameNo() - n0; });
+    if (r !== 5) throw new Error(`帧计数不对:5 步走了 ${r}`);
+  },
+  // 单文件打包版(esbuild):模块求值顺序与浏览器原生加载不同,加载期读到循环依赖里没初始化的绑定会直接报错;
+  // 能开局、能推进、存档往返不被锁(读档分段失败会锁存档)
+  async bundle(page, errors) {
+    const { bundleHtml } = await import('../tools/bundle.mjs');
+    memRoutes.set('/__bundle.html', await bundleHtml());
+    const url = `http://127.0.0.1:${srv.address().port}/__bundle.html?noai=1&lowfx=1`;
+    await page.goto(url);
+    await page.waitForFunction(() => window.__gtm, null, { timeout: 240000 });
+    await page.evaluate(() => localStorage.clear());
+    await page.reload();
+    await page.waitForFunction(() => window.__gtm, null, { timeout: 240000 });
+    await page.click('#title');
+    await page.waitForTimeout(1200);
+    await page.evaluate(() => { const g = window.__gtm; g.skipPrologue(true); g.step(120); g.player.coins = 77; g.saveNow(); });
+    await page.reload();
+    await page.waitForFunction(() => window.__gtm, null, { timeout: 240000 });
+    const r = await page.evaluate(() => ({ coins: window.__gtm.player.coins, blocked: window.__gtm.getSaveBlocked() }));
+    if (r.blocked) throw new Error('打包版读档有段失败(存档被锁)');
+    if (r.coins !== 77) throw new Error(`打包版存档往返不对:${r.coins}`);
+    if (errors.length) throw new Error('打包版页面报错:' + errors.join(' | '));
   },
 };
 

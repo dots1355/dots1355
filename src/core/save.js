@@ -6,18 +6,18 @@
 import * as BANKS from '../dialogue-banks.js';
 import { achUnlocked, stats } from '../systems/achievements.js';
 import { lakeBlessed, loreRead, setLakeBlessed, sideQuest } from '../systems/activities.js';
-import { wolves } from '../systems/actors.js';
-import { calendar } from '../systems/calendar.js';
+import { addHorse, wolves } from '../systems/actors.js';
+import { applySeason, calendar } from '../systems/calendar.js';
 import { EVO } from '../systems/evo.js';
 import { frostfang } from '../systems/fauna.js';
-import { ARMORS } from '../systems/gear.js';
+import { ARMORS, setArmorVisual, setWeaponVisual } from '../systems/gear.js';
 import { paintHomeSign, refreshTrophies } from '../systems/home.js';
 import { SKILL_DEFS, SPELLS, shout } from '../systems/magic.js';
 import { hireMercSilent, mercs } from '../systems/mercs.js';
 import { chronicle, mindLoad, mindSave } from '../systems/mind.js';
 import { namedNPCs } from '../systems/npcs.js';
-import { crestsFound } from '../systems/pickups.js';
-import { recomputeMaxHp } from '../systems/player.js';
+import { addPickup, crestsFound } from '../systems/pickups.js';
+import { recomputeMaxHp, recomputeMaxSta } from '../systems/player.js';
 import { missions, quest } from '../systems/quests.js';
 import { vendetta } from '../systems/vendetta.js';
 import { toast } from '../ui/toast.js';
@@ -167,4 +167,23 @@ export function loadGame() {
   return true;
 }
 
-
+// 读档(或新档)之后把进度落到世界里:没捡的纹章、手中武器与护甲的外观、补授魔光弹、通关之星、
+// 体力上限(不入档,按技艺与军旗重算)、季节地表、皇家骏马。启动装配在 loadGame() 之后调用一次。
+export function applyProgress() {
+  world.crestSpots.forEach(([x, z], i) => {
+    if (!crestsFound.includes(i)) addPickup('crest', x, z, Infinity, i);
+  });
+  setWeaponVisual(player.weapon);
+  // 基础魔法与生俱来:老档也补上魔光弹
+  if (!player.spells.includes('spark')) player.spells.unshift('spark');
+  // 通关之星:completeMission 存档发生在生成星星之前,读档时没领过就补一颗在广场
+  if (quest.idx >= missions.length && !stats.starTaken) addPickup('star', 0, 13);
+  recomputeMaxSta();
+  player.sta = player.maxSta;
+  setArmorVisual(player.armor);
+  applySeason();
+  if (player.royalHorse) {
+    const rh = addHorse(world.stablePos.x - 3, world.stablePos.z - 3, 0xe8d9b0, false);
+    rh.fast = true;
+  }
+}

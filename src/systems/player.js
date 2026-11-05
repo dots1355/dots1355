@@ -9,7 +9,8 @@ import { rand } from '../core/rng.js';
 import { colliders, player, started, world } from '../core/state.js';
 import { hitStop } from '../core/timefx.js';
 import { simNow } from '../core/timers.js';
-import { angleLerp, dist2, resolveCollisions } from '../entities.js';
+import { angleLerp, dist2, makeHumanoid, resolveCollisions } from '../entities.js';
+import { scene } from '../gfx/core.js';
 import { groundH } from '../terrain.js';
 import { dismissDialog, showBubble } from '../ui/dialog.js';
 import { callout, hitFX } from '../ui/feedback.js';
@@ -29,7 +30,7 @@ import { chickens, pokeChicken } from './fauna.js';
 import { ARMORS, WEAPONS } from './gear.js';
 import { keys } from './input.js';
 import { clearWanted, crime, wanted } from './law.js';
-import { skillLv, skillXp, spendSta } from './magic.js';
+import { SKILL_DEFS, skillLv, skillXp, spendSta } from './magic.js';
 import { MIND, remember, workspace } from './mind.js';
 import { namedNPCs } from './npcs.js';
 import { dropCoins } from './pickups.js';
@@ -457,6 +458,33 @@ function pushCrowd() {
   softly(bandits, 0.75);
   softly(wolves, 0.7);
   softly(horses, 1.05);
+}
+
+// ================= 玩家本体 =================
+// 游侠林恩:苔绿兜帽 + 短披风。启动装配时生成一次(人形模型就绪之后),由 main 登记进 core/state.js
+export function spawnPlayer(spawn) {
+  const p = {
+    ...makeHumanoid({ shirt: 0x4b5e3c, pants: 0x5a4430, ranger: true, sword: true }), // 游侠:苔绿兜帽 + 短披风
+    pos: spawn.clone(),
+    vy: 0, yaw: 0, onGround: true, jumps: 0,
+    hp: 10, maxHp: 10, coins: 0,
+    sta: 100, maxSta: 100, gaspT: 0, staggerT: 0, // 体力(骑砍核心):出手/翻滚/格挡皆有代价
+
+    walkT: 0, attackT: 0, invulnT: 0, mounted: null, dead: false, herbs: 0, venison: 0,
+    parcel: null, swordLv: 1, royalHorse: false,
+    carrying: null, drunkT: 0, hiccupT: 0,
+    // 法术:魔光弹与生俱来,R 键即放(法力自然回复)
+    mp: 8, maxMp: 8, spells: ['spark'], spellIdx: 0, castT: 0,
+    // 技艺熟练度:用什么涨什么(定义见 systems/magic.js 的 SKILL_DEFS)
+    skills: Object.fromEntries(Object.keys(SKILL_DEFS).map((k) => [k, { lv: 1, xp: 0 }])),
+    // 装备(systems/gear.js):手中武器、已拥有的武器、护甲档
+    weapon: 'sword', weaponsOwned: ['sword'], armor: 0,
+    // 格挡与翻滚(systems/attack.js、systems/player.js)
+    blocking: false, rollT: 0, rollCd: 0, rollDir: new THREE.Vector2(0, 1),
+  };
+  p.group.position.copy(p.pos);
+  scene.add(p.group);
+  return p;
 }
 
 // ================= 派生属性:只在这里计算 =================

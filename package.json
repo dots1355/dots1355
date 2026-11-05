@@ -11,7 +11,7 @@
     "web": "python3 -m http.server 8000",
     "dist:web": "node tools/build-desktop.mjs",
     "test": "node tests/run.mjs",
-    "lint": "eslint src tests tools"
+    "lint": "eslint src tests tools && node tools/check-modules.mjs"
   },
   "devDependencies": {
     "electron": "^28.2.0",

@@ -386,6 +386,11 @@ function updateQuestTarget(dt) {
   }
 }
 // 委托人与目标光柱立进场景(启动装配原位调用)
+// 目标光柱:自转并一明一暗地呼吸(位置由 updateQuest 摆)
+export function animateBeacon(dt, now) {
+  beacon.rotation.y += dt;
+  beacon.material.opacity = 0.22 + Math.sin(now * 0.004) * 0.1;
+}
 export function initQuests() {
   questGiver = makeHumanoid({ shirt: 0xc9a227, pants: 0x6a5a2a, hair: 0xd8d8d8 });
   questGiver.group.position.copy(world.questGiverPos);

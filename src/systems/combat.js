@@ -449,6 +449,7 @@ function strikeRuneStones(range, arcDot) {
   }
   callout('符文碎光 +5 金币', 'blue', { x: b.x, y: b.y + 1.2, z: b.z });
 }
+// 近战横扫判定:普通挥击与蓄力重击共用(dmg/范围/角度/击退可调),在出招的判定帧调用
 export function meleeSweep(dmg, range, arcDot, knock, opts = {}) {
   if (dmg > 0) strikeRuneStones(range, arcDot);
   const fx = Math.sin(player.yaw), fz = Math.cos(player.yaw);
