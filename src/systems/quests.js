@@ -575,9 +575,11 @@ function updateCourier(dt) {
 // ⑥ 受惊的白马:你骑着马、或疾跑着冲到 15 米内,它就撒蹄跑开 3.5 秒(不出幽暗森林那一片);
 // 下马慢慢走到 4 米内,它认出你、不再躲,E 骑上它。你的速度取平滑后的实测值(不认按键,庇佑加速的步行不算疾跑)
 function updateSkittish(sh, dt) {
-  const v = Math.hypot(player.pos.x - (questRT.lastPX ?? player.pos.x), player.pos.z - (questRT.lastPZ ?? player.pos.z)) / Math.max(dt, 1e-3);
+  // 单帧取样封顶 20 米/秒:下马那一下(人被挪开 1.3 米)、传送不算"冲过来"
+  const v = Math.min(20, Math.hypot(player.pos.x - (questRT.lastPX ?? player.pos.x),
+    player.pos.z - (questRT.lastPZ ?? player.pos.z)) / Math.max(dt, 1e-3));
   questRT.lastPX = player.pos.x; questRT.lastPZ = player.pos.z;
-  questRT.pSpeed = Math.min(30, (questRT.pSpeed || 0) * 0.85 + v * 0.15);
+  questRT.pSpeed = (questRT.pSpeed || 0) * 0.85 + v * 0.15;
   if (sh.calm) return;
   const d = Math.hypot(sh.pos.x - player.pos.x, sh.pos.z - player.pos.z);
   if (sh.fleeT > 0) {
