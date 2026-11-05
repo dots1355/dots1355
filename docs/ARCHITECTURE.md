@@ -73,7 +73,8 @@ core/state.js  core/frame.js  core/rng.js  core/timers.js  core/timefx.js  core/
 | `systems/warband.js` | 盗贼战团、攻城、枭首单挑 |
 | `systems/dragon.js` | 霜龙终局 Boss |
 | `systems/prologue.js` | 序章教学、教学卡、送马与唤马 |
-| `systems/quests.js` | 领主委托链、委托人与目标光柱、城墙寻路 `initQuests` |
+| `systems/quests.js` | 领主委托链、委托人与目标光柱(隔着城墙/河/湖时指航点图的下一跳)`initQuests` |
+| `systems/nav.js` | 城外寻路航点图(纯几何,叶子):城角、城门门外/门内点、木桥两端、河源、湖岸;可见性连边 + Dijkstra,`navNext` 给第一跳(光柱与战团行军共用) |
 | `systems/law.js` | 通缉星、犯罪、无法无天、通缉衰减 |
 | `systems/events.js` | 街头事件、悬赏板、角斗场 `initEvents` |
 | `systems/director.js` | 事件导演与全部导演事件(含内容包事件与黑石劫掠战) |
@@ -220,7 +221,7 @@ node tests/run.mjs boot save   # 只跑挑出来的用例
 ```
 覆盖:启动、贴地、受击闪白隔离、远近分级与玩法可见性互不覆盖、环境伤害、近战结算、符文立石判定帧、后期链不黑屏、
 出招时序/蓄力/打断、战斗规则(缓冲/朝向/挨打打断/弹反)、序章教学流程、伤害来源×目标矩阵、交互与提示同源、
-上马优先/对话自动收起/光柱、生命上限、城墙寻路、存档往返与坏档保护、**主循环系统表顺序**、**单文件打包版能开局并存档往返**。
+上马优先/对话自动收起/光柱、生命上限、城墙寻路与航点图(顺着光柱走不穿墙、过河走桥)、存档往返与坏档保护、**主循环系统表顺序**、**单文件打包版能开局并存档往返**。
 CI 见 `.github/workflows/ci.yml`。
 
 ## 资产

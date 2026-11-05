@@ -7,6 +7,7 @@ import { REGIONS } from '../story.js';
 import { player, world } from '../core/state.js';
 import { ctx } from '../core/ctx.js';
 import { wildMarks, wildRegionName } from '../wilderness.js';
+import { NAV_BRIDGE } from '../systems/nav.js';
 
 const mm = document.getElementById('minimap').getContext('2d');
 // ================= 大地图(M) =================
@@ -442,4 +443,18 @@ function drawMarks(g, V, toXY, s) {
       g.fillStyle = 'rgba(60,56,50,0.75)'; g.beginPath(); g.arc(x, y, 2.4 * s, 0, 6.28); g.fill();
     }
   }
+  bridgeMark(g, ...toXY(NAV_BRIDGE.x, NAV_BRIDGE.z), s);
+}
+// 木桥:银月河上唯一能过人的地方(光柱过河也走这里)——拱桥小图标:深色描边的木色拱 + 两根桥柱
+function bridgeMark(g, x, y, s) {
+  if (x < -12 || y < -12 || x > g.canvas.width + 12 || y > g.canvas.height + 12) return;
+  g.save();
+  g.lineCap = 'round';
+  const arch = () => { g.beginPath(); g.moveTo(x - 7 * s, y + 2 * s); g.quadraticCurveTo(x, y - 5 * s, x + 7 * s, y + 2 * s); };
+  g.strokeStyle = 'rgba(30,18,8,0.95)'; g.lineWidth = 4.6 * s; arch(); g.stroke();
+  g.strokeStyle = '#d9a35f'; g.lineWidth = 2.4 * s; arch(); g.stroke();
+  g.strokeStyle = 'rgba(30,18,8,0.9)'; g.lineWidth = 1.4 * s;
+  g.beginPath(); g.moveTo(x - 4 * s, y - 0.6 * s); g.lineTo(x - 4 * s, y + 3.6 * s);
+  g.moveTo(x + 4 * s, y - 0.6 * s); g.lineTo(x + 4 * s, y + 3.6 * s); g.stroke();
+  g.restore();
 }

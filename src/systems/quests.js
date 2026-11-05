@@ -1,6 +1,6 @@
 // 领主委托链:missions(story.js 的委托表)、进度 quest{idx,active,progress,timer}(随存档)、运行时对象 questRT。
 // 委托人管家埃隆(questGiver,头顶金色「!」exGroup)接单/交差(talkQuestGiver、completeMission、failMission),领赏面板。
-// 目标光柱 beacon:updateQuest(dt) 每帧推进委托并摆光柱;城墙寻路 routeVia(城内↔城外先指城门/墙角,不顶着城墙)。
+// 目标光柱 beacon:updateQuest(dt) 每帧推进委托并摆光柱;隔着城墙/河/湖时经航点图(nav.js)先指下一跳(routeVia)。
 // initQuests() 启动装配调用一次。
 import * as THREE from 'three';
 import { sfx } from '../audio.js';
@@ -16,6 +16,7 @@ import { addBandit, addHorse, animateLimbs, bandits, retireEntity } from './acto
 import { dayPhase } from './calendar.js';
 import { bountyRT } from './events.js';
 import { remember } from './mind.js';
+import { navNext } from './nav.js';
 import { steward } from './npcs.js';
 import { addPickup } from './pickups.js';
 import { prologue } from './prologue.js';
@@ -173,64 +174,18 @@ export function completeMission() {
     toastQuest('全部委托完成!去喷泉广场领取 ★ 金狮勋章 ★,再去见领主领赏!', 6);
   }
 }
-// 城墙寻路:人在城里、目标在城外(或反之)时,光柱与小地图箭头先指向顺路的城门,
-// 免得新手顶着城墙原地打转(城墙矩形 x:-70..70, z:-55..55;城门见 world.gates)
-function insideTown(x, z) { return Math.abs(x) < 70 && Math.abs(z) < 55; }
-// 线段是否穿过城墙矩形(四周放宽 m 米);Liang–Barsky 裁剪
-function segHitsTown(x0, z0, x1, z1, m = 1) {
-  let t0 = 0, t1 = 1;
-  const dx = x1 - x0, dz = z1 - z0;
-  const P = [-dx, dx, -dz, dz], Q = [x0 + 70 + m, 70 + m - x0, z0 + 55 + m, 55 + m - z0];
-  for (let i = 0; i < 4; i++) {
-    if (P[i] === 0) { if (Q[i] < 0) return false; continue; }
-    const r = Q[i] / P[i];
-    if (P[i] < 0) { if (r > t1) return false; if (r > t0) t0 = r; } else { if (r < t0) return false; if (r < t1) t1 = r; }
-  }
-  return t0 < t1;
-}
-const TOWN_CORNERS = [{ x: -79, z: -64 }, { x: 79, z: -64 }, { x: 79, z: 64 }, { x: -79, z: 64 }];
-// 城外从 (px,pz) 走到 (gx,gz):直线穿墙就先去最顺路的墙角(返回墙角);不穿墙返回 null
-function cornerToward(px, pz, gx, gz) {
-  if (!segHitsTown(px, pz, gx, gz)) return null;
-  let best = null, bd = Infinity;
-  for (const c of TOWN_CORNERS) {
-    if (segHitsTown(px, pz, c.x, c.z)) continue;
-    const d = Math.hypot(c.x - px, c.z - pz) + Math.hypot(gx - c.x, gz - c.z);
-    if (d < bd) { bd = d; best = c; }
-  }
-  return best;
-}
-// 城外两点间的步行距离(要绕墙就按绕墙角算)
-function outsideDist(px, pz, gx, gz) {
-  const c = cornerToward(px, pz, gx, gz);
-  return c ? Math.hypot(c.x - px, c.z - pz) + Math.hypot(gx - c.x, gz - c.z) : Math.hypot(gx - px, gz - pz);
-}
-// 城墙寻路:返回这一段该先去的航点(城门或墙角),直接能走到目标时返回 null
-function routeVia(tx, tz) {
+// 光柱寻路:玩家与目标之间隔着城墙/银月河/银月湖时,光柱与小地图箭头先指向航点图(systems/nav.js)给的下一跳
+// (城角、门外/门内点、木桥两端、湖岸),直走就能到时指真目标。玩家或目标挪动 1.5 米以上、或过了 0.4 秒才重算
+const via = { hop: null, px: 1e9, pz: 1e9, tx: 1e9, tz: 1e9, t: 0 };
+function routeVia(tx, tz, dt) {
   if (inDungeon()) return null;
   const px = player.pos.x, pz = player.pos.z;
-  const pin = insideTown(px, pz), tin = insideTown(tx, tz);
-  if (pin && tin) return null;
-  if (pin) { // 城里 → 城外:走最顺路的城门
-    let best = null, bd = Infinity;
-    for (const g of world.gates) {
-      const d = Math.hypot(g.x - px, g.z - pz) + outsideDist(g.x, g.z, tx, tz);
-      if (d < bd) { bd = d; best = g; }
-    }
-    if (best && Math.hypot(best.x - px, best.z - pz) < 7) return null; // 已到门洞
-    return best;
+  via.t -= dt;
+  if (via.t <= 0 || Math.abs(px - via.px) + Math.abs(pz - via.pz) > 1.5 || Math.abs(tx - via.tx) + Math.abs(tz - via.tz) > 1.5) {
+    via.hop = navNext(px, pz, tx, tz, via.hop);
+    via.px = px; via.pz = pz; via.tx = tx; via.tz = tz; via.t = 0.4;
   }
-  let goal = null;
-  if (tin) { // 城外 → 城里:先到最顺路的城门(绕墙的路程算进去)
-    let bd = Infinity;
-    for (const g of world.gates) {
-      const d = outsideDist(px, pz, g.x, g.z) + Math.hypot(tx - g.x, tz - g.z);
-      if (d < bd) { bd = d; goal = g; }
-    }
-    if (goal && Math.hypot(goal.x - px, goal.z - pz) < 7) return null;
-  }
-  const gx = goal ? goal.x : tx, gz = goal ? goal.z : tz;
-  return cornerToward(px, pz, gx, gz) || goal; // 城外 → 城外穿城:绕墙角
+  return via.hop;
 }
 export let beaconRouted = null; // 被改道到城门时记下真目标,下一帧先还原再让任务逻辑更新
 export function updateQuest(dt) {
@@ -241,11 +196,11 @@ export function updateQuest(dt) {
   }
   updateQuestTarget(dt);
   if (beacon.visible) {
-    const via = routeVia(beacon.position.x, beacon.position.z);
-    if (via) {
+    const hop = routeVia(beacon.position.x, beacon.position.z, dt);
+    if (hop) {
       beaconRouted = { x: beacon.position.x, z: beacon.position.z };
-      beacon.position.x = via.x;
-      beacon.position.z = via.z;
+      beacon.position.x = hop.x;
+      beacon.position.z = hop.z;
     }
   }
 }

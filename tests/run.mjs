@@ -467,24 +467,95 @@ const TESTS = {
     });
     if (r.a !== 14 || r.b !== 16 || r.c !== 18) throw new Error(`生命上限计算不对:${JSON.stringify(r)}`);
   },
-  // 城墙寻路:城内接到城外的限时快递,光柱先指向城门而不是顶着城墙
+  // 城墙寻路:城内接到城外的限时快递,光柱先指向城门(门内/门外点)而不是顶着城墙;出了城门直指磨坊
   async route(page) {
     await boot(page);
     const r = await page.evaluate(() => {
       const g = window.__gtm;
       const i = g.missions.findIndex((m) => m.type === 'deliver');
       g.quest.idx = i; g.quest.active = true; g.quest.timer = 60;
-      g.player.pos.set(-30, 0, -30);
+      g.player.pos.set(-40, 0, 30); // 城里西南,直线去磨坊会顶着东墙
       g.step(2);
       const a = g.getBeacon();
       g.player.pos.set(72, 0, 0); // 走到东门外
       g.step(2);
       const b = g.getBeacon();
-      return { a, b };
+      return { a, b, mill: { x: g.world.windmillPos.x, z: g.world.windmillPos.z } };
     });
-    const atGate = (p) => Math.abs(p.x) <= 71 && Math.abs(p.z) <= 56 && (Math.abs(Math.abs(p.x) - 70) < 1 || Math.abs(Math.abs(p.z) - 55) < 1);
-    if (!r.a.v || !atGate(r.a)) throw new Error(`城内时光柱应指向城门,实际 ${JSON.stringify(r.a)}`);
-    if (atGate(r.b)) throw new Error(`出城后光柱应指向磨坊,实际 ${JSON.stringify(r.b)}`);
+    const nearGate = (p) => Math.hypot(p.x, p.z - 55) < 8 || Math.hypot(p.x - 70, p.z) < 8;
+    if (!r.a.v || !nearGate(r.a)) throw new Error(`城内时光柱应指向城门,实际 ${JSON.stringify(r.a)}`);
+    if (Math.hypot(r.b.x - r.mill.x, r.b.z - r.mill.z) > 2) throw new Error(`出城后光柱应指向磨坊,实际 ${JSON.stringify(r.b)}`);
+  },
+  // 光柱寻路(航点图):顺着光柱一段段走——城外西侧去东边磨坊不穿城墙;去河西的营地必经木桥;
+  // 城门口:门外直指城里的目标,门内要出城给门外点(不再指 80 米外的城角、也不再原地翻转)
+  async nav(page) {
+    await boot(page);
+    const r = await page.evaluate(() => {
+      const g = window.__gtm, out = {};
+      // 每帧朝光柱迈 1.5 米(相当于骑马疾驰),记下轨迹;到目标 7.5 米内算到达(快递 7 米内就交差了)
+      const walk = (x, z, goal) => {
+        const pts = [[x, z]];
+        g.player.pos.set(x, 0, z);
+        for (let i = 0; i < 700; i++) {
+          g.step(1);
+          if (Math.hypot(goal.x - g.player.pos.x, goal.z - g.player.pos.z) < 7.5) return { pts, ok: true };
+          const b = g.getBeacon();
+          const dx = b.x - g.player.pos.x, dz = b.z - g.player.pos.z, d = Math.hypot(dx, dz) || 1;
+          const s = Math.min(1.5, d);
+          g.player.pos.x += (dx / d) * s; g.player.pos.z += (dz / d) * s;
+          pts.push([g.player.pos.x, g.player.pos.z]);
+        }
+        return { pts, ok: false };
+      };
+      g.player.hp = g.player.maxHp = 999; // 只看路线,别被半路的伏兵打断
+      const di = g.missions.findIndex((m) => m.type === 'deliver');
+      g.quest.idx = di; g.quest.active = true; g.quest.timer = 999;
+      out.mill = walk(-85, 4, g.world.windmillPos);
+      g.quest.active = false;
+      const bi = g.missions.findIndex((m) => m.type === 'bandits');
+      g.quest.idx = bi; g.quest.active = true; g.quest.progress = 0;
+      out.camp = walk(4, 10, g.world.banditCamp);
+      // 城门口
+      g.quest.active = false; g.quest.idx = 0;
+      g.player.pos.set(0, 0, 63); g.step(2);
+      out.southFront = g.getBeacon();
+      g.quest.idx = bi; g.quest.active = true;
+      g.player.pos.set(0, 0, 50); g.step(2);
+      out.southInside = g.getBeacon();
+      out.steward = { x: g.steward.pos.x, z: g.steward.pos.z };
+      return out;
+    });
+    // 一步穿过城墙线(门洞除外)= 穿墙
+    const wallCross = (pts) => {
+      for (let i = 1; i < pts.length; i++) {
+        const [x0, z0] = pts[i - 1], [x1, z1] = pts[i];
+        for (const zw of [-55, 55]) {
+          if ((z0 - zw) * (z1 - zw) < 0) {
+            const x = x0 + ((x1 - x0) * (zw - z0)) / (z1 - z0);
+            if (Math.abs(x) < 70 && !(zw === 55 && Math.abs(x) < 3.6)) return `z=${zw} @x=${x.toFixed(1)}`;
+          }
+        }
+        for (const xw of [-70, 70]) {
+          if ((x0 - xw) * (x1 - xw) < 0) {
+            const z = z0 + ((z1 - z0) * (xw - x0)) / (x1 - x0);
+            if (Math.abs(z) < 55 && !(xw === 70 && Math.abs(z) < 3.6)) return `x=${xw} @z=${z.toFixed(1)}`;
+          }
+        }
+      }
+      return null;
+    };
+    if (!r.mill.ok) throw new Error(`顺着光柱没走到磨坊,停在 ${r.mill.pts.at(-1)}`);
+    const wm = wallCross(r.mill.pts);
+    if (wm) throw new Error(`去磨坊的光柱路线穿墙:${wm}`);
+    if (!r.camp.ok) throw new Error(`顺着光柱没走到营地,停在 ${r.camp.pts.at(-1)}`);
+    const wc = wallCross(r.camp.pts);
+    if (wc) throw new Error(`去营地的光柱路线穿墙:${wc}`);
+    // 银月河在 x≈-101..-90 一带;走在河带里时必须是在木桥(z -41..-27)上
+    const wet = r.camp.pts.find(([x, z]) => x > -100.5 && x < -90.5 && (z < -41 || z > -27));
+    if (wet) throw new Error(`去营地的光柱路线下了河(不是走木桥):${wet}`);
+    if (!r.camp.pts.some(([x, z]) => Math.hypot(x + 95, z + 34) < 4)) throw new Error('去河西的光柱路线没经过木桥');
+    if (Math.hypot(r.southFront.x - r.steward.x, r.southFront.z - r.steward.z) > 2) throw new Error(`南门外光柱应直指城里的埃隆,实际 ${JSON.stringify(r.southFront)}`);
+    if (Math.hypot(r.southInside.x, r.southInside.z - 62) > 2) throw new Error(`南门内要出城时光柱应给门外点,实际 ${JSON.stringify(r.southInside)}`);
   },
   // 存档往返 + 坏档保护
   async save(page) {
