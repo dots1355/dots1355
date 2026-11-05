@@ -521,7 +521,7 @@ export function buildWorld(scene) {
     if (deg < 35 || deg > 325) continue;
     circle(-100 + Math.cos(a) * 26, 100 + Math.sin(a) * 26, 6);
   }
-  // 深水不可徒步由 main.js 的规则级判定兜底(几何环只挡 NPC/野兽)
+  // 深水不可徒步由 systems/player.js 的 enforceDeepWater 规则级判定兜底(几何环只挡 NPC/野兽)
   features.push({ type: 'water', x: LAKE.x, z: LAKE.z, w: 66, h: 66, rot: 0, shape: true, poly: outline(LAKE.x, LAKE.z, lakeR) });
 
   // ---- 湖心岛:沉没神殿的尖顶 ----
@@ -770,7 +770,7 @@ export function buildWorld(scene) {
   }
   // 都立在路边草地上(不挡大街):广场南、西街、东区、南门外、东路边、西城
   qblock(6, 22, 0.3); qblock(-20, 3.8, 0); qblock(30, 32, -0.5); qblock(3.8, 70, 1.4); qblock(95, 9.6, 0.2); qblock(-60, 20, 1.2);
-  // 劈中判定:由刀锋判定帧调用(main.js 的 meleeSweep,与砍人同一刀长与扇面),劈中第一块亮着的立石就熄灭并返回它
+  // 劈中判定:由刀锋判定帧调用(systems/combat.js 的 meleeSweep,与砍人同一刀长与扇面),劈中第一块亮着的立石就熄灭并返回它
   function runeStrike(px, pz, yaw, range, arcDot) {
     const fx = Math.sin(yaw), fz = Math.cos(yaw);
     for (const b of qBlocks) {

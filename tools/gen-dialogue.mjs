@@ -1,4 +1,4 @@
-// 组合空间统计:语料已移入 src/dialogue-banks.js,游戏运行时现场组合(见 main.js dbLine)
+// 组合空间统计:语料已移入 src/dialogue-banks.js,游戏运行时现场组合(见 src/ui/dialog.js 的 dbLine)
 // 运行: node tools/gen-dialogue.mjs → 打印当前语料的组合空间估算
 import * as B from '../src/dialogue-banks.js';
 

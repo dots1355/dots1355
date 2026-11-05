@@ -535,8 +535,13 @@ ESC 暂停菜单新增「画风」按钮,四种风格实时切换、独立持久
 ├── index.html        # 入口 + HUD + 标题画面
 ├── lib/three.module.js
 └── src/
-    ├── main.js       # 主循环、玩家、通缉、任务、HUD、小地图、昼夜
+    ├── main.js       # 启动装配 + 有序系统表 + 主循环(只装配,不写玩法)
+    ├── core/         # 共享根对象(state)、帧时钟、定时器、随机数、存档、测试句柄
+    ├── systems/      # 玩法:玩家、出招与战斗、AI、委托、王法、事件导演、NPC、动物、天气、昼夜……
+    ├── ui/           # 界面:HUD、对话、提示条、反馈、地图、暂停、标题
+    ├── gfx/          # 渲染底座:后处理、画质、合批、蒙皮、水体、贴地
     ├── world.js      # 世界搭建:城堡、城墙、村庄、森林、风车…
     ├── entities.js   # 人形/马匹模型构建器 + 碰撞
     └── audio.js      # WebAudio 芯片音乐合成器
 ```
+模块划分、依赖方向与主循环系统表见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。

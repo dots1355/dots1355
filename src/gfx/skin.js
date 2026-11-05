@@ -13,7 +13,7 @@
 //   每次绘制不再各传一张骨骼纹理。实体的行号放在 bindMatrix[3][3](逐对象 uniform,本来就每次绘制都设)。
 // - 动画节点被设为 visible=false(比如玩家换武器后藏起的初始佩剑)时,调色板里写零矩阵,那部分顶点塌成一点,
 //   等同隐藏。
-// - 所有实体共用一个材质;受击闪白时 main.js 的 ownMaterials 再给那一个实体克隆私有材质(克隆保留补丁)。
+// - 所有实体共用一个材质;受击闪白时 ui/feedback.js 的 ownMaterials 再给那一个实体克隆私有材质(克隆保留补丁)。
 // - 卸载走 disposeEntityGroup → releaseSkin;漏掉释放的实体被 GC 后,行号与几何体由 WeakRef/FinalizationRegistry 回收。
 import * as THREE from 'three';
 import { VertexPBRMaterial, RigidDepthMaterial, plainStandard, bakeVPBR } from './vpbr.js';

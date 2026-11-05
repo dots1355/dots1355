@@ -1,7 +1,7 @@
 // 存档:单一的存档格式定义处(gth-save-v1,带版本号 v,当前 v3)。
 // saveGame() 把各系统的状态写成一份 JSON;loadGame() 分段读取,每段独立 try——任一段失败:本局停用自动存档
 // (saveBlocked)、原档另存 gth-save-v1-bak 并提示玩家;版本迁移写在对应段里。读档发生在启动装配中途,
-// 所以这里写入的各系统状态对象都必须在模块加载时就已初始化(不能是 main.js 里的局部声明)。
+// 所以这里写入的各系统状态对象都必须在模块加载时就已初始化(不能是装配时才创建的局部声明)。
 // FRESH_START:开局时有没有存档(新档才演序章)。
 import * as BANKS from '../dialogue-banks.js';
 import { achUnlocked, stats } from '../systems/achievements.js';

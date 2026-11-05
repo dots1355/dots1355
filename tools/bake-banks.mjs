@@ -36,7 +36,7 @@ for (const k of Object.keys(D)) {
 }
 
 let out = '// 对话语料库(纯数据,由 tools/bake-banks.mjs 生成;内容包已烘焙)\n' +
-  '// 浏览器运行时组合引擎(src/main.js composeLine)与 node 统计工具共用\n';
+  '// 浏览器运行时组合引擎(src/ui/dialog.js 的 dbLine)与 node 统计工具共用\n';
 for (const [k, v] of Object.entries(D)) {
   out += `export const ${k} = ${JSON.stringify(v)};\n`;
 }
