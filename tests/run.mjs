@@ -420,6 +420,20 @@ const TESTS = {
       out.rollInLag = P.rollT > 0;
       g.step(40);
       out.rollAfterLag = P.rollT > 0 || P.rollCd > 0;
+      // 跳劈在半空挨了一刀:砸不下去(和地面出刀挨打作废同一条规矩),落地没有冲击波、也没有落地硬直
+      A.reset(1);
+      const [pf] = A.foes(1);
+      A.place(pf, 0, 1.6);
+      P.sta = 100;
+      g.keys['Space'] = true; g.step(1);
+      g.attackDown(); g.attackUp();
+      let pq = 0;
+      while (!P.plunging && pq < 60) { g.step(1); pq++; }
+      g.step(2);
+      g.damagePlayer(1, pf);
+      while (!P.onGround && pq < 150) { g.step(1); pq++; }
+      g.step(2);
+      out.plungeHitCancel = { dmg: 50 - pf.hp, lag: P.landLagT, plunging: P.plunging };
       // 2) 不锁定:按住 S/A/D 再按 F,砍正前方 1.8m 的目标
       out.facing = {};
       for (const key of ['KeyS', 'KeyA', 'KeyD']) {
@@ -479,6 +493,8 @@ const TESTS = {
     if (r.jumpInLag) throw new Error('跳劈落地硬直中还能起跳');
     if (r.rollInLag) throw new Error('跳劈落地硬直中还能翻滚');
     if (!r.rollAfterLag) throw new Error('硬直中按的翻滚没有进缓冲');
+    const pc = r.plungeHitCancel;
+    if (pc.dmg !== 0 || pc.lag > 0 || pc.plunging) throw new Error(`半空挨打的跳劈不该再砸下来:${JSON.stringify(pc)}`);
     for (const [k, f] of Object.entries(r.facing)) {
       if (!f.hit || f.off === null || f.off > 15) throw new Error(`不锁定 ${k}+F 没砍中正前方目标:${JSON.stringify(f)}`);
     }

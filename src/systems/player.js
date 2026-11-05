@@ -585,11 +585,13 @@ export function updateSquash(dt) {
   const base = player.sneaking ? 0.8 : 1;
   player.group.scale.y = base * (1 - 0.18 * (player.squashT / 0.16));
 }
-// 挨打硬直:打断自己正在出的刀(判定帧未到的作废)、散掉蓄力与火球聚能,身子后仰一下
+// 挨打硬直:打断自己正在出的刀(判定帧未到的作废;半空中的跳劈也砸不下去了,落地不出冲击)、
+// 散掉蓄力与火球聚能,身子后仰一下
 function playerHitStagger(t) {
   player.staggerT = Math.max(player.staggerT || 0, t);
   player.hurtT = 0.3;
   if (strikePending()) { player.strike = null; endAttack(); }
+  if (player.plunging) { player.plunging = false; player.plungeHangT = 0; endAttack(); }
   player.atkBufT = 0;
   cancelCharge();
   if (player.fireCharging) { player.fireCharging = false; player.fireChargeT = 0; }
