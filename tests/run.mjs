@@ -405,6 +405,41 @@ const TESTS = {
     if (!/宝箱/.test(r.chestPrompt)) throw new Error(`宝箱旁的提示不对:${r.chestPrompt}`);
     if (!r.chestOpened) throw new Error('按 E 没有打开宝箱');
   },
+  // E 键找人:2.65 米内最近的那位;有委托可接时管家优先(夜里他和领主站在一起);信使的委托书骑在马上也能直接接
+  async ekey(page) {
+    await boot(page);
+    const r = await page.evaluate(() => {
+      const g = window.__gtm, out = {};
+      const king = g.namedNPCs.find((n) => n.key === 'king');
+      g.steward.pos.set(0, 0, -29.5); king.pos.set(0, 0, -30.6);
+      g.player.pos.set(0.3, 0, -31.4); // 领主 0.9 米、管家 1.9 米
+      g.quest.active = false;
+      g.step(1);
+      out.offer = g.getPrompt();
+      g.quest.active = true;
+      g.step(1);
+      out.busy = g.getPrompt();
+      g.quest.active = false;
+      // 信使:办完一单(下一单不计时)后骑在马上直接 E
+      g.quest.idx = g.missions.findIndex((m) => m.type === 'losthorse');
+      g.quest.active = true;
+      g.completeMission();
+      while (g.dialogOpen()) g.advanceDialog();
+      g.player.pos.set(30, 0, 40);
+      g.player.mounted = g.player.horse;
+      g.step(1);
+      out.remotePrompt = g.getPrompt();
+      g.tryInteract();
+      while (g.dialogOpen()) g.advanceDialog();
+      out.accepted = g.quest.active;
+      out.stillMounted = !!g.player.mounted;
+      return out;
+    });
+    if (!/埃隆/.test(r.offer)) throw new Error(`有委托可接时应先找管家,提示却是:${r.offer}`);
+    if (!/领主/.test(r.busy)) throw new Error(`委托在办时应找最近的人(领主),提示却是:${r.busy}`);
+    if (!/接下一单/.test(r.remotePrompt)) throw new Error(`骑在马上没给出接信使委托的提示:${r.remotePrompt}`);
+    if (!r.accepted || !r.stillMounted) throw new Error(`骑在马上按 E 没接下信使的委托:${JSON.stringify(r)}`);
+  },
   // 流程:自己的马比 NPC 近时 E=上马;走远对话自动收;城外穿城的光柱绕墙角;没委托时光柱指埃隆
   async playFlow(page) {
     await boot(page);
@@ -467,24 +502,324 @@ const TESTS = {
     });
     if (r.a !== 14 || r.b !== 16 || r.c !== 18) throw new Error(`生命上限计算不对:${JSON.stringify(r)}`);
   },
-  // 城墙寻路:城内接到城外的限时快递,光柱先指向城门而不是顶着城墙
+  // 城墙寻路:城内接到城外的限时快递,光柱先指向城门(门内/门外点)而不是顶着城墙;出了城门直指磨坊
   async route(page) {
     await boot(page);
     const r = await page.evaluate(() => {
       const g = window.__gtm;
       const i = g.missions.findIndex((m) => m.type === 'deliver');
       g.quest.idx = i; g.quest.active = true; g.quest.timer = 60;
-      g.player.pos.set(-30, 0, -30);
+      g.player.pos.set(-40, 0, 30); // 城里西南,直线去磨坊会顶着东墙
       g.step(2);
       const a = g.getBeacon();
       g.player.pos.set(72, 0, 0); // 走到东门外
       g.step(2);
       const b = g.getBeacon();
-      return { a, b };
+      return { a, b, mill: { x: g.world.windmillPos.x, z: g.world.windmillPos.z } };
     });
-    const atGate = (p) => Math.abs(p.x) <= 71 && Math.abs(p.z) <= 56 && (Math.abs(Math.abs(p.x) - 70) < 1 || Math.abs(Math.abs(p.z) - 55) < 1);
-    if (!r.a.v || !atGate(r.a)) throw new Error(`城内时光柱应指向城门,实际 ${JSON.stringify(r.a)}`);
-    if (atGate(r.b)) throw new Error(`出城后光柱应指向磨坊,实际 ${JSON.stringify(r.b)}`);
+    const nearGate = (p) => Math.hypot(p.x, p.z - 55) < 8 || Math.hypot(p.x - 70, p.z) < 8;
+    if (!r.a.v || !nearGate(r.a)) throw new Error(`城内时光柱应指向城门,实际 ${JSON.stringify(r.a)}`);
+    if (Math.hypot(r.b.x - r.mill.x, r.b.z - r.mill.z) > 2) throw new Error(`出城后光柱应指向磨坊,实际 ${JSON.stringify(r.b)}`);
+  },
+  // 光柱寻路(航点图):顺着光柱一段段走——城外西侧去东边磨坊不穿城墙;去河西的营地必经木桥;
+  // 城门口:门外直指城里的目标,门内要出城给门外点(不再指 80 米外的城角、也不再原地翻转)
+  async nav(page) {
+    await boot(page);
+    const r = await page.evaluate(() => {
+      const g = window.__gtm, out = {};
+      // 每帧朝光柱迈 1.5 米(相当于骑马疾驰),记下轨迹;到目标 7.5 米内算到达(快递 7 米内就交差了)
+      const walk = (x, z, goal) => {
+        const pts = [[x, z]];
+        g.player.pos.set(x, 0, z);
+        for (let i = 0; i < 700; i++) {
+          g.step(1);
+          if (Math.hypot(goal.x - g.player.pos.x, goal.z - g.player.pos.z) < 7.5) return { pts, ok: true };
+          const b = g.getBeacon();
+          const dx = b.x - g.player.pos.x, dz = b.z - g.player.pos.z, d = Math.hypot(dx, dz) || 1;
+          const s = Math.min(1.5, d);
+          g.player.pos.x += (dx / d) * s; g.player.pos.z += (dz / d) * s;
+          pts.push([g.player.pos.x, g.player.pos.z]);
+        }
+        return { pts, ok: false };
+      };
+      g.player.hp = g.player.maxHp = 999; // 只看路线,别被半路的伏兵打断
+      const di = g.missions.findIndex((m) => m.type === 'deliver');
+      g.quest.idx = di; g.quest.active = true; g.quest.timer = 999;
+      out.mill = walk(-85, 4, g.world.windmillPos);
+      g.quest.active = false;
+      const bi = g.missions.findIndex((m) => m.type === 'bandits');
+      g.quest.idx = bi; g.quest.active = true; g.quest.progress = 0;
+      out.camp = walk(4, 10, g.world.banditCamp);
+      // 城门口
+      g.quest.active = false; g.quest.idx = 0;
+      g.player.pos.set(0, 0, 63); g.step(2);
+      out.southFront = g.getBeacon();
+      g.quest.idx = bi; g.quest.active = true;
+      g.player.pos.set(0, 0, 50); g.step(2);
+      out.southInside = g.getBeacon();
+      out.steward = { x: g.steward.pos.x, z: g.steward.pos.z };
+      return out;
+    });
+    // 一步穿过城墙线(门洞除外)= 穿墙
+    const wallCross = (pts) => {
+      for (let i = 1; i < pts.length; i++) {
+        const [x0, z0] = pts[i - 1], [x1, z1] = pts[i];
+        for (const zw of [-55, 55]) {
+          if ((z0 - zw) * (z1 - zw) < 0) {
+            const x = x0 + ((x1 - x0) * (zw - z0)) / (z1 - z0);
+            if (Math.abs(x) < 70 && !(zw === 55 && Math.abs(x) < 3.6)) return `z=${zw} @x=${x.toFixed(1)}`;
+          }
+        }
+        for (const xw of [-70, 70]) {
+          if ((x0 - xw) * (x1 - xw) < 0) {
+            const z = z0 + ((z1 - z0) * (xw - x0)) / (x1 - x0);
+            if (Math.abs(z) < 55 && !(xw === 70 && Math.abs(z) < 3.6)) return `x=${xw} @z=${z.toFixed(1)}`;
+          }
+        }
+      }
+      return null;
+    };
+    if (!r.mill.ok) throw new Error(`顺着光柱没走到磨坊,停在 ${r.mill.pts.at(-1)}`);
+    const wm = wallCross(r.mill.pts);
+    if (wm) throw new Error(`去磨坊的光柱路线穿墙:${wm}`);
+    if (!r.camp.ok) throw new Error(`顺着光柱没走到营地,停在 ${r.camp.pts.at(-1)}`);
+    const wc = wallCross(r.camp.pts);
+    if (wc) throw new Error(`去营地的光柱路线穿墙:${wc}`);
+    // 银月河在 x≈-101..-90 一带;走在河带里时必须是在木桥(z -41..-27)上
+    const wet = r.camp.pts.find(([x, z]) => x > -100.5 && x < -90.5 && (z < -41 || z > -27));
+    if (wet) throw new Error(`去营地的光柱路线下了河(不是走木桥):${wet}`);
+    if (!r.camp.pts.some(([x, z]) => Math.hypot(x + 95, z + 34) < 4)) throw new Error('去河西的光柱路线没经过木桥');
+    if (Math.hypot(r.southFront.x - r.steward.x, r.southFront.z - r.steward.z) > 2) throw new Error(`南门外光柱应直指城里的埃隆,实际 ${JSON.stringify(r.southFront)}`);
+    if (Math.hypot(r.southInside.x, r.southInside.z - 62) > 2) throw new Error(`南门内要出城时光柱应给门外点,实际 ${JSON.stringify(r.southInside)}`);
+  },
+  // 护送:伏兵没被缠住时扑商人,但同一时间最多一人下手、先亮红扇形、两刀至少隔 1.6 秒;每波伏击前商人回满、原地蹲下;
+  // 你走进 10 米,或者打它一下(哪怕隔得老远),它就转来打你
+  async escort(page) {
+    await boot(page);
+    const r = await page.evaluate(() => {
+      const g = window.__gtm, out = {};
+      g.quest.idx = g.missions.findIndex((m) => m.type === 'escort');
+      g.quest.active = false;
+      g.talkQuestGiver();
+      while (g.dialogOpen()) g.advanceDialog();
+      const mc = g.questRT.merchant;
+      mc.hp = 2; // 伏击前回满要看得出来
+      mc.pos.set(39.5, 0, 0.2); mc.wp = 1; // 第一个伏击点跟前
+      g.player.pos.set(40, 0, 45); // 离得远远的:伏兵只会去扑商人
+      g.step(2);
+      out.ambush = g.questRT.ambush;
+      out.healed = mc.hp === mc.maxHp;
+      const foes = g.bandits.filter((b) => b.escort && !b.dead);
+      out.n = foes.length;
+      let maxStrikers = 0, lastHit = null, minGap = Infinity, hits = 0, hp0 = mc.hp, sawTele = false, crouch = 0;
+      for (let i = 0; i < 60 * 12 && mc.hp > 1; i++) {
+        g.step(1);
+        maxStrikers = Math.max(maxStrikers, foes.filter((b) => b.mcStrike && b.windupT > 0).length);
+        if (g.dangerFX.some((f) => foes.includes(f.e))) sawTele = true;
+        crouch = Math.max(crouch, mc.crouch);
+        if (mc.hp < hp0) {
+          const t = g.simNow();
+          if (lastHit !== null) minGap = Math.min(minGap, t - lastHit);
+          lastHit = t; hits++; hp0 = mc.hp;
+        }
+      }
+      Object.assign(out, { maxStrikers, minGap, hits, sawTele, crouch });
+      // 走进 10 米:这个伏兵转来打你
+      const a = foes[0];
+      g.player.pos.set(a.pos.x + 7, 0, a.pos.z);
+      g.step(30);
+      out.aggroNear = a.aggroT > 0 && !a.mcStrike;
+      out.closing = Math.hypot(a.pos.x - g.player.pos.x, a.pos.z - g.player.pos.z) < 6.5;
+      // 隔着 40 米打另一个一下:它也转来追你
+      const b = foes[1];
+      g.player.pos.set(b.pos.x + 40, 0, b.pos.z);
+      g.step(200); // 先让第一个伏兵的仇恨散掉
+      g.applyDamage(b, 1, { source: 'player' });
+      g.step(2);
+      out.aggroHit = b.aggroT > 0 && !b.mcStrike;
+      return out;
+    });
+    if (!r.ambush || r.n < 2) throw new Error(`没有触发伏击:${JSON.stringify(r)}`);
+    if (!r.healed) throw new Error('伏击前商人没有回满');
+    if (r.crouch < 0.9) throw new Error('伏击中商人没有蹲下');
+    if (r.hits < 2) throw new Error(`12 秒里伏兵只砍了商人 ${r.hits} 刀,测不出间隔`);
+    if (r.maxStrikers > 1) throw new Error(`同时有 ${r.maxStrikers} 个伏兵在砍商人`);
+    if (r.minGap < 1580) throw new Error(`砍商人的两刀只隔了 ${r.minGap} 毫秒`);
+    if (!r.sawTele) throw new Error('砍商人前没有亮预警扇形');
+    if (!r.aggroNear || !r.closing) throw new Error(`走进 10 米伏兵没转来打你:${JSON.stringify(r)}`);
+    if (!r.aggroHit) throw new Error('远远打了伏兵一下,它没转来追你');
+  },
+  // 战团行军走航点图:从正北来的战团绕过城角走到东门,不再贴着北墙横移;玩家远在 300 米外时横幅改报距离
+  async warband(page) {
+    await boot(page);
+    const r = await page.evaluate(() => {
+      const g = window.__gtm, wb = g.warband;
+      g.player.pos.set(0, 0, 200); g.player.hp = g.player.maxHp = 999;
+      g.quest.idx = 3;
+      g.spawnWarband();
+      wb.ax = 0; wb.az = -120; // 摆到正北 120 米,目标东门(北面来离它最近)
+      wb.path = [[82, 0], [70, 0], [0, 10]]; wb.wp = 0; wb.hop = null;
+      for (const b of wb.members) { b.pos.set(b._ox, 0, -120 + b._oz); b.home.set(b.pos.x, 0, b.pos.z); }
+      let minGateD = Infinity, crossed = false, prevZ = wb.az;
+      for (let i = 0; i < 300 && wb.active && minGateD > 10; i++) {
+        g.step(15, 1 / 30); // 0.5 秒
+        for (const b of wb.members) if (!b.dead) minGateD = Math.min(minGateD, Math.hypot(b.pos.x - 70, b.pos.z));
+        if (Math.abs(wb.ax) < 69 && prevZ < -56 && wb.az >= -54) crossed = true;
+        prevZ = wb.az;
+      }
+      const out = { minGateD, crossed, active: wb.active, ax: wb.ax, az: wb.az, wp: wb.wp };
+      g.player.pos.set(700, 0, 700);
+      g.step(2);
+      out.banner = document.getElementById('mission').textContent;
+      return out;
+    });
+    if (r.crossed) throw new Error('战团锚点直接穿过了北墙');
+    if (r.minGateD > 10) throw new Error(`北面来的战团 150 秒内没走到东门:${JSON.stringify(r)}`);
+    if (r.active && !/距你/.test(r.banner)) throw new Error(`人在 300 米外,战团横幅没报距离:${r.banner}`);
+  },
+  // 委托难度与剧情:④信使会逃(贴近才按倒)、⑤高环要跳、⑥白马见了奔马会跑(慢慢走近才认你)、⑧头狼不死不算完、
+  // ②路上有骑马的追兵、磨坊主在磨坊门口;旧档(v3)过了竞速的顺延一位
+  async missions(page) {
+    await boot(page);
+    const r = await page.evaluate(() => {
+      const g = window.__gtm, out = {};
+      g.player.hp = g.player.maxHp = 999;
+      const take = (type) => {
+        g.quest.idx = g.missions.findIndex((m) => m.type === type);
+        g.quest.active = false;
+        g.talkQuestGiver();
+        while (g.dialogOpen()) g.advanceDialog();
+      };
+      // ④ 内鬼的信使
+      take('courier');
+      const idx4 = g.quest.idx;
+      g.player.pos.set(80, 0, -80); g.step(2);
+      out.runner = !!g.questRT.runner;
+      const r0 = g.questRT.runner && { x: g.questRT.runner.pos.x, z: g.questRT.runner.pos.z };
+      g.step(60);
+      out.fled = r0 && Math.hypot(g.questRT.runner.pos.x - r0.x, g.questRT.runner.pos.z - r0.z) > 4;
+      g.player.pos.set(g.questRT.runner.pos.x + 1, 0, g.questRT.runner.pos.z); g.step(1);
+      out.caught = g.quest.idx === idx4 + 1 && /霍布/.test((g.getDialog().page || ''));
+      while (g.dialogOpen()) g.advanceDialog();
+      // ⑤ 高环
+      take('race');
+      const hi = g.missions[g.quest.idx].high[0];
+      g.questRT.ringIdx = hi;
+      const [hx, hz] = g.world.raceRoute[hi];
+      g.player.pos.set(hx, 0, hz); g.step(1);
+      out.lowPass = g.questRT.ringIdx;
+      g.player.pos.set(hx, 1, hz); g.player.vy = 0; g.step(1);
+      out.jumpPass = g.questRT.ringIdx;
+      g.quest.active = false;
+      // ⑥ 白马
+      take('losthorse');
+      const sh = g.questRT.specialHorse;
+      g.player.mounted = g.player.horse;
+      g.player.pos.set(sh.pos.x + 10, 0, sh.pos.z); g.player.horse.pos.copy(g.player.pos);
+      g.step(3);
+      out.spooked = sh.fleeT > 0;
+      g.player.mounted = null;
+      sh.fleeT = 0;
+      g.player.pos.set(sh.pos.x + 3.5, 0, sh.pos.z);
+      g.questRT.lastPX = g.player.pos.x; g.questRT.lastPZ = g.player.pos.z; g.questRT.pSpeed = 0;
+      g.step(2);
+      out.calm = !!sh.calm;
+      g.quest.active = false;
+      // ⑧ 头狼
+      take('wolves');
+      const alpha = g.questRT.alpha;
+      const idx8 = g.quest.idx;
+      for (const w of g.wolves.filter((x) => !x.dead && x !== alpha).slice(0, 4)) g.killWolf(w);
+      out.wolvesDoneEarly = g.quest.idx !== idx8;
+      out.progressCap = g.quest.progress;
+      g.killWolf(alpha);
+      out.alphaDone = g.quest.idx === idx8 + 1;
+      // ② 骑马的追兵 + 磨坊主
+      take('deliver');
+      g.quest.timer = 99;
+      g.player.pos.set(92, 0, 2); g.step(2);
+      out.riders = g.questRT.riders.length;
+      out.riderSpeed = g.questRT.riders[0] && g.questRT.riders[0].b.speed;
+      g.player.pos.set(g.world.windmillPos.x - 5, 0, g.world.windmillPos.z); g.step(2);
+      out.ridersCleared = g.questRT.riders.length === 0;
+      const miller = g.villagers.find((v) => v.id.name === '磨坊主卢卡斯');
+      out.millerAtMill = miller && Math.hypot(miller.pos.x - 136.5, miller.pos.z - 25) < 10 && !miller.sleeping; // group.visible 含远近分级,不能当逻辑状态读
+      out.millerLine = g.getDialog().page || '';
+      while (g.dialogOpen()) g.advanceDialog();
+      g.saveNow();
+      return out;
+    });
+    if (!r.runner || !r.fled) throw new Error(`走近哨塔遗迹,信使没现身或没逃:${JSON.stringify(r)}`);
+    if (!r.caught) throw new Error('贴近信使没按倒他(或没招出霍布)');
+    if (r.lowPass !== r.jumpPass - 1) throw new Error(`高环:不跳 ${r.lowPass},跳 ${r.jumpPass}(应只有跳过去才算)`);
+    if (!r.spooked) throw new Error('骑马冲到白马跟前,它没受惊');
+    if (!r.calm) throw new Error('下马慢慢走近,白马没认你');
+    if (r.wolvesDoneEarly || r.progressCap !== 3) throw new Error(`头狼还活着,狼灾就算完了:${JSON.stringify(r)}`);
+    if (!r.alphaDone) throw new Error('杀了头狼,狼灾没完成');
+    if (r.riders !== 2 || !(r.riderSpeed > 11)) throw new Error(`快递路上没有骑马的追兵:${JSON.stringify(r)}`);
+    if (!r.ridersCleared) throw new Error('快递完成后追兵(和马)没撤');
+    if (!r.millerAtMill || !/卢卡斯/.test(r.millerLine)) throw new Error(`磨坊主没在磨坊门口收包裹:${JSON.stringify(r)}`);
+    // 旧档迁移:v3 存的 idx 4(旧序做完了竞速、下一单白马),新序里白马是 idx 5
+    await page.evaluate(() => {
+      const s = JSON.parse(localStorage.getItem('gth-save-v1'));
+      s.v = 3; s.questIdx = 4;
+      localStorage.setItem('gth-save-v1', JSON.stringify(s));
+    });
+    await page.reload();
+    await page.waitForFunction(() => window.__gtm, null, { timeout: 240000 });
+    const m = await page.evaluate(() => ({ idx: window.__gtm.quest.idx, type: window.__gtm.missions[window.__gtm.quest.idx].type,
+      blocked: window.__gtm.getSaveBlocked() }));
+    if (m.blocked || m.type !== 'losthorse') throw new Error(`v3 旧档(下一单白马)迁移后应仍是白马,实际 ${JSON.stringify(m)}`);
+  },
+  // 文案:闲聊拼句没有"。。"、没有"……汉娜……,说的就是面包师汉娜";通关并领完赏后任务栏写自由探索;
+  // 败给流浪剑客时死因写剑客;H 面板的弹反说法与教学卡一致(红扇形快长满时举盾 → 处决)
+  async texts(page) {
+    await boot(page);
+    const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+    if (!/红扇形快长满时举盾/.test(html) || /还击 ×2\.5/.test(html)) throw new Error('H 面板的弹反文案还是旧的');
+    const r = await page.evaluate(() => {
+      const g = window.__gtm, out = { bad: [] };
+      const keys = Object.keys(g.villagers.reduce((m, v) => (m[v.dbKey] = 1, m), {}));
+      for (let i = 0; i < 1500; i++) {
+        const t = g.dbLine(keys[i % keys.length]);
+        if (!t) continue;
+        const m = t.match(/说的就是(.+?)。/);
+        if (/。。|!。|\?。|。,/.test(t) || (m && t.indexOf(m[1].slice(-2)) < t.indexOf('说的就是'))) out.bad.push(t);
+      }
+      g.quest.idx = g.missions.length; g.stats.starTaken = true;
+      g.namedNPCs.find((n) => n.key === 'king').rewarded = true;
+      g.step(2);
+      out.hud = document.getElementById('mission').textContent;
+      const b = g.bandits.find((x) => !x.dead);
+      b.duel = true; b.pos.set(g.player.pos.x + 1, 0, g.player.pos.z);
+      g.damagePlayer(999, b);
+      out.death = document.querySelector('#gameover h1').textContent;
+      return out;
+    });
+    if (r.bad.length) throw new Error(`闲聊拼句有坏句:${r.bad.slice(0, 3).join(' | ')}`);
+    if (!/太平/.test(r.hud)) throw new Error(`通关领赏后任务栏还在催人:${r.hud}`);
+    if (!/流浪剑客/.test(r.death)) throw new Error(`败给流浪剑客,死因却写:${r.death}`);
+  },
+  // 提示分级:同 key 的进度只留最新一条;同一句不排两遍;委托完成/失败/重接时排队的委托提示作废;插队的排最前
+  async toasts(page) {
+    await boot(page);
+    const r = await page.evaluate(() => {
+      const g = window.__gtm, q = g.toastQueue, out = {};
+      q.length = 0;
+      g.toastQuest('金环 1/6', 1.2, 'ring'); g.toastQuest('金环 2/6', 1.2, 'ring');
+      g.toast('一句闲话'); g.toast('一句闲话');
+      out.rings = q.filter((e) => e.key === 'ring').map((e) => e.msg);
+      out.dups = q.filter((e) => e.msg === '一句闲话').length;
+      g.toastNow('委托失败!');
+      out.front = q[0].msg;
+      g.dropQuestToasts();
+      out.after = q.map((e) => e.msg);
+      return out;
+    });
+    if (r.rings.join() !== '金环 2/6') throw new Error(`同 key 的进度提示应只留最新一条:${r.rings}`);
+    if (r.dups !== 1) throw new Error(`同一句话排了 ${r.dups} 遍`);
+    if (r.front !== '委托失败!') throw new Error(`插队提示没排到最前:${r.front}`);
+    if (r.after.some((m) => m.startsWith('金环'))) throw new Error(`作废后还留着委托进度:${r.after}`);
   },
   // 存档往返 + 坏档保护
   async save(page) {

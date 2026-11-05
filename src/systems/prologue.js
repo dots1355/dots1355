@@ -46,7 +46,7 @@ export function startPrologue() {
     w.group.position.copy(w.pos);
     prologue.wolves.push(w);
   }
-  toastNow('🐺 黎明——狼群冲进了村子!', 3.5);
+  toastNow('🐺 黎明——狼群冲进了王都!', 3.5);
 }
 function endPrologue() {
   prologue.wolves.forEach((w) => {
@@ -107,10 +107,10 @@ export function updatePrologue(dt) {
     P.step = 3; P.t = 0;
     F.blocked = false;
     callout(F.rolled ? '漂亮的翻滚!' : '下次早点滚', 'gold');
-    setTutor('右键', '按住右键举盾,挡下它的下一次扑咬', '亮区快长满(出手前一瞬)时才举盾 = 完美弹反:它会踉跄,还击伤害 ×2.5');
+    setTutor('右键', '按住右键举盾,挡下它的下一次扑咬', '亮区快长满(出手前一瞬)时才举盾 = 完美弹反:它会踉跄,你的下一刀就是处决');
   } else if (P.step === 3 && (F.blocked || P.t > 25)) {
     P.step = 4; P.t = 0;
-    callout(F.parried ? '完美弹反!' : '挡住了!', 'gold');
+    if (!F.parried) callout('挡住了!', 'gold'); // 完美弹反的浮字格挡结算时已经喊过,不叠第二条
     setTutor('F', '出刀!轻点 F(或左键)快斩,按住蓄力、松手重击', 'W+F 突刺 · S+F 下劈(慢但重) · 敌人起手时砍它能打断');
   } else if (P.step === 4 && w0 && w0.dead) {
     P.step = 5; P.t = 0;

@@ -625,6 +625,23 @@ export function damagePlayer(n, attacker = null, pierce = false) {
   setTimeout(() => (flashEl.style.opacity = 0), 120);
   if (player.hp <= 0) gameOver();
 }
+// 倒下的原因(标题、说明、醒来时丢钱的说法):盗贼再细分——身边 6 米内刚出过手(或最近)的是流浪剑客、战团枭首还是血斧
+function deathCause() {
+  if (wanted > 0) return ['通缉终结', '你被王国卫兵抓住了!关进地牢,罚没一半金币。', ''];
+  if (player.lastHitBy === 'wolf') return ['葬身狼口', '狼群把你拖倒了……', '赶狼的牧人把你背了回来,一半金币算作谢礼'];
+  if (player.lastHitBy === 'dragon') return ['霜龙之怒', '冰息吞没了你……幸存者把你抬回了王都。', '幸存者把你抬回了王都,一半金币付了药钱'];
+  if (player.lastHitBy !== 'bandit') return ['你倒下了', '眼前一黑……', '一半金币不知丢在了哪里'];
+  let foe = null, bd = 36;
+  for (const b of bandits) {
+    if (b.dead) continue;
+    const d = dist2(b.pos.x, b.pos.z, player.pos.x, player.pos.z) - ((b.swingT || 0) > 0 ? 20 : 0);
+    if (d < bd) { bd = d; foe = b; }
+  }
+  if (foe && foe.duel && !foe.warlord) return ['败给了流浪剑客', '卡洛收剑入鞘:「承让。」——他只是来切磋的,没碰你的钱袋。', '路人把你抬回了王都,一半金币付了药钱'];
+  if (foe && foe.warlord) return ['倒在枭首刀下', '战团枭首踩住你的盾,冲着王都大笑……', '战团搜走了你一半的金币'];
+  if (foe && foe.boss) return ['倒在血斧之下', '巴罗克扛起斧头:「下一个。」', '黑石的人搜走了你一半的金币'];
+  return ['倒在匪刃下', '盗贼搜走了你一半的金币。', '盗贼搜走了你一半的金币'];
+}
 function gameOver() {
   if (prologue.on) skipPrologue(true); // 序章里倒下:直接放行,别卡教学
   if (warband.duelOn) { // 单挑落败:誓约解除,攻城继续
@@ -646,12 +663,8 @@ function gameOver() {
   MIND.surprise = Math.max(MIND.surprise, 0.8);
   remember(`它眼睁睁看着他倒下了(第 ${stats.deaths} 次)`, `death-${calendar.day}`);
   player.jailed = wanted > 0;
-  // 按死因给标题:被抓、葬身狼口、倒在匪刃下、霜龙之怒……
-  const cause = wanted > 0 ? ['通缉终结', '你被王国卫兵抓住了!关进地牢,罚没一半金币。']
-    : player.lastHitBy === 'wolf' ? ['葬身狼口', '狼群把你拖倒了……']
-    : player.lastHitBy === 'dragon' ? ['霜龙之怒', '冰息吞没了你……幸存者把你抬回了王都。']
-    : player.lastHitBy === 'bandit' ? ['倒在匪刃下', '盗贼搜走了你一半的金币。']
-    : ['你倒下了', '眼前一黑……'];
+  // 按死因给标题:被抓、葬身狼口、倒在匪刃下、败给流浪剑客、霜龙之怒……
+  const cause = deathCause();
   gameoverEl.querySelector('h1').textContent = cause[0];
   gameoverText.textContent = cause[1];
   if (titleArtURL) {
@@ -672,10 +685,7 @@ function gameOver() {
     player.dead = false;
     gameoverEl.style.display = 'none';
     if (player.jailed && player.loot > 0) { player.loot = 0; } // 赃物人赃并获,全数充公
-    const lostHow = player.lastHitBy === 'bandit' ? '盗贼搜走了你一半的金币'
-      : player.lastHitBy === 'wolf' ? '赶狼的牧人把你背了回来,一半金币算作谢礼'
-        : player.lastHitBy === 'dragon' ? '幸存者把你抬回了王都,一半金币付了药钱'
-          : '一半金币不知丢在了哪里';
+    const lostHow = cause[2];
     toast(player.jailed
       ? '⛓️ 你在王都地牢蹲了一夜,罚没一半金币后被踢了出来。' + (player.loot === 0 ? '(兜里的赃物也被搜走了)' : '')
       : stats.deaths >= 3

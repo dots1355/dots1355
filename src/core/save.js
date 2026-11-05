@@ -28,7 +28,7 @@ export const SAVE_KEY = 'gth-save-v1';
 export const FRESH_START = !localStorage.getItem(SAVE_KEY); // 新档才演序章
 let saveIconTimer = null;
 export let saveBlocked = false; // 读档失败时置真:不自动覆盖原档
-const SAVE_VERSION = 3; // v3:委托③④互换(剿匪提前到竞速之前)
+const SAVE_VERSION = 4; // v3:委托③④互换(剿匪提前到竞速之前);v4:剿匪之后插入委托④「内鬼的信使」
 export function saveGame() {
   if (saveBlocked) return;
   const icon = document.getElementById('save-icon');
@@ -77,6 +77,8 @@ export function loadGame() {
     quest.idx = Math.min(s.questIdx || 0, missions.length);
     // v2 及更早:旧序 ①金币 ②快递 ③竞速 ④剿匪;旧档停在"剿匪待接"(3)的,新序里剿匪是第 2 单
     if ((s.v || 1) < 3 && quest.idx === 3) quest.idx = 2;
+    // v3 及更早:剿匪(第 3 单)之后插入了「内鬼的信使」;已经做过竞速的旧档顺延一位(没做到的接着做新的第 4 单)
+    if ((s.v || 1) < 4 && quest.idx >= 4) quest.idx = Math.min(quest.idx + 1, missions.length);
     crestsFound.splice(0, Infinity, ...(Array.isArray(s.crests) ? s.crests : []));
     player.swordLv = s.swordLv || 1;
     player.royalHorse = !!s.royalHorse;

@@ -19,6 +19,7 @@ import { EVO } from '../systems/evo.js';
 import { wanted } from '../systems/law.js';
 import { MIND, archetype, recallLine, remember, workspace, wsReport } from '../systems/mind.js';
 import { funnyNPCs } from '../systems/npcs.js';
+import { prologue } from '../systems/prologue.js';
 import { quest } from '../systems/quests.js';
 import { weather } from '../systems/weather.js';
 import { groundH } from '../terrain.js';
@@ -29,6 +30,8 @@ import { toast } from './toast.js';
 // 情境开场 × 语气前缀 × 内容主体(12 类语料)× 口头禅收尾,按角色声线现场拼装;
 // 类目按当下情境加权(下雨多聊雨,节庆多聊节,主线推进聊时事),近期说过的不复读。
 const lineRecent = new Map();
+// 拼接处的标点收拾干净:"。。"、"!。"、"。,"这种语料自带句号撞上框架句号的情况
+export function tidy(t) { return t.replace(/。{2,}/g, '。').replace(/([!?…])。/g, '$1').replace(/。,/g, ','); }
 export function dbLine(key) {
   const V = BANKS.VOICES[key];
   if (!V) return null;
@@ -71,17 +74,20 @@ export function dbLine(key) {
     } else if (cat === 'gossip') {
       const others = Object.keys(BANKS.FACTS).filter((k2) => k2 !== key);
       const other = pick(others);
-      text = `${mood()}${pick(BANKS.GOSSIP_FRAMES).replace('{name}', BANKS.NAMES[other]).replace('{fact}', pick(BANKS.FACTS[other]))}${tail()}`;
+      const name = BANKS.NAMES[other], fact = clean(pick(BANKS.FACTS[other]));
+      // 这件事本身已经点了名("葛塔说汉娜……"):别再套"……,说的就是{name}"
+      const frames = fact.includes(name.slice(-2)) ? BANKS.GOSSIP_FRAMES.filter((f) => !f.includes('说的就是')) : BANKS.GOSSIP_FRAMES;
+      text = `${mood()}${pick(frames).replace('{name}', name).replace('{fact}', fact)}${tail()}`;
     } else if (cat === 'rumor') {
       // 活语料:世界自己写的传闻混进既有语料一起流传
       const rpool = EVO.corpus.length && rnd() < 0.35 ? EVO.corpus : BANKS.RUMORS;
       text = `${mood()}${pick(BANKS.RUMOR_FRAMES).replace('{r}', clean(pick(rpool)))}${tail()}`;
     } else if (cat === 'place') {
       const p = pick(Object.keys(BANKS.PLACES));
-      text = `${pick(BANKS.PLACE_FRAMES).replace('{p}', p).replace('{f}', pick(BANKS.PLACES[p]))}${tail()}`;
+      text = `${pick(BANKS.PLACE_FRAMES).replace('{p}', p).replace('{f}', clean(pick(BANKS.PLACES[p])))}${tail()}`;
     } else if (cat === 'stage') {
       const q = Math.min(quest.idx, BANKS.STAGE_TOPICS.length - 1);
-      text = `${mood()}${pick(BANKS.STAGE_FRAMES).replace('{t}', pick(BANKS.STAGE_TOPICS[q])).replace('{who}', pick(BANKS.WHO))}${tail()}`;
+      text = `${mood()}${pick(BANKS.STAGE_FRAMES).replace('{t}', clean(pick(BANKS.STAGE_TOPICS[q]))).replace('{who}', pick(BANKS.WHO))}${tail()}`;
     } else if (cat === 'proverb') {
       text = `${mood()}${pick(BANKS.PROVERB_FRAMES).replace('{p}', pick(BANKS.PROVERBS))}${tail()}`;
     } else if (cat === 'memory') {
@@ -95,6 +101,7 @@ export function dbLine(key) {
       text = `${pick(BANKS.OPENERS[phase])}${V.addr},${pick(['又见面了', '有何贵干', '今天气色不错', '路上顺利吗', '别来无恙'])}。${tail()}`;
     }
     if (!text) continue;
+    text = tidy(text);
     let recent = lineRecent.get(key);
     if (!recent) { recent = []; lineRecent.set(key, recent); }
     if (recent.includes(text)) continue; // 近期说过,换一句
@@ -346,6 +353,9 @@ export function updateBubble(dt) {
   bubbleEl.style.top = `${(-_bubbleV.y * 0.5 + 0.5) * window.innerHeight}px`;
   // 村民闲聊触发
 }
+// 序章狼袭时街上喊的是这个,而不是晒被褥
+const ALARM_GUARD = ['狼进城了!护住广场!', '别让它们散开——围住!', '旅人,小心身后!', '拿稳你的剑,它们又扑上来了!'];
+const ALARM_FOLK = ['狼!狼进城了!', '快关门!快关门!', '我的鸡!它叼走了我的鸡!', '孩子们,快回屋里去!'];
 export function villagerChatter() {
   if (bubble.timer > 0 || dialog.open) return;
   const now = performance.now();
@@ -355,7 +365,8 @@ export function villagerChatter() {
     const last = bubble.cooldowns.get(v) || 0;
     if (now - last < 25000 * (workspace.mood.v > 0.2 ? 0.6 : workspace.mood.v < -0.2 ? 1.5 : 1)) continue;
     bubble.cooldowns.set(v, now);
-    showBubble(v, v.id.name, dbLine(v.dbKey) || v.id.lines[v.lineIdx++ % v.id.lines.length]);
+    showBubble(v, v.id.name, prologue.on ? ALARM_FOLK[Math.floor(rand() * ALARM_FOLK.length)]
+      : dbLine(v.dbKey) || v.id.lines[v.lineIdx++ % v.id.lines.length]);
     return;
   }
   for (const g of guards) {
@@ -364,7 +375,8 @@ export function villagerChatter() {
     const last = bubble.cooldowns.get(g) || 0;
     if (now - last < 30000) continue;
     bubble.cooldowns.set(g, now);
-    showBubble(g, null, dbLine('guard') || GUARD_LINES[Math.floor(rand() * GUARD_LINES.length)]);
+    showBubble(g, null, prologue.on ? ALARM_GUARD[Math.floor(rand() * ALARM_GUARD.length)]
+      : dbLine('guard') || GUARD_LINES[Math.floor(rand() * GUARD_LINES.length)]);
     return;
   }
   for (const n of funnyNPCs) {

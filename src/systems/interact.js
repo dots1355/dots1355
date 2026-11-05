@@ -15,7 +15,7 @@ import { dist2, resolveCollisions } from '../entities.js';
 import { scene } from '../gfx/core.js';
 import { DIALOGS, LORE } from '../story.js';
 import {
-  NPC_DESC_EN, VILLAGER_DESC_EN, dbLine, dialog, npcTalk, openDialog, witchFortune,
+  NPC_DESC_EN, VILLAGER_DESC_EN, dbLine, dialog, npcTalk, openDialog, tidy, witchFortune,
 } from '../ui/dialog.js';
 import { toast } from '../ui/toast.js';
 import { stats, unlockAch } from './achievements.js';
@@ -96,6 +96,19 @@ function nearestTalkerD2() {
   for (const f of funnyNPCs) if (f && f.pos) d = Math.min(d, dist2(player.pos.x, player.pos.z, f.pos.x, f.pos.z));
   return d;
 }
+// 名单里离你最近、且在 r² 之内的那个人(人挤在一起时 E 给最近的,而不是名单里排前面的);
+// bias(e) 从距离平方里减去,用来给"现在最该找的人"让路(例如接委托时的管家)
+function nearestOf(list, r2, ok = null, bias = null) {
+  let best = null, bd = Infinity;
+  for (const e of list) {
+    if (!e || !e.pos || (ok && !ok(e))) continue;
+    const raw = dist2(player.pos.x, player.pos.z, e.pos.x, e.pos.z);
+    if (raw > r2) continue;
+    const d = raw - (bias ? bias(e) : 0);
+    if (d < bd) { bd = d; best = e; }
+  }
+  return best;
+}
 function mountHorse(h, probe) {
   if (probe) {
     return promptAt(h.sheep ? '按 E 骑羊(为什么不呢)' : h.playerHorse ? '按 E 骑上你的马'
@@ -152,10 +165,10 @@ const INTERACTIONS = [
     }
     return PASS;
   } },
-  // 信使送来的委托书:完成一单后 12 秒内按 E 原地接下一单(不计时的委托)
+  // 信使送来的委托书:完成一单后 20 秒内按 E 原地接下一单(不计时的委托;骑在马上也行,不用先下马)
   { name: 'remoteQuest', run(probe) {
-    if (canAcceptRemotely() && !player.mounted) {
-      if (probe) return promptAt(`按 E 接下一单:${missions[quest.idx].title}(信使送来的委托书)`);
+    if (canAcceptRemotely()) {
+      if (probe) return promptAt(`按 E 接下一单:${missions[quest.idx].title}(信使等你 ${Math.ceil(quest.offerT)} 秒)`);
       quest.offerT = 0;
       talkQuestGiver(true);
       return;
@@ -213,10 +226,11 @@ const INTERACTIONS = [
     }
     return PASS;
   } },
-  // 具名 NPC(委托/商店/领主/故事对话)
+  // 具名 NPC(委托/商店/领主/故事对话):2.65 米内最近的那位;有委托可接时管家优先(夜里他和领主站在一起)
   { name: 'namedNPCs', run(probe) {
-    for (const n of namedNPCs) {
-      if (dist2(player.pos.x, player.pos.z, n.pos.x, n.pos.z) > 7) continue;
+    const n = nearestOf(namedNPCs, 7, null,
+      (e) => (e.key === 'steward' && !quest.active && quest.idx < missions.length ? 7 : 0));
+    if (n) {
       const NP = (text) => promptAt(text, n.pos.x, n.pos.z, 2.15);
       // 管家埃隆:委托优先;没读过的人物章节先讲(讲完接着派委托)
       if (n.key === 'steward' && quest.idx < missions.length) {
@@ -465,8 +479,8 @@ const INTERACTIONS = [
   } },
   // 搞笑 NPC
   { name: 'funnyNPCs', run(probe) {
-    for (const n of funnyNPCs) {
-      if (dist2(player.pos.x, player.pos.z, n.pos.x, n.pos.z) > 7) continue;
+    const n = nearestOf(funnyNPCs, 7);
+    if (n) {
       if (probe) {
         return promptAt({
           gambler: '按 E 掷骰子(赌 10 金币)',
@@ -776,9 +790,8 @@ const INTERACTIONS = [
   } },
   // 村民对话(优先 100 万字对话库,按情境选行;AI 情境台词后台预取,下次开口就用)
   { name: 'villagers', run(probe) {
-    for (const v of villagers) {
-      if (v.downT > 0 || v.sleeping) continue;
-      if (dist2(player.pos.x, player.pos.z, v.pos.x, v.pos.z) > 5.5) continue;
+    const v = nearestOf(villagers, 5.5, (e) => !(e.downT > 0) && !e.sleeping);
+    if (v) {
       if (probe) return promptAt(`按 E 与${v.id.name}交谈`, v.pos.x, v.pos.z, 2.05);
       const l1 = v.aiNext || dbLine(v.dbKey) || v.id.lines[v.lineIdx++ % v.id.lines.length];
       v.aiNext = null;
@@ -800,7 +813,7 @@ const INTERACTIONS = [
           ? ['听说你', '有人瞧见你', '街坊都在传,说你'][Math.floor(rand() * 3)] + deed + '。真有你的。'
           : dbLine(v.dbKey) || v.id.lines[v.lineIdx++ % v.id.lines.length];
       }
-      openDialog([`${v.id.name}:${l1}`, `${v.id.name}:${l2}`], null,
+      openDialog([`${v.id.name}:${tidy(l1)}`, `${v.id.name}:${tidy(l2)}`], null,
         { key: v.dbKey, name: v.id.name, desc: VILLAGER_DESC_EN[villagers.indexOf(v)] || 'villager', ent: v });
       if (!AI_TEXT_OFF && !v.aiPending && rand() < 0.35) {
         v.aiPending = true;

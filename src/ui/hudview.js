@@ -18,8 +18,8 @@ import { wanted } from '../systems/law.js';
 import { SPELLS, shout } from '../systems/magic.js';
 import { crestsFound } from '../systems/pickups.js';
 import { prologue } from '../systems/prologue.js';
-import { canAcceptRemotely, missions, quest, questRT, stewardWhere } from '../systems/quests.js';
-import { warband } from '../systems/warband.js';
+import { canAcceptRemotely, mainlineLeft, missions, quest, questRT, stewardWhere } from '../systems/quests.js';
+import { playerFarFromTown, warband } from '../systems/warband.js';
 import { weather } from '../systems/weather.js';
 import { CORE, wildRegionName } from '../wilderness.js';
 import { heartsHTML, iconHTML, manaHTML, richText, svgIcon, wantedHTML, weatherHTML } from './hud.js';
@@ -29,7 +29,7 @@ const $hud = (id) => document.getElementById(id);
 const heartsEl = $hud('hearts'), coinsEl = $hud('coins'), wantedEl = $hud('wanted'),
   missionEl = $hud('mission'), promptEl = $hud('prompt'),
   weatherEl = $hud('weather'), equipEl = $hud('equip'),
-  bosshpEl = $hud('bosshp'), bosshpFillEl = $hud('bosshp-fill'),
+  bosshpEl = $hud('bosshp'), bosshpFillEl = $hud('bosshp-fill'), bosshpLabelEl = bosshpEl.querySelector('.label'),
   staminaEl = $hud('stamina'), staminaFillEl = $hud('stamina-fill');
 
 // ================= 操作说明:按 H 弹出的分组面板(不再常驻字墙) =================
@@ -92,7 +92,7 @@ export function updateActionBar() {
 }
 // ================= 区域浮现(GTA 式) =================
 const regionEl = document.getElementById('region');
-let curRegion = '';
+let curRegion = '', pendRegion = '', pendT = 0;
 let regionCheckT = 0;
 export function updateRegion(dt) {
   regionCheckT -= dt;
@@ -109,13 +109,16 @@ export function updateRegion(dt) {
     name = wildRegionName(player.pos.x, player.pos.z);
     if (Math.max(Math.abs(player.pos.x), Math.abs(player.pos.z)) > 10000) unlockAch('navigator');
   }
-  if (name !== curRegion) {
-    curRegion = name;
-    regionEl.textContent = name;
-    regionEl.classList.remove('show');
-    void regionEl.offsetWidth; // 重启 CSS 动画
-    regionEl.classList.add('show');
-  }
+  // 迟滞:新地名要连着站稳 1.5 秒才换(在两片群系的边界上来回晃时横幅不来回闪)
+  if (name === curRegion) { pendRegion = ''; return; }
+  if (name !== pendRegion) { pendRegion = name; pendT = 0; }
+  pendT += 0.5;
+  if (curRegion && pendT < 1.5) return;
+  curRegion = name;
+  regionEl.textContent = name;
+  regionEl.classList.remove('show');
+  void regionEl.offsetWidth; // 重启 CSS 动画
+  regionEl.classList.add('show');
 }
 // ================= HUD 刷新 =================
 let hudCache = '';
@@ -132,11 +135,16 @@ export function updateHUD() {
   const hearts = '❤️'.repeat(full) + (half ? '💔' : '') + '🖤'.repeat(Math.max(0, heartsMax - full - half));
   const stars = wanted > 0 ? '⭐'.repeat(wanted) + '✩'.repeat(5 - wanted) : '';
   let missionText;
-  if (prologue.on) missionText = '⚔️ 序章:击退冲进村子的狼群';
-  else if (quest.idx >= missions.length) missionText = '🏆 全部委托完成 — 去谒见领主,王国是你的了!';
+  if (prologue.on) missionText = '⚔️ 序章:击退冲进王都的狼群';
+  else if (quest.idx >= missions.length) { // 主线收尾按进度写:勋章 → 领主 → 自由探索
+    const left = mainlineLeft();
+    missionText = left === 'medal' ? '🏆 全部委托完成 —— 去喷泉广场领取 ★ 金狮勋章 ★'
+      : left === 'king' ? '🏆 全部委托完成 —— 去城堡谒见领主奥德里克领赏'
+        : '🌄 王国太平了 —— 荒野、遗迹、节庆与龙骨之地,随你去闯(M 看地图)';
+  }
   else if (!quest.active) {
     missionText = canAcceptRemotely()
-      ? `📜 委托 ${quest.idx + 1}/${missions.length}:${missions[quest.idx].title} —— 按 E 原地接下(信使送来的委托书)`
+      ? `📜 委托 ${quest.idx + 1}/${missions.length}:${missions[quest.idx].title} —— 信使等你 ${Math.ceil(quest.offerT)} 秒:按 E 原地接下`
       : `📜 委托 ${quest.idx + 1}/${missions.length}:去${stewardWhere()}找管家埃隆(按 E,光柱指路)`;
   }
   else {
@@ -144,8 +152,12 @@ export function updateHUD() {
     let prog = '';
     if (m.type === 'coins') prog = ` (${Math.min(quest.progress, m.goal)}/${m.goal})` + (quest.progress >= m.goal ? ' — 回去交任务!' : '');
     if (m.type === 'bandits' || m.type === 'wolves') prog = ` (${quest.progress}/${m.goal})`;
+    if (m.type === 'wolves' && questRT.alpha && !questRT.alpha.dead) prog += ' · 独眼头狼还活着';
+    if (m.type === 'courier' && questRT.runner) prog = ' —— 信使在逃:追上去,贴近就能按倒他!';
     if (m.type === 'race') prog = ` (金环 ${questRT.ringIdx}/${world.raceRoute.length})`;
-    if (m.type === 'escort' && questRT.merchant) prog = ` (商人 ❤×${Math.max(0, questRT.merchant.hp)})`;
+    if (m.type === 'escort' && questRT.merchant) {
+      prog = questRT.ambush ? ' —— 伏击!贴上去把伏兵引到自己身上' : ` (商人 ❤ ${Math.max(0, questRT.merchant.hp)}/${questRT.merchant.maxHp})`;
+    }
     missionText = `📜 ${m.title}:${m.desc}${prog}`;
   }
   if (arenaRT.active) missionText = `🏟️ 竞技场:第 ${arenaRT.wave} 波(走出沙圈=认输)\n${missionText}`;
@@ -154,10 +166,14 @@ export function updateHUD() {
   if (timer) missionText = `${timer}${quest.timer < 12 ? ' ⚠️' : ''}\n${missionText}`;
   if (dragonRT.on) missionText = `🐉 霜龙 ❤${Math.max(0, dragonRT.hp)}/${dragonRT.maxHp}` +
     `${dragonRT.phase === 'land' ? ' · 落地喘息:上刀!' : ' · 飞行中(弓/法术)'}\n` + missionText;
-  if (warband.active) { // 战况横幅:战团还剩几个,一眼可知
-    const wbAlive = warband.members.filter((b) => !b.dead).length;
-    missionText = `${warband.siege ? '🚨 攻城战' : '⚔️ 战团来袭'}:余 ${wbAlive}/${warband.members.length}` +
-      `${warband.duelOn ? ' · 单挑中!' : ''}\n` + missionText;
+  if (warband.active) { // 战况横幅:战团还剩几个,一眼可知;人在 300 米外时改报"王都遭袭,离你多远"
+    const wbAlive = warband.members.filter((b) => !b.dead);
+    const lead = wbAlive[0];
+    const far = playerFarFromTown() && lead;
+    missionText = (far
+      ? `${warband.siege ? '🚨 王都被围' : '⚔️ 王都遭袭'}(距你 ${Math.round(Math.hypot(lead.pos.x - player.pos.x, lead.pos.z - player.pos.z) / 10) * 10} 米):余 ${wbAlive.length}/${warband.members.length}`
+      : `${warband.siege ? '🚨 攻城战' : '⚔️ 战团来袭'}:余 ${wbAlive.length}/${warband.members.length}` +
+        `${warband.duelOn ? ' · 单挑中!' : ''}`) + '\n' + missionText;
   }
   missionText += `\n🛡️ 皇家纹章 ${crestsFound.length}/${world.crestSpots.length}`;
   const raining = weather.state === 'rain' || weather.state === 'storm';
@@ -166,7 +182,8 @@ export function updateHUD() {
   const sp = todaySpecial();
   const calText = `${SEASON_ICON[seasonIdx()]}${SEASONS[seasonIdx()]}·${seasonDay()}日${sp ? '·' + sp.name : ''}`;
   const bossHp = questRT.boss && !questRT.boss.dead && quest.active ? questRT.boss.hp : -1;
-  const key = hearts + '|' + player.coins + '|' + player.weapon + player.armor + (player.relic ? 'R' : '') + '|' + stars + '|' + missionText + '|' + timer + '|' + promptText + '|' + wIcon + phaseIcon + calText + '|' + bossHp + '|' + Math.floor(player.mp) + player.spellIdx + player.spells.length;
+  const mcHp = questRT.merchant && quest.active ? questRT.merchant.hp : -1;
+  const key = hearts + '|' + player.coins + '|' + player.weapon + player.armor + (player.relic ? 'R' : '') + '|' + stars + '|' + missionText + '|' + timer + '|' + promptText + '|' + wIcon + phaseIcon + calText + '|' + bossHp + '|' + mcHp + '|' + Math.floor(player.mp) + player.spellIdx + player.spells.length;
   if (key === hudCache) return;
   hudCache = key;
   weatherEl.innerHTML = weatherHTML(seasonIdx(), `${SEASONS[seasonIdx()]}·${seasonDay()}日${sp ? '·' + sp.name : ''}`,
@@ -184,11 +201,14 @@ export function updateHUD() {
       ? `<span class="eq-sep">·</span><span>法力</span>${manaHTML(Math.floor(player.mp), player.maxMp)}` : '');
   promptEl.innerHTML = richText(promptText);
   promptEl.style.display = promptText ? 'block' : 'none';
-  // Boss 血条(仅 Boss 战期间)
-  const boss = questRT.boss;
-  if (boss && !boss.dead && quest.active) {
+  // 顶部大血条:Boss 战期间是巴罗克;护送时是商人巴特(他倒下委托就失败,血量一眼可见)
+  const boss = questRT.boss, mc = questRT.merchant;
+  const bar = boss && !boss.dead && quest.active ? { name: '血斧巴罗克', hp: boss.hp, max: boss.maxHp || boss.hp }
+    : mc && quest.active ? { name: '🧳 商人巴特', hp: mc.hp, max: mc.maxHp } : null;
+  if (bar) {
     bosshpEl.style.display = 'block';
-    bosshpFillEl.style.width = `${Math.max(0, (boss.hp / 12) * 100)}%`;
+    bosshpLabelEl.innerHTML = richText(bar.name);
+    bosshpFillEl.style.width = `${Math.max(0, Math.min(1, bar.hp / bar.max)) * 100}%`;
   } else {
     bosshpEl.style.display = 'none';
   }

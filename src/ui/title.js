@@ -10,7 +10,7 @@ import { refreshProclaim } from '../systems/activities.js';
 import { SEASON_ICON, seasonIdx, startSpecialDay, todaySpecial } from '../systems/calendar.js';
 import { crestsFound } from '../systems/pickups.js';
 import { prologue, startPrologue } from '../systems/prologue.js';
-import { missions, quest } from '../systems/quests.js';
+import { missions, quest, welcomeLine } from '../systems/quests.js';
 import { toast } from './toast.js';
 const titleEl = document.getElementById('title');
 let localTitleArt = false;
@@ -79,5 +79,5 @@ function startGame() {
   }
   renderer.domElement.requestPointerLock();
   // 序章里不催你去找管家(和"打狼"打架);序章结束再说
-  if (!prologue.on) toast('欢迎来到艾尔德里亚!去喷泉广场找管家埃隆接取委托吧(按 E 互动)', 5);
+  if (!prologue.on) toast(welcomeLine(), 5); // 按存档进度写:新档、主线中途、通关后各不相同
 }
