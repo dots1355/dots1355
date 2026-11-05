@@ -10,7 +10,7 @@ import { angleLerp, dist2, lambert, makeHumanoid } from '../entities.js';
 import { scene } from '../gfx/core.js';
 import { MISSIONS } from '../story.js';
 import { openDialog } from '../ui/dialog.js';
-import { dropQuestToasts, toast, toastQuest } from '../ui/toast.js';
+import { dropQuestToasts, toast, toastNow, toastQuest } from '../ui/toast.js';
 import { endTrial, inDungeon, trialRT } from './activities.js';
 import { addBandit, addHorse, animateLimbs, bandits, retireEntity } from './actors.js';
 import { dayPhase } from './calendar.js';
@@ -61,7 +61,8 @@ function failMission(msg) {
   clearRaceRings();
   if (questRT.merchant) { retireEntity(questRT.merchant); questRT.merchant = null; }
   removeEscortBandits(); // 伏兵随任务失败一并撤走,否则重接任务时旧伏兵会追杀新商人
-  toast(msg, 3.5);
+  dropQuestToasts(); // 还在排队的进度提示(金环、商人受袭……)都过时了
+  toastNow(msg, 4); // 失败原因当场说清,不排在别的提示后面
 }
 // 埃隆在哪:白天在喷泉广场,夜里回城堡(和他的作息表一致)
 export function stewardWhere() { return dayPhase() === 'night' ? '城堡' : '喷泉广场'; }
@@ -82,6 +83,7 @@ export function talkQuestGiver(remote = false) {
     quest.timer = m.time || 0;
     quest.offerT = 0;
     sfx.accept();
+    dropQuestToasts(); // 上一次(失败的)尝试留下的提示作废
     openDialog(remote ? ['(王室信使勒住马,递来一封盖着火漆的委托书)', m.brief.replace(/^埃隆:/, '埃隆(信中):')] : [m.brief]);
     toastQuest(`接受委托【${m.title}】:${m.desc}`, 4.5);
     if (m.type === 'deliver') {
@@ -125,7 +127,7 @@ export function talkQuestGiver(remote = false) {
         { boss: true, hp: 12, speed: 6.8, scale: 1.35, dmg: 2 });
       addBandit(world.fortPos.x - 5, world.fortPos.z + 3);
       addBandit(world.fortPos.x + 5, world.fortPos.z + 3);
-      toast('⚔️ 血斧巴罗克在黑石要塞等着你……', 4);
+      toastQuest('⚔️ 血斧巴罗克在黑石要塞等着你……', 4);
     }
   } else if (m.type === 'coins' && quest.progress >= m.goal) {
     completeMission();
@@ -280,7 +282,7 @@ function updateQuestTarget(dt) {
       sfx.block();
       questRT.ringIdx++;
       if (questRT.ringIdx >= world.raceRoute.length) completeMission();
-      else toast(`金环 ${questRT.ringIdx}/${world.raceRoute.length}`, 1.2);
+      else toastQuest(`金环 ${questRT.ringIdx}/${world.raceRoute.length}`, 1.2, 'ring');
     }
   } else if (m.type === 'losthorse') {
     const sh = questRT.specialHorse;
@@ -291,7 +293,7 @@ function updateQuestTarget(dt) {
         sh.home.copy(world.stablePos);
         sh.owned = false;
         completeMission();
-        toast('雪影归你了!它就在马厩等你。', 4);
+        toastQuest('雪影归你了!它就在马厩等你。', 4);
       }
     } else {
       setBeacon(sh.pos.x, sh.pos.z);
@@ -337,6 +339,7 @@ function updateQuestTarget(dt) {
     if (questRT.boss && questRT.boss.dead) {
       questRT.boss = null;
       completeMission();
+      toastNow('⚔️ 血斧巴罗克倒下了!黑石兄弟会土崩瓦解!', 4); // 不管是刀、箭还是法术收的尾,倒下的这一刻就播
     }
   }
 }

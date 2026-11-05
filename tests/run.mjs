@@ -557,6 +557,27 @@ const TESTS = {
     if (Math.hypot(r.southFront.x - r.steward.x, r.southFront.z - r.steward.z) > 2) throw new Error(`南门外光柱应直指城里的埃隆,实际 ${JSON.stringify(r.southFront)}`);
     if (Math.hypot(r.southInside.x, r.southInside.z - 62) > 2) throw new Error(`南门内要出城时光柱应给门外点,实际 ${JSON.stringify(r.southInside)}`);
   },
+  // 提示分级:同 key 的进度只留最新一条;同一句不排两遍;委托完成/失败/重接时排队的委托提示作废;插队的排最前
+  async toasts(page) {
+    await boot(page);
+    const r = await page.evaluate(() => {
+      const g = window.__gtm, q = g.toastQueue, out = {};
+      q.length = 0;
+      g.toastQuest('金环 1/6', 1.2, 'ring'); g.toastQuest('金环 2/6', 1.2, 'ring');
+      g.toast('一句闲话'); g.toast('一句闲话');
+      out.rings = q.filter((e) => e.key === 'ring').map((e) => e.msg);
+      out.dups = q.filter((e) => e.msg === '一句闲话').length;
+      g.toastNow('委托失败!');
+      out.front = q[0].msg;
+      g.dropQuestToasts();
+      out.after = q.map((e) => e.msg);
+      return out;
+    });
+    if (r.rings.join() !== '金环 2/6') throw new Error(`同 key 的进度提示应只留最新一条:${r.rings}`);
+    if (r.dups !== 1) throw new Error(`同一句话排了 ${r.dups} 遍`);
+    if (r.front !== '委托失败!') throw new Error(`插队提示没排到最前:${r.front}`);
+    if (r.after.some((m) => m.startsWith('金环'))) throw new Error(`作废后还留着委托进度:${r.after}`);
+  },
   // 存档往返 + 坏档保护
   async save(page) {
     await boot(page);

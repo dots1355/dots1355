@@ -61,7 +61,7 @@ import { setWeather, weather } from '../systems/weather.js';
 import { groundH } from '../terrain.js';
 import { advanceDialog, dialog, witchFortune } from '../ui/dialog.js';
 import { callout, flashing, registerKill, whiteHot } from '../ui/feedback.js';
-import { toastQueue } from '../ui/toast.js';
+import { dropQuestToasts, toast, toastNow, toastQuest, toastQueue } from '../ui/toast.js';
 import { CORE } from '../wilderness.js';
 import { frame } from './frame.js';
 import { seed } from './rng.js';
@@ -145,6 +145,7 @@ export function installTestHooks({ tick, systems, worldTops }) {
   slayBandit, killWolf, stats, recomputeMaxHp, getSaveBlocked: () => saveBlocked, loadGame,
   getTimers: () => pendingTimers(), flashing,
   getBeacon: () => ({ x: beacon.position.x, z: beacon.position.z, v: beacon.visible }),
+  toast, toastQuest, toastNow, dropQuestToasts,
   attackDown, attackUp, callout, flinch, telegraphArea, dragonAim, seedRng: seed, applyDamage,
   worldTops: () => worldTops,
   getPrompt: () => { computePrompt(); return promptText; },

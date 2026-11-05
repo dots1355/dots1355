@@ -349,7 +349,7 @@ export function killWolf(w, opts = {}) {
   // 竞技场里的狼不算狼灾任务(和盗贼任务的排除规则对齐)
   if (!w.arena && quest.active && missions[quest.idx].type === 'wolves') {
     quest.progress++;
-    toast(`猎杀恶狼 ${quest.progress}/${missions[quest.idx].goal}`, 2);
+    toastQuest(`猎杀恶狼 ${quest.progress}/${missions[quest.idx].goal}`, 2, 'wolves');
     if (quest.progress >= missions[quest.idx].goal) completeMission();
   }
 }
