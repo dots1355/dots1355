@@ -133,6 +133,7 @@ export function talkQuestGiver(remote = false) {
       player.parcel = parcel;
       questRT.deliverAmbush = false;
       pinMiller(true);
+      keepMillerAtMill(true); // 接单时你在城里,他看不见你:直接请到磨坊门口
     } else if (m.type === 'bandits') {
       for (const [ox, oz] of [[-4, 2], [4, -2], [0, 6]]) addBandit(world.banditCamp.x + ox, world.banditCamp.z + oz).campFoe = true;
       // 营地头目:会二连击和紫色破盾重击(第一次见紫色会弹教学卡)
@@ -326,7 +327,9 @@ function updateQuestTarget(dt) {
         '磨坊主卢卡斯:(接过包裹,掂了掂)总算到了!这是今年的麦价文书——落到黑石那帮人手里,他们能把全城的面包价抬上天。',
         ambushed ? '卢卡斯:路上碰到追你的骑手了?……嗯,他们最近盯磨坊盯得紧。替我谢谢埃隆,也谢谢你。'
           : '卢卡斯:一路太平?那是你跑得快。最近黑石的人常在东路上晃悠,往后走这条路多留个心眼。',
-      ], null, miller ? { key: miller.dbKey, name: '磨坊主卢卡斯', desc: VILLAGER_DESC_EN[villagers.indexOf(miller)], ent: miller } : null);
+      ], null, miller ? { key: miller.dbKey, name: '磨坊主卢卡斯', desc: VILLAGER_DESC_EN[villagers.indexOf(miller)],
+        // 对话跟着说话人走远自动收起:他就在跟前才挂到他身上(还在路上走着的话挂在交包裹的地方)
+        ...(dist2(miller.pos.x, miller.pos.z, player.pos.x, player.pos.z) < 64 ? { ent: miller } : {}) } : null);
       pinMiller(true); // 说完话再回去干活(夜里也别当着你的面钻回屋)
       questRT.millerHoldT = 25;
     } else if (quest.timer <= 0) {
@@ -354,19 +357,19 @@ function updateQuestTarget(dt) {
     const ring = questRT.rings[questRT.ringIdx];
     const high = ring && ring.userData.high;
     const near = dist2(player.pos.x, player.pos.z, rx, rz) < (high ? 16 : 9);
-    if (near && high && player.pos.y < 0.5) { // 高环从底下钻过去不算:提示一次,兜回来跃马再穿
-      if (!questRT.ringMiss) {
-        questRT.ringMiss = true;
-        callout('高环要跳!按空格', 'red');
-        toastQuest('没跳过高环——兜回来,快到环前按空格跃马穿过去', 2.5, 'ring');
-      }
+    if (near && high && player.pos.y < 0.5) {
+      questRT.ringUnder = true; // 在高环底下还没跳:先不判,离开环区还没穿过去才算没跳过
     } else if (near) {
       sfx.block();
       questRT.ringIdx++;
-      questRT.ringMiss = false;
+      questRT.ringUnder = false;
       if (questRT.ringIdx >= world.raceRoute.length) completeMission();
       else toastQuest(`金环 ${questRT.ringIdx}/${world.raceRoute.length}${questRT.rings[questRT.ringIdx].userData.high ? '(下一个是高环:跳!)' : ''}`, 1.2, 'ring');
-    } else questRT.ringMiss = false;
+    } else if (questRT.ringUnder) { // 从高环底下钻过去了:不算,兜回来跃马再穿
+      questRT.ringUnder = false;
+      callout('高环要跳!按空格', 'red');
+      toastQuest('没跳过高环——兜回来,快到环前按空格跃马穿过去', 2.5, 'ring');
+    }
   } else if (m.type === 'losthorse') {
     const sh = questRT.specialHorse;
     if (!sh) return;
@@ -460,9 +463,9 @@ function pinMiller(on) {
     v._id0 = null;
   }
 }
-function keepMillerAtMill() {
+function keepMillerAtMill(anywhere = false) {
   const v = millerVillager();
-  if (!v || dist2(player.pos.x, player.pos.z, MILL_DOOR[0], MILL_DOOR[1]) > 70 * 70) return;
+  if (!v || (!anywhere && dist2(player.pos.x, player.pos.z, MILL_DOOR[0], MILL_DOOR[1]) > 70 * 70)) return;
   if (dist2(v.pos.x, v.pos.z, MILL_DOOR[0], MILL_DOOR[1]) > 64 &&
       dist2(v.pos.x, v.pos.z, player.pos.x, player.pos.z) > 50 * 50) { // 你还看不见他的时候,让他先到门口
     v.pos.set(MILL_DOOR[0], 0, MILL_DOOR[1]);

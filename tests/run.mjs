@@ -743,7 +743,7 @@ const TESTS = {
       g.player.pos.set(g.world.windmillPos.x - 5, 0, g.world.windmillPos.z); g.step(2);
       out.ridersCleared = g.questRT.riders.length === 0;
       const miller = g.villagers.find((v) => v.id.name === '磨坊主卢卡斯');
-      out.millerAtMill = miller && Math.hypot(miller.pos.x - 136.5, miller.pos.z - 25) < 10 && miller.group.visible;
+      out.millerAtMill = miller && Math.hypot(miller.pos.x - 136.5, miller.pos.z - 25) < 10 && !miller.sleeping; // group.visible 含远近分级,不能当逻辑状态读
       out.millerLine = g.getDialog().page || '';
       while (g.dialogOpen()) g.advanceDialog();
       g.saveNow();

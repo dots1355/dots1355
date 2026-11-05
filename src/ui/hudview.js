@@ -92,7 +92,7 @@ export function updateActionBar() {
 }
 // ================= 区域浮现(GTA 式) =================
 const regionEl = document.getElementById('region');
-let curRegion = '';
+let curRegion = '', pendRegion = '', pendT = 0;
 let regionCheckT = 0;
 export function updateRegion(dt) {
   regionCheckT -= dt;
@@ -109,13 +109,16 @@ export function updateRegion(dt) {
     name = wildRegionName(player.pos.x, player.pos.z);
     if (Math.max(Math.abs(player.pos.x), Math.abs(player.pos.z)) > 10000) unlockAch('navigator');
   }
-  if (name !== curRegion) {
-    curRegion = name;
-    regionEl.textContent = name;
-    regionEl.classList.remove('show');
-    void regionEl.offsetWidth; // 重启 CSS 动画
-    regionEl.classList.add('show');
-  }
+  // 迟滞:新地名要连着站稳 1.5 秒才换(在两片群系的边界上来回晃时横幅不来回闪)
+  if (name === curRegion) { pendRegion = ''; return; }
+  if (name !== pendRegion) { pendRegion = name; pendT = 0; }
+  pendT += 0.5;
+  if (curRegion && pendT < 1.5) return;
+  curRegion = name;
+  regionEl.textContent = name;
+  regionEl.classList.remove('show');
+  void regionEl.offsetWidth; // 重启 CSS 动画
+  regionEl.classList.add('show');
 }
 // ================= HUD 刷新 =================
 let hudCache = '';
