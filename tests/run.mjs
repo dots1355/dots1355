@@ -712,6 +712,16 @@ const TESTS = {
         return { hit: hp0 - P.hp > 0, strip: strip ? { x: +(strip.e.pos.x - SX).toFixed(2), len: +strip.range.toFixed(2), w: strip.width } : null };
       };
       out.swoop = { on10: swoop(10, 0), side29: swoop(10, 2.9), side24: swoop(10, 2.4), dive3: swoop(3, 0), past24: swoop(24, 0), past29: swoop(29, 0) };
+      // 外部直接设落点、直接进蓄势(调试/评审脚本的做法,不走 beginSwoopWind):按龙此刻的位置定航线,
+      // 不沿用上一趟(上面那几趟沿 +X,这一趟沿 +Z)
+      const direct = (lat) => {
+        fresh();
+        d.ent.group.position.set(SX, 10, SZ - 20); d.phase = 'swoopWind'; d.t = 0.01; d.swX = SX; d.swZ = SZ; d._sw = false; d.swoopsLeft = 1;
+        const hp0 = P.hp;
+        for (let i = 0; i < 120 && d.phase !== 'circle'; i++) { P.pos.set(SX + lat, 0, SZ - 10); P.invulnT = 0; g.step(1); }
+        return hp0 - P.hp > 0;
+      };
+      out.direct = { on: direct(0), side: direct(2.9) };
       // 2) 冰息:人站着不动 → 至少挨一下;第二团的圈跟到人挪过去的新位置
       fresh();
       d.ent.group.position.set(SX, 9, SZ - 15); d.phase = 'breath'; d.t = 2; d.breathN = 0; d.breathT = 0;
@@ -745,6 +755,7 @@ const TESTS = {
     const s = r.swoop;
     if (!s.on10.hit || !s.side24.hit || !s.past24.hit) throw new Error(`站在俯冲航线长条里没挨:${JSON.stringify(s)}`);
     if (s.side29.hit || s.dive3.hit || s.past29.hit) throw new Error(`长条外(横偏 2.9 / 半空段 / 航线尽头外)也挨了:${JSON.stringify(s)}`);
+    if (!r.direct.on || r.direct.side) throw new Error(`直接设落点进蓄势的俯冲没按新航线判伤:${JSON.stringify(r.direct)}`);
     const st = s.on10.strip;
     if (!st || Math.abs(st.x - -15) > 0.01 || Math.abs(st.len - 23.6) > 0.01 || st.w !== 5.2) throw new Error(`俯冲预警长条尺寸不对:${JSON.stringify(st)}`);
     const b = r.breath;

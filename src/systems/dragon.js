@@ -109,6 +109,23 @@ const BREATH_N = 3, BREATH_GAP = 0.36, BREATH_WARN = 0.8, BREATH_R = 2.6, BREATH
 const TAIL_R = 5.4, TAIL_WIND = 0.9, CLAW_R = 6, CLAW_ARC = 1.9, CLAW_WIND = 0.7; // 落地:龙尾横扫 / 正面爪击
 const gap = () => AIR_GAP[0] + rand() * (AIR_GAP[1] - AIR_GAP[0]);
 const airGap = () => gap() * (dragonRT.hp <= dragonRT.maxHp / 2 ? 0.8 : 1); // 半血以后更急
+// 俯冲航线:从龙此刻的位置直扑落点 (swX, swZ),冲过落点 6 米再拉起
+function planSwoop() {
+  const g = dragonRT.ent.group;
+  const dx = dragonRT.swX - g.position.x, dz = dragonRT.swZ - g.position.z;
+  const dd = Math.hypot(dx, dz) || 1;
+  dragonRT.swVx = dx / dd;
+  dragonRT.swVz = dz / dd;
+  dragonRT.sw0x = g.position.x;
+  dragonRT.sw0z = g.position.z;
+  dragonRT.swLen = dd + SWOOP_OVER;
+  dragonRT._swFor = swoopKey();
+}
+// 航线按"起点 + 落点"认:蓄势时龙只拔高、不挪平面位置,二者没变就还是这一趟
+const swoopKey = () => {
+  const g = dragonRT.ent.group;
+  return `${dragonRT.swX},${dragonRT.swZ},${g.position.x},${g.position.z}`;
+};
 // 俯冲蓄势:盯住你脚下,航线定死(不追踪);地上画出整条贴地航线
 export function beginSwoopWind(wind) {
   const g = dragonRT.ent.group;
@@ -117,14 +134,8 @@ export function beginSwoopWind(wind) {
   dragonRT._sw = false;
   dragonRT.swX = player.pos.x;
   dragonRT.swZ = player.pos.z;
-  const dx = dragonRT.swX - g.position.x, dz = dragonRT.swZ - g.position.z;
-  const dd = Math.hypot(dx, dz) || 1;
-  dragonRT.swVx = dx / dd;
-  dragonRT.swVz = dz / dd;
-  dragonRT.sw0x = g.position.x;
-  dragonRT.sw0z = g.position.z;
-  dragonRT.swLen = dd + SWOOP_OVER; // 冲过落点再拉起
-  const yaw = Math.atan2(dx, dz);
+  planSwoop();
+  const yaw = Math.atan2(dragonRT.swVx, dragonRT.swVz);
   const from = Math.min(SWOOP_DIVE, dragonRT.swLen);
   const strip = { pos: { x: g.position.x + dragonRT.swVx * from, z: g.position.z + dragonRT.swVz * from }, yaw, dead: false };
   telegraphFlash(strip, wind + 0.3, true, dragonRT.swLen + SWOOP_HALF_W - from, 0,
@@ -207,6 +218,8 @@ export function updateDragon(dt) {
     g.position.y += (dragonRT.h + 1.5 - g.position.y) * Math.min(1, dt * 3); // 拔高蓄势
     g.rotation.y = angleLerp(g.rotation.y, Math.atan2(dragonRT.swVx, dragonRT.swVz), dt * 6);
     if (dragonRT.t <= 0) {
+      // 起点/落点被外部直接改过(调试/测试直接设位置和 swX/swZ 进蓄势):按龙此刻的位置重定航线,别沿用上一趟的
+      if (dragonRT._swFor !== swoopKey()) planSwoop();
       dragonRT.phase = 'swoop';
       dragonRT.t = 3;
       dragonRT.swLeft = dragonRT.swLen;
