@@ -771,6 +771,35 @@ const TESTS = {
       blocked: window.__gtm.getSaveBlocked() }));
     if (m.blocked || m.type !== 'losthorse') throw new Error(`v3 旧档(下一单白马)迁移后应仍是白马,实际 ${JSON.stringify(m)}`);
   },
+  // 文案:闲聊拼句没有"。。"、没有"……汉娜……,说的就是面包师汉娜";通关并领完赏后任务栏写自由探索;
+  // 败给流浪剑客时死因写剑客;H 面板的弹反说法与教学卡一致(红扇形快长满时举盾 → 处决)
+  async texts(page) {
+    await boot(page);
+    const html = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+    if (!/红扇形快长满时举盾/.test(html) || /还击 ×2\.5/.test(html)) throw new Error('H 面板的弹反文案还是旧的');
+    const r = await page.evaluate(() => {
+      const g = window.__gtm, out = { bad: [] };
+      const keys = Object.keys(g.villagers.reduce((m, v) => (m[v.dbKey] = 1, m), {}));
+      for (let i = 0; i < 1500; i++) {
+        const t = g.dbLine(keys[i % keys.length]);
+        if (!t) continue;
+        const m = t.match(/说的就是(.+?)。/);
+        if (/。。|!。|\?。|。,/.test(t) || (m && t.indexOf(m[1].slice(-2)) < t.indexOf('说的就是'))) out.bad.push(t);
+      }
+      g.quest.idx = g.missions.length; g.stats.starTaken = true;
+      g.namedNPCs.find((n) => n.key === 'king').rewarded = true;
+      g.step(2);
+      out.hud = document.getElementById('mission').textContent;
+      const b = g.bandits.find((x) => !x.dead);
+      b.duel = true; b.pos.set(g.player.pos.x + 1, 0, g.player.pos.z);
+      g.damagePlayer(999, b);
+      out.death = document.querySelector('#gameover h1').textContent;
+      return out;
+    });
+    if (r.bad.length) throw new Error(`闲聊拼句有坏句:${r.bad.slice(0, 3).join(' | ')}`);
+    if (!/太平/.test(r.hud)) throw new Error(`通关领赏后任务栏还在催人:${r.hud}`);
+    if (!/流浪剑客/.test(r.death)) throw new Error(`败给流浪剑客,死因却写:${r.death}`);
+  },
   // 提示分级:同 key 的进度只留最新一条;同一句不排两遍;委托完成/失败/重接时排队的委托提示作废;插队的排最前
   async toasts(page) {
     await boot(page);

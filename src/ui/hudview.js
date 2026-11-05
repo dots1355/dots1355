@@ -18,7 +18,7 @@ import { wanted } from '../systems/law.js';
 import { SPELLS, shout } from '../systems/magic.js';
 import { crestsFound } from '../systems/pickups.js';
 import { prologue } from '../systems/prologue.js';
-import { canAcceptRemotely, missions, quest, questRT, stewardWhere } from '../systems/quests.js';
+import { canAcceptRemotely, mainlineLeft, missions, quest, questRT, stewardWhere } from '../systems/quests.js';
 import { playerFarFromTown, warband } from '../systems/warband.js';
 import { weather } from '../systems/weather.js';
 import { CORE, wildRegionName } from '../wilderness.js';
@@ -132,8 +132,13 @@ export function updateHUD() {
   const hearts = '❤️'.repeat(full) + (half ? '💔' : '') + '🖤'.repeat(Math.max(0, heartsMax - full - half));
   const stars = wanted > 0 ? '⭐'.repeat(wanted) + '✩'.repeat(5 - wanted) : '';
   let missionText;
-  if (prologue.on) missionText = '⚔️ 序章:击退冲进村子的狼群';
-  else if (quest.idx >= missions.length) missionText = '🏆 全部委托完成 — 去谒见领主,王国是你的了!';
+  if (prologue.on) missionText = '⚔️ 序章:击退冲进王都的狼群';
+  else if (quest.idx >= missions.length) { // 主线收尾按进度写:勋章 → 领主 → 自由探索
+    const left = mainlineLeft();
+    missionText = left === 'medal' ? '🏆 全部委托完成 —— 去喷泉广场领取 ★ 金狮勋章 ★'
+      : left === 'king' ? '🏆 全部委托完成 —— 去城堡谒见领主奥德里克领赏'
+        : '🌄 王国太平了 —— 荒野、遗迹、节庆与龙骨之地,随你去闯(M 看地图)';
+  }
   else if (!quest.active) {
     missionText = canAcceptRemotely()
       ? `📜 委托 ${quest.idx + 1}/${missions.length}:${missions[quest.idx].title} —— 信使等你 ${Math.ceil(quest.offerT)} 秒:按 E 原地接下`

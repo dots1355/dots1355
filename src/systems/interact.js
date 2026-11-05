@@ -15,7 +15,7 @@ import { dist2, resolveCollisions } from '../entities.js';
 import { scene } from '../gfx/core.js';
 import { DIALOGS, LORE } from '../story.js';
 import {
-  NPC_DESC_EN, VILLAGER_DESC_EN, dbLine, dialog, npcTalk, openDialog, witchFortune,
+  NPC_DESC_EN, VILLAGER_DESC_EN, dbLine, dialog, npcTalk, openDialog, tidy, witchFortune,
 } from '../ui/dialog.js';
 import { toast } from '../ui/toast.js';
 import { stats, unlockAch } from './achievements.js';
@@ -813,7 +813,7 @@ const INTERACTIONS = [
           ? ['听说你', '有人瞧见你', '街坊都在传,说你'][Math.floor(rand() * 3)] + deed + '。真有你的。'
           : dbLine(v.dbKey) || v.id.lines[v.lineIdx++ % v.id.lines.length];
       }
-      openDialog([`${v.id.name}:${l1}`, `${v.id.name}:${l2}`], null,
+      openDialog([`${v.id.name}:${tidy(l1)}`, `${v.id.name}:${tidy(l2)}`], null,
         { key: v.dbKey, name: v.id.name, desc: VILLAGER_DESC_EN[villagers.indexOf(v)] || 'villager', ent: v });
       if (!AI_TEXT_OFF && !v.aiPending && rand() < 0.35) {
         v.aiPending = true;

@@ -59,7 +59,7 @@ import { updateVendetta, vendetta, vendettaLetter, vendettaRead } from '../syste
 import { WARLORD_TAUNTS, spawnWarband, updateWarband, warband } from '../systems/warband.js';
 import { setWeather, weather } from '../systems/weather.js';
 import { groundH } from '../terrain.js';
-import { advanceDialog, dialog, witchFortune } from '../ui/dialog.js';
+import { advanceDialog, dbLine, dialog, witchFortune } from '../ui/dialog.js';
 import { callout, flashing, registerKill, whiteHot } from '../ui/feedback.js';
 import { dropQuestToasts, toast, toastNow, toastQuest, toastQueue } from '../ui/toast.js';
 import { CORE } from '../wilderness.js';
@@ -146,6 +146,7 @@ export function installTestHooks({ tick, systems, worldTops }) {
   getTimers: () => pendingTimers(), flashing,
   getBeacon: () => ({ x: beacon.position.x, z: beacon.position.z, v: beacon.visible }),
   toast, toastQuest, toastNow, dropQuestToasts,
+  dbLine,
   attackDown, attackUp, callout, flinch, telegraphArea, dragonAim, seedRng: seed, applyDamage,
   worldTops: () => worldTops,
   getPrompt: () => { computePrompt(); return promptText; },

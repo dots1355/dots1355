@@ -22,7 +22,7 @@ import { dayPhase } from './calendar.js';
 import { bountyRT } from './events.js';
 import { remember } from './mind.js';
 import { navNext, navPath } from './nav.js';
-import { steward } from './npcs.js';
+import { namedNPCs, steward } from './npcs.js';
 import { addPickup } from './pickups.js';
 import { prologue, setTutor } from './prologue.js';
 
@@ -94,9 +94,26 @@ export function canAcceptRemotely() {
   const nx = missions[quest.idx];
   return !!nx && !quest.active && !nx.time && quest.offerT > 0;
 }
+// 主线收尾还差什么:全部委托完成后先去喷泉广场领勋章('medal')、再去城堡见领主('king'),都办完了是 'free';
+// 主线没走完返回 null。HUD 任务栏、读档欢迎语、埃隆的话都按它写
+export function mainlineLeft() {
+  if (quest.idx < missions.length) return null;
+  if (!stats.starTaken) return 'medal';
+  const king = namedNPCs.find((n) => n.key === 'king');
+  return king && !king.rewarded ? 'king' : 'free';
+}
+export function welcomeLine() {
+  const left = mainlineLeft();
+  if (left === 'medal') return '欢迎回来,英雄!全部委托已经完成——去喷泉广场领金狮勋章,再去城堡见领主。';
+  if (left === 'king') return '欢迎回来,英雄!领主奥德里克在城堡等你领赏。';
+  if (left === 'free') return '欢迎回来,王国之友!艾尔德里亚太平了——荒野、遗迹和节庆随你去闯。';
+  if (quest.idx === 0) return '欢迎来到艾尔德里亚!去喷泉广场找管家埃隆接取委托吧(按 E 互动,光柱指路)';
+  return `欢迎回来!下一单:${missions[quest.idx].title}——去${stewardWhere()}找管家埃隆(光柱指路)`;
+}
 export function talkQuestGiver(remote = false) {
   if (quest.idx >= missions.length) {
-    toast('埃隆:王国感谢你,勇者!去见领主大人吧,他有话对你说。', 3.5);
+    toast(mainlineLeft() === 'free' ? '埃隆:领主的赏赐收到了吧?往后王国的事,也是你的事了——常回来看看。'
+      : '埃隆:王国感谢你,勇者!去见领主大人吧,他有话对你说。', 3.5);
     return;
   }
   const m = missions[quest.idx];
