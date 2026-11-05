@@ -613,6 +613,10 @@ const TESTS = {
       A.reset(); const [f] = A.foes(1); A.place(f, 0, 2, Math.PI); f.hp = 1;
       ai.startFoeMove(f, 'slash'); g.step(5); g.frightenBandits(14); g.step(1);
       out.fleeWindup = f.windupT; out.fleeSector = g.dangerFX.filter((x) => x.e === f).length;
+      // 别的路子直接把它吓跑(战团溃散直接设 fleeT):起手同样作废,跑完回头不会凭空补一刀
+      A.reset(); const [f2] = A.foes(1); A.place(f2, 0, 2, Math.PI);
+      ai.startFoeMove(f2, 'slash'); g.step(5); f2.fleeT = 0.5; g.step(1);
+      out.fleeWindup2 = f2.windupT; out.fleeSector2 = g.dangerFX.filter((x) => x.e === f2).length;
       // 6) 踉跄会晃
       A.reset(); const [w0] = A.foes(1); A.place(w0, 0, 2, Math.PI); w0.stunT = 1.5; w0.stunSrc = 'parry';
       let wob = 0; for (let i = 0; i < 20; i++) { g.step(1); wob = Math.max(wob, Math.abs(w0.group.rotation.z)); }
@@ -660,6 +664,7 @@ const TESTS = {
     if (!(r.heavyArmL < -2) || !r.heavyPurple) throw new Error(`紫圈重击应双手过顶、扇形发紫:左臂 ${r.heavyArmL}`);
     if (r.slashArmL < -1) throw new Error('红圈劈砍不该双手举刀(和紫圈分不开)');
     if (r.fleeWindup > 0 || r.fleeSector > 0) throw new Error(`吓跑后起手没收(windup ${r.fleeWindup},扇形 ${r.fleeSector})`);
+    if (r.fleeWindup2 > 0 || r.fleeSector2 > 0) throw new Error(`直接设溃逃后起手没收(windup ${r.fleeWindup2},扇形 ${r.fleeSector2})`);
     if (!(r.wobble > 0.05)) throw new Error('踉跄时身子不晃');
     if (r.wobbleAfter > 1e-6) throw new Error(`踉跄被用掉后身子还歪着:${r.wobbleAfter}`);
     if (!r.wolf.lat11 || r.wolf.lat13) throw new Error(`狼扑判定走廊应为两侧 1.2m:${JSON.stringify(r.wolf)}`);

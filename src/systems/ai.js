@@ -368,8 +368,9 @@ export function updateBandits(dt) {
       animateLimbs(b.parts, b.walkT, false, b.group, 0.5);
       continue;
     }
-    if (b.fleeT > 0) { // 溃逃:头也不回地跑,跑够了才敢回头
+    if (b.fleeT > 0) { // 溃逃:头也不回地跑,跑够了才敢回头。不管是谁把它吓跑的(士气、战团溃散……),举到一半的刀都收了
       b.fleeT -= dt;
+      if (b.windupT > 0 || b.comboN > 0) { b.windupT = 0; b.comboN = 0; b.heavyAtk = false; }
       const rx = b.pos.x - player.pos.x, rz = b.pos.z - player.pos.z;
       const rd = Math.hypot(rx, rz) || 1;
       moveEntity(b, b.pos.x + (rx / rd) * 7, b.pos.z + (rz / rd) * 7, b.speed * 1.05, dt);
