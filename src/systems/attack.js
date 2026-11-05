@@ -130,13 +130,13 @@ export function endAttack() {
   player.parts.body.rotation.y = 0;
   player._animFrom = 0;
 }
-// 举盾:按住右键。刀没落下、蓄力、翻滚、踉跄、跳劈落地硬直、骑马、拿弓时举不起来;条件一满足自动举起。
+// 举盾:按住右键。刀没落下、蓄力、翻滚、踉跄、跳劈(砸落途中与落地硬直)、骑马、拿弓时举不起来;条件一满足自动举起。
 // 弹反窗只在"真正重新举盾"时打开(见 PARRY_*):player.parryUntil 是本次举盾的弹反截止时刻(游戏时钟)
 let wasBlocking = false;
 function updateBlock() {
   const able = started && !player.dead && !player.mounted && player.weapon !== 'bow' && !dialog.open &&
     !(player.staggerT > 0) && !(player.rollT > 0) && !player.charging && !strikePending() && !player.carrying &&
-    !(player.landLagT > 0);
+    !player.plunging && !(player.landLagT > 0);
   const now = simNow();
   if (!player.blockHeld || !able) player.blocking = false;
   else if (!player.blocking) {

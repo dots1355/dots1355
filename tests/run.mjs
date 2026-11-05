@@ -430,7 +430,8 @@ const TESTS = {
       g.attackDown(); g.attackUp();
       let pq = 0;
       while (!P.plunging && pq < 60) { g.step(1); pq++; }
-      g.step(2);
+      P.blockHeld = true; g.step(2); // 砸落途中举不起盾(出招承诺)
+      out.blockInPlunge = P.blocking; P.blockHeld = false;
       g.damagePlayer(1, pf);
       while (!P.onGround && pq < 150) { g.step(1); pq++; }
       g.step(2);
@@ -505,6 +506,7 @@ const TESTS = {
     if (r.rollInLag) throw new Error('跳劈落地硬直中还能翻滚');
     if (!r.rollAfterLag) throw new Error('硬直中按的翻滚没有进缓冲');
     if (r.splash.join() !== '2,1,0') throw new Error(`跳劈应只有正面最近一人吃 2、旁人溅 1、2.6 米外不中:${r.splash}`);
+    if (r.blockInPlunge) throw new Error('跳劈砸落途中还能举盾');
     const pc = r.plungeHitCancel;
     if (pc.dmg !== 0 || pc.lag > 0 || pc.plunging) throw new Error(`半空挨打的跳劈不该再砸下来:${JSON.stringify(pc)}`);
     for (const [k, f] of Object.entries(r.facing)) {
