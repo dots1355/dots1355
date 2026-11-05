@@ -61,18 +61,19 @@ export function buildWorld(scene) {
   ground.receiveShadow = true;
   scene.add(ground);
 
+  // 城外土路不再是一块贴图平面:只登记要素(paint),由地表着色器按道路蒙版画进地面(terrain.js:逐像素贴着起伏、
+  // 两侧软边、车辙);压平蒙版、禁草、小地图、路灯都认这条要素。城内石板路仍是网格(城里地面是平的)
   function road(x1, z1, x2, z2, w = 4, cobbled = false) {
     const dx = x2 - x1, dz = z2 - z1;
     const len = Math.hypot(dx, dz);
-    const m = new THREE.Mesh(new THREE.PlaneGeometry(w, len),
-      cobbled ? texMat(TX.cobble, w / 3.2, len / 3.2, { roughness: 0.85 }) : texMat(TX.dirt, w / 4, len / 9));
+    features.push({ type: 'road', x: (x1 + x2) / 2, z: (z1 + z2) / 2, w, h: len, rot: Math.atan2(dx, dz), paint: !cobbled, x1, z1, x2, z2 });
+    if (!cobbled) return;
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(w, len), texMat(TX.cobble, w / 3.2, len / 3.2, { roughness: 0.85 }));
     m.rotation.x = -Math.PI / 2;
     m.rotation.z = -Math.atan2(dx, dz);
     m.position.set((x1 + x2) / 2, 0.02, (z1 + z2) / 2);
-    if (waterBasin(m.position.x, m.position.z) > 0.02) m.userData.noSnap = true; // 涉水的路段:贴水面,不沉到河床
     m.receiveShadow = true;
     scene.add(m);
-    feat('road', (x1 + x2) / 2, (z1 + z2) / 2, w, len, Math.atan2(dx, dz));
   }
   road(0, 58, 0, 8, 4.5, true);    // 南门→广场(城内鹅卵石)
   road(0, 2, 0, -30, 4.5, true);   // 广场→城堡
@@ -81,7 +82,8 @@ export function buildWorld(scene) {
   road(72, 0, 138, 18);            // 东门→风车(城外土路)
   road(0, 58, 0, 78);              // 南门外
   road(0, 78, 20, 92);             // →农田
-  road(-70, 0, -125, -52, 3);      // →盗贼营地方向(野径)
+  road(-70, 0, -88, -32, 3);       // →盗贼营地方向(野径):先到木桥东头
+  road(-102, -36, -125, -52, 3);   //   过桥后折向营地
 
   // 广场鹅卵石铺装
   const plazaPave = new THREE.Mesh(new THREE.CircleGeometry(13, 28),
@@ -842,7 +844,8 @@ export function buildWorld(scene) {
   coinLine(0, 60, 0, 76);
   coinLine(2, 80, 18, 90);
   coinLine(-10, 0, -62, 0);
-  coinLine(-75, -5, -120, -48, 6);
+  coinLine(-74, -6, -87, -30, 6);
+  coinLine(-104, -38, -121, -49, 6);
   for (let i = 0; i < 12; i++) {
     const a = (i / 12) * Math.PI * 2;
     coinSpots.push([Math.cos(a) * 8, 5 + Math.sin(a) * 8]);
@@ -1320,9 +1323,9 @@ export function buildWorld(scene) {
   // ---- 新增道路 ----
   road(140, 26, 168, -46, 3);   // 磨坊→石环
   road(76, 4, 80, -110, 3);     // 东门外→哨塔遗迹
-  road(-95, -36, -150, -78, 3); // 桥→要塞方向
-  road(-70, 4, -95, 40, 3);     // 西路→渔村方向
-  road(-97, 42, -100, 52, 3);
+  road(-102, -37, -150, -78, 3); // 桥西头→要塞方向
+  road(-70, 4, -86, 42, 3);      // 西路→渔村方向(沿河东岸,不涉水)
+  road(-86, 42, -88, 51, 3);
 
   // ---- 新区金币 ----
   coinLine(78, 0, 80, -104, 7);

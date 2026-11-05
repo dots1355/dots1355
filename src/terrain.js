@@ -219,7 +219,78 @@ const FLAT_SPOTS = [
   [0, 352, -280, 46, 46],     // 封印地窖迷宫
 ];
 
+// ---------------- 道路蒙版:城外土路画进地表 ----------------
+// 1 米一格覆盖核心区 [-512, 512]:R = 路面覆盖(两侧约 1 米软边、边缘随距离起伏不齐),G = 两道车辙。
+// 地表着色器按它把路面贴图混进去——路面逐像素贴着地形起伏,不再是漂着/陷着的长方片,端头自然收成圆头
+const RN = 1024;
+const roadUniforms = { uRoadMask: { value: null }, uRoadTex: { value: null } };
+function buildRoadMask(features) {
+  const data = new Uint8Array(RN * RN * 2);
+  for (const f of features) {
+    if (!f.paint) continue;
+    const { x1: ax, z1: az, x2: bx, z2: bz } = f;
+    const dx = bx - ax, dz = bz - az, L2 = dx * dx + dz * dz, L = Math.sqrt(L2);
+    const hw = f.w / 2, pad = hw + 2;
+    const i0 = Math.max(0, Math.floor(Math.min(ax, bx) - pad + 512)), i1 = Math.min(RN - 1, Math.ceil(Math.max(ax, bx) + pad + 512));
+    const j0 = Math.max(0, Math.floor(Math.min(az, bz) - pad + 512)), j1 = Math.min(RN - 1, Math.ceil(Math.max(az, bz) + pad + 512));
+    for (let j = j0; j <= j1; j++) {
+      const pz = j + 0.5 - 512;
+      for (let i = i0; i <= i1; i++) {
+        const px = i + 0.5 - 512;
+        const t = Math.max(0, Math.min(1, ((px - ax) * dx + (pz - az) * dz) / L2));
+        const d = Math.hypot(px - ax - dx * t, pz - az - dz * t);
+        if (d > pad) continue;
+        const e = hw + 0.28 * Math.sin(t * L * 0.37 + ax) + 0.22 * (vnoise(px * 0.29, pz * 0.29) - 0.5);
+        const cover = 1 - smooth(e - 0.5, e + 0.55, d);
+        const rut = Math.exp(-((d - hw * 0.42) ** 2) / 0.05) * (1 - smooth(0.2, 1, Math.abs(t - 0.5) * 2 - 0.6));
+        const k = (j * RN + i) * 2;
+        data[k] = Math.max(data[k], Math.round(cover * 255));
+        data[k + 1] = Math.max(data[k + 1], Math.round(rut * cover * 255));
+      }
+    }
+  }
+  const tex = new THREE.DataTexture(data, RN, RN, THREE.RGFormat, THREE.UnsignedByteType);
+  tex.magFilter = THREE.LinearFilter;
+  tex.minFilter = THREE.LinearFilter;
+  tex.needsUpdate = true;
+  if (roadUniforms.uRoadMask.value) roadUniforms.uRoadMask.value.dispose();
+  roadUniforms.uRoadMask.value = tex;
+}
+// 路面:压实的黄褐泥土、碎石子与浅坑(中性偏暖,颜色已含在贴图里;四边环绕重画,严格无缝)
+function makeRoadTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 256;
+  const g = c.getContext('2d');
+  g.fillStyle = '#7a6a54';
+  g.fillRect(0, 0, 256, 256);
+  let sd = 77;
+  const r = () => { sd = (sd * 16807) % 2147483647; return (sd - 1) / 2147483646; };
+  const wrap = (x, y, s, fn) => { for (const ox of [0, -256, 256]) for (const oy of [0, -256, 256]) if (x + ox > -s && x + ox < 256 + s && y + oy > -s && y + oy < 256 + s) fn(x + ox, y + oy); };
+  for (let i = 0; i < 90; i++) { // 大片深浅斑(干湿、压实程度不同)
+    const x = r() * 256, y = r() * 256, s = 14 + r() * 30, l = r() < 0.5 ? 'rgba(60,50,38,0.16)' : 'rgba(160,142,112,0.14)';
+    wrap(x, y, s, (px, py) => { g.fillStyle = l; g.beginPath(); g.ellipse(px, py, s, s * (0.5 + r() * 0.5), r() * 3, 0, Math.PI * 2); g.fill(); });
+  }
+  for (let i = 0; i < 2600; i++) { // 细土粒
+    const x = r() * 256, y = r() * 256, l = 80 + r() * 90;
+    g.fillStyle = `rgba(${l},${l * 0.88},${l * 0.7},0.35)`;
+    g.fillRect(x, y, 1 + r() * 1.5, 1 + r() * 1.5);
+  }
+  for (let i = 0; i < 220; i++) { // 碎石子:亮面 + 下沿一点影子
+    const x = r() * 256, y = r() * 256, s = 1.0 + r() * 2.0, l = 112 + r() * 52;
+    wrap(x, y, s + 2, (px, py) => {
+      g.fillStyle = 'rgba(40,32,24,0.45)'; g.beginPath(); g.ellipse(px + 0.6, py + 0.9, s, s * 0.7, 0, 0, Math.PI * 2); g.fill();
+      g.fillStyle = `rgb(${l},${l * 0.95},${l * 0.86})`; g.beginPath(); g.ellipse(px, py, s, s * 0.7, r() * 3, 0, Math.PI * 2); g.fill();
+    });
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 4;
+  return t;
+}
+
 export function buildMasks(world) {
+  buildRoadMask(world.features);
   const zone = new Uint8Array(MN * MN);
   VEG = new Uint8Array(VN * VN).fill(1);
   for (const f of world.features) {
@@ -473,8 +544,11 @@ export function getGroundMaterial(normalMap) {
   groundMat.userData.shared = true;
   // 冬季积雪:平地先白,陡坡露土
   groundMat.userData.uSnow = { value: 0 };
+  if (!roadUniforms.uRoadTex.value) roadUniforms.uRoadTex.value = makeRoadTexture();
   groundMat.onBeforeCompile = (sh) => {
     sh.uniforms.uSnow = groundMat.userData.uSnow;
+    sh.uniforms.uRoadMask = roadUniforms.uRoadMask;
+    sh.uniforms.uRoadTex = roadUniforms.uRoadTex;
     bindSurfaceUniforms(sh);
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', '#include <common>\nvarying vec3 vSfW;')
@@ -482,17 +556,25 @@ export function getGroundMaterial(normalMap) {
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', `#include <common>
         uniform float uSnow;
+        uniform sampler2D uRoadMask, uRoadTex;
         ${SURFACE_UNIFORMS_GLSL}
         varying vec3 vSfW;
         ${NOISE_GLSL}
         ${PUDDLE_GLSL}`)
       .replace('#include <color_fragment>', `#include <color_fragment>
+        // 城外土路(道路蒙版,见 buildRoadMask):路面贴图 + 车辙压暗,软边混进草地
+        vec2 rdUv = (vSfW.xz + 512.0) / 1024.0;
+        vec2 rdM = (rdUv.x > 0.0 && rdUv.x < 1.0 && rdUv.y > 0.0 && rdUv.y < 1.0) ? texture2D(uRoadMask, rdUv).rg : vec2(0.0);
+        if (rdM.r > 0.004) {
+          vec3 rdCol = texture2D(uRoadTex, vSfW.xz * 0.23).rgb * (1.0 - 0.3 * rdM.g);
+          diffuseColor.rgb = mix(diffuseColor.rgb, rdCol, rdM.r * 0.96);
+        }
         float snowK = uSnow * smoothstep(0.82, 0.96, normalize(vNormal).y);
         diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.86, 0.9, 0.95), snowK);
         // 雨天:泥土整体压暗,平地上积出水洼(见 gfx/surface.js;积雪处不积水)
         diffuseColor.rgb *= 1.0 - 0.24 * uWet;
         ${PUDDLE_COLOR}
-        sfPud *= 1.0 - snowK;`)
+        sfPud *= (1.0 - snowK) * mix(0.35, 1.0, rdM.r);`) // 水洼积在路面上,草地上少得多
       .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
         roughnessFactor = mix(roughnessFactor, 0.42, uWet * 0.7);
         ${PUDDLE_ROUGH}`)
