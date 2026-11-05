@@ -18,7 +18,7 @@ import { stats, unlockAch } from './achievements.js';
 import { bandits, guards, wolves } from './actors.js';
 import { calendar, dayPhase } from './calendar.js';
 import { cam } from './camera.js';
-import { applyDamage, faceNearestFoe } from './combat.js';
+import { TARGET_KINDS, applyDamage, faceNearestFoe } from './combat.js';
 import { awakenDragon, dragonRT } from './dragon.js';
 import { keys, midHeld } from './input.js';
 import { remember } from './mind.js';
@@ -55,18 +55,18 @@ export function cycleSpell() {
   sfx.equip();
   toast(`${SPELLS[k].icon} ${SPELLS[k].name}`, 1.2);
 }
-// 范围爆破:火球命中点的 AoE(打卫兵照样算犯罪)
-// src:'player'(默认,火球/火油罐)或环境伤害(如 'dragon'):环境伤害不进连杀、不算卫兵罪行
+// 范围爆破:火球命中点的 AoE(打卫兵/村民照样算犯罪)。候选来自受击目标注册表 combat.TARGET_KINDS,
+// 各类目标怎么挨炸由注册表决定。src:'player'(默认,火球/火油罐)或环境伤害(如 'dragon'):
+// 环境伤害不进连杀、不算你的罪,也不牵连卫兵、村民、鹿和鸡;0 伤害的冲击只推敌人
 export function explodeAt(x, z, dmg = 3, radius = 3.4, src = 'player') {
-  const env = src !== 'player';
   cam.shake = Math.max(cam.shake, 0.35);
   sfx.stomp();
   spawnDust(x, 0.5, z, 16, radius * 0.5, 2.2);
-  // 卫兵不受龙息之类的环境爆炸牵连,也不会因此通缉你
-  for (const list of env ? [bandits, wolves] : [bandits, wolves, guards]) {
-    for (const e of list) {
-      if (e.dead || e.downT > 0 || dist2(x, z, e.pos.x, e.pos.z) > radius * radius) continue;
-      applyDamage(e, dmg, { source: env ? 'env' : 'player', knock: 1.2, crit: true, crime: 2, crimeMsg: '你的火球炸到了卫兵!' });
+  for (const T of TARGET_KINDS) {
+    if (!T.hostile && dmg <= 0) continue;
+    for (const e of T.list()) {
+      if (!T.alive(e) || dist2(x, z, e.pos.x, e.pos.z) > radius * radius) continue;
+      T.blast(e, dmg, src);
     }
   }
 }
@@ -272,7 +272,9 @@ export function castSpell() {
 }
 export function updateMagic(dt) {
   if (player.castT > 0) player.castT -= dt;
-  const regen = 0.32 * (player.homeDay === calendar.day ? 1.5 : 1) * (player.blessT > 0 ? 1.4 : 1);
+  // 法力回复:自家安眠 ×1.5、庇佑 ×1.4;屠龙战中龙息激荡 ×2(大火球不至于十几秒才一发)
+  const regen = 0.32 * (player.homeDay === calendar.day ? 1.5 : 1) * (player.blessT > 0 ? 1.4 : 1) *
+    (dragonRT.on && dragonRT.hp > 0 ? 2 : 1);
   player.mp = Math.min(player.maxMp, player.mp + regen * dt);
   if (shout.cd > 0) shout.cd -= dt;
   // 按住连发:R/中键压住不放,魔光弹按冷却节奏一发接一发(只限魔光弹,别把治愈术的蓝烧干)

@@ -64,8 +64,8 @@ core/state.js  core/frame.js  core/rng.js  core/timers.js  core/timefx.js  core/
 | `systems/actors.js` | 实体名单与生成(`addHorse/addGuard/addBandit/addWolf`)、开局常住人口与荒野生成钩子 `initActors`、退场 `retireEntity/retireProp`、远距休眠 `entFar`、通用移动与人形/马的动作 |
 | `systems/player.js` | 玩家:`spawnPlayer`、每帧移动/骑乘/潜行/踩踏、翻滚、扒窃、人群软碰撞、挨打 `damagePlayer` 与倒下 `gameOver`、派生属性、脱战回血/庇佑倒计时/深水规则/落地回弹 |
 | `systems/attack.js` | 玩家出招状态机:轻击/蓄力重击/弓/飞刀、输入缓冲、格挡;伤害在判定帧由 `combat.meleeSweep` 结算 |
-| `systems/combat.js` | 统一伤害结算 `applyDamage(target, n, { source })` 与按身份的死亡结算、近战横扫、受击打断、起手预警扇形、锁定、士气、刀光、战斗音乐 |
-| `systems/ai.js` | 卫兵/劫匪/盗贼/狼/村民/马的每帧行为 |
+| `systems/combat.js` | 统一伤害结算 `applyDamage(target, n, { source })` 与按身份的死亡结算、**受击目标注册表 `TARGET_KINDS`**(近战/箭/爆炸/踩踏共用的候选与各自结算)、近战横扫、受击打断、起手预警(扇形/走廊,锚定起手站位)、锁定、连杀与白热、士气、刀光、战斗音乐 |
+| `systems/ai.js` | 卫兵/劫匪/盗贼/狼/村民/马的每帧行为;卫兵与盗贼共用近战出招库 `FOE_MOVES`(起手→末段跟步突进→按锚定预警判定),盗贼的反骑兵 |
 | `systems/projectiles.js` | 箭、魔光弹、火球、飞刀共用的投射物表与命中 |
 | `systems/magic.js` | 法术、冰霜留痕、技艺熟练度、潜行、龙吼、体力花销 |
 | `systems/gear.js` | 武器/护甲表与外观、铁匠铺商店 |
@@ -98,7 +98,7 @@ core/state.js  core/frame.js  core/rng.js  core/timers.js  core/timefx.js  core/
 | --- | --- |
 | `ui/toast.js` | 分档的顶部提示条队列(委托 > 一般 > 氛围,插队 `toastNow`);氛围提示的"忙不忙"由 `setAmbientGate` 登记 |
 | `ui/dialog.js` | 对话组合引擎 `dbLine`、多页对话面板、追问、AI 肖像、闲聊气泡 |
-| `ui/feedback.js` | 伤害数字与战斗浮字、连杀、倒地动画、实例级受击闪白、击退、残血红晕 |
+| `ui/feedback.js` | 伤害数字与战斗浮字、连杀条的显示(规则在 combat.js)、倒地动画、实例级受击闪白、击退、残血红晕 |
 | `ui/hudview.js` | HUD 刷新(签名串比对,没变不碰 DOM)、技能栏、操作说明、区域名 |
 | `ui/hud.js` | HUD 图标(内联 SVG)与 `richText` |
 | `ui/maps.js` | 小地图与 M 键全图(经 `ctx.mapView()` 取快照,不持有玩法状态) |
@@ -183,6 +183,10 @@ tick(dt, now) ── drainInput()          输入先入队,在这里按发生顺
 - 轻点/按住:`attackDown/attackUp/updateAttackInput`——松手出轻击,按住蓄力,松手重击。
 - 伤害:**所有**对敌伤害走 `applyDamage(target, n, { source })`。`source` 决定算不算你的罪、进不进你的连杀
   (`player` / `companion` / `env` / `foe`);死亡按身份统一结算(`killWolf` / `slayBandit` / `downGuard`)。
+- 受击目标:近战横扫、箭/法弹/飞刀、爆炸、踩踏都从 `TARGET_KINDS`(卫兵/盗贼/狼/鹿/鸡/村民)取候选,每类自带四种伤害源的结算;
+  新加一种可受击的东西只登记这一处(`hitMatrix` 用例锁着 4×6 的结果与犯罪/连杀/任务副作用)。
+- 敌人出招:起手时铺开的预警(扇形或走廊)就是判定范围,锚在起手站位、半径含末段突进;起手最后 40% 轻击打不断;
+  紫色 = 破盾(弹不开、挡下也吃满伤害)。弹反窗口 150ms,一次弹反只换一次处决(精英/首领处决封顶最大血量 35%)。
 - 受击:`flinch` 打断起手并给短暂霸体;精英只吃重击。处决基准伤害作为 `meleeSweep` 的参数传入。
 
 ### 5. 交互
@@ -219,7 +223,8 @@ npm test       # tests/run.mjs:起静态服务器 + 无头 Chromium,用 __gtm.st
 node tests/run.mjs boot save   # 只跑挑出来的用例
 ```
 覆盖:启动、贴地、受击闪白隔离、远近分级与玩法可见性互不覆盖、环境伤害、近战结算、符文立石判定帧、后期链不黑屏、
-出招时序/蓄力/打断、战斗规则(缓冲/朝向/挨打打断/弹反)、序章教学流程、伤害来源×目标矩阵、交互与提示同源、
+出招时序/蓄力/打断、战斗规则(缓冲/朝向/挨打打断/弹反)、招式规则(跳劈/移动出刀朝向/翻滚缓冲)、防御规则(弹反窗/连点/处决/紫圈)、
+敌人出招(预警=判定/突进/霸体/紫圈架势/狼扑走廊/扎马)、霜龙(俯冲航线/追踪冰息/落地爪尾)、序章教学流程、伤害来源×目标矩阵(含 4×6 受击矩阵)、交互与提示同源、
 上马优先/对话自动收起/光柱、生命上限、城墙寻路、存档往返与坏档保护、**主循环系统表顺序**、**单文件打包版能开局并存档往返**。
 CI 见 `.github/workflows/ci.yml`。
 

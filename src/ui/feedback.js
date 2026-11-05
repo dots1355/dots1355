@@ -1,11 +1,10 @@
-// 打击反馈:伤害数字与战斗浮字(showDamage/callout,屏幕投影的 DOM 池)、连杀计数与白热(registerKill/whiteHot)、
-// 倒地动画(startFall)、受击闪白(实例级:首次受击把材质克隆为私有,flashEntity/flashing)、受击弹跳与击退(hitFX)、残血红晕与心跳。
-// 主循环驱动:updateFlashes、updateKnockback、updateDamageNums、updateCombo、updateFalls、updateLowHp。
+// 打击反馈:伤害数字与战斗浮字(showDamage/callout,屏幕投影的 DOM 池)、连杀条的显示(showCombo/hideCombo;
+// 连杀规则在 systems/combat.js)、倒地动画(startFall)、受击闪白(实例级:首次受击把材质克隆为私有,flashEntity/flashing)、
+// 受击弹跳与击退(hitFX)、残血红晕与心跳。主循环驱动:updateFlashes、updateKnockback、updateDamageNums、updateFalls、updateLowHp。
 import * as THREE from 'three';
 import { groundH } from '../terrain.js';
 import { colliders, player } from '../core/state.js';
 import { camera } from '../gfx/core.js';
-import { stats, unlockAch } from '../systems/achievements.js';
 import { sfx } from '../audio.js';
 import { hitStop } from '../core/timefx.js';
 import { spawnDust } from '../systems/weather.js';
@@ -46,6 +45,7 @@ export function callout(text, kind = 'gold', pos = null) {
   d.p.set(at.x, (at.y || 0) + (pos ? 2.2 : 2.5) + groundH(at.x, at.z), at.z);
 }
 export function updateDamageNums(dt) {
+  if (comboPopT > 0) { comboPopT -= dt; if (comboPopT <= 0) comboEl.style.transform = 'translateX(-50%) scale(1)'; }
   for (const d of dmgPool) {
     if (d.t <= 0) { d.el.style.display = 'none'; continue; }
     d.t -= dt;
@@ -59,42 +59,16 @@ export function updateDamageNums(dt) {
   }
 }
 
-let comboN = 0, comboT = 0;
-export function registerKill() {
-  stats.kills = (stats.kills || 0) + 1;
-  if (stats.kills >= 100) unlockAch('slayer');
-  comboT = 4;
-  comboN++;
-  sfx.kill();
-  hitStop(0.09);
-  if (comboN >= 2) {
-    sfx.combo(Math.min(comboN, 8));
-    const el = document.getElementById('combo');
-    el.textContent = `${comboN} 连杀!`;
-    el.style.opacity = 1;
-    el.style.transform = 'translateX(-50%) scale(1.3)';
-    setTimeout(() => { el.style.transform = 'translateX(-50%) scale(1)'; }, 120);
-  }
-  // 连杀里程碑:越杀越勇
-  if (comboN === 3) callout('三连杀!', 'gold');
-  else if (comboN === 5) {
-    callout('势不可挡!体力回满', 'gold');
-    player.sta = player.maxSta;
-    sfx.fanfare();
-  } else if (comboN === 8) {
-    callout('一骑当千!剑光化金', 'gold');
-    unlockAch('rampage');
-    sfx.fanfare();
-  }
+// 连杀条:只管显示(连杀几、弹一下、熄灭);计数与里程碑规则在 systems/combat.js 的 registerKill
+const comboEl = document.getElementById('combo');
+let comboPopT = 0;
+export function showCombo(n) {
+  comboEl.textContent = `${n} 连杀!`;
+  comboEl.style.opacity = 1;
+  comboEl.style.transform = 'translateX(-50%) scale(1.3)';
+  comboPopT = 0.12;
 }
-// 白热:八连杀燃起的状态,连杀窗口内攻速 +28%、剑光化金,断了连杀就熄
-export const whiteHot = () => comboN >= 8 && comboT > 0;
-export function updateCombo(dt) {
-  if (comboT > 0) {
-    comboT -= dt;
-    if (comboT <= 0) { comboN = 0; document.getElementById('combo').style.opacity = 0; }
-  }
-}
+export function hideCombo() { comboEl.style.opacity = 0; }
 
 const fallAnims = [];
 export function startFall(e) { e.group.rotation.x = 0; fallAnims.push({ e, t: 0.32 }); }

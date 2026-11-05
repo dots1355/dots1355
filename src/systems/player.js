@@ -25,9 +25,8 @@ import {
 import { cancelCharge, consumeParry, endAttack, inParryWindow, playerShield, strikePending } from './attack.js';
 import { calendar } from './calendar.js';
 import { cam } from './camera.js';
-import { combatCalmT, lockFoe, meleeSweep, swingTrail } from './combat.js';
+import { TARGET_KINDS, combatCalmT, lockFoe, meleeSweep, swingTrail } from './combat.js';
 import { dragonRT } from './dragon.js';
-import { chickens, pokeChicken } from './fauna.js';
 import { ARMORS, WEAPONS } from './gear.js';
 import { keys } from './input.js';
 import { clearWanted, crime, wanted } from './law.js';
@@ -349,40 +348,28 @@ export function updatePlayer(dt) {
   }
 }
 
-let lastStompAt = -1e9; // 连环踩踏成就的计时(游戏时钟,不进存档)
+// 踩踏(马里奥式):落地时脚下有可受击的目标就踩上去弹起来;踩中谁、什么后果由受击目标注册表决定
+// (敌人晕 1.5 秒、卫兵还算犯罪、鸡记仇、村民被踩翻也是罪)。两秒内连踩两次 = 弹簧靴成就
+let lastStompAt = -1e9; // 游戏时钟,不进存档
 function checkStomp() {
-  const tryStomp = (list, isGuard) => {
-    for (const e of list) {
-      if (e.downT > 0 || e.dead || e.stunT > 0) continue;
-      if (dist2(player.pos.x, player.pos.z, e.pos.x, e.pos.z) < 1.3) {
-        e.stunT = 5; e.stunSrc = 'other';
-        player.vy = 7.5;
-        player.onGround = false;
-        player.jumps = 1;
-        sfx.stomp();
-        if (simNow() - lastStompAt < 2000) unlockAch('bouncer');
-        lastStompAt = simNow();
-        spawnDust(e.pos.x, 0.3, e.pos.z, 6, 0.8, 1.6);
-        toast(isGuard ? '踩晕了卫兵!' : '踩晕了敌人!', 1.5);
-        if (isGuard) crime(1);
-        return true;
-      }
-    }
-    return false;
-  };
-  // 踩到鸡:弹起 + 拉仇恨
-  for (const c of chickens) {
-    if (c === player.carrying || c.state === 'thrown') continue;
-    if (dist2(player.pos.x, player.pos.z, c.pos.x, c.pos.z) < 1.1) {
-      pokeChicken(c);
+  for (const T of TARGET_KINDS) {
+    if (!T.stomp) continue;
+    const r2 = T.stompR2 || 1.3;
+    for (const e of T.list()) {
+      if (!T.alive(e) || (e.stunT || 0) > 0) continue;
+      if (dist2(player.pos.x, player.pos.z, e.pos.x, e.pos.z) >= r2) continue;
+      T.stomp(e);
       player.vy = 7.5;
       player.onGround = false;
       player.jumps = 1;
       sfx.stomp();
+      if (simNow() - lastStompAt < 2000) unlockAch('bouncer');
+      lastStompAt = simNow();
+      spawnDust(e.pos.x, 0.3, e.pos.z, 6, 0.8, 1.6);
       return true;
     }
   }
-  return tryStomp(guards, true) || tryStomp(bandits, false) || tryStomp(wolves, false);
+  return false;
 }
 
 export function doRoll() {

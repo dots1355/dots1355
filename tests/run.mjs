@@ -595,6 +595,75 @@ const TESTS = {
     if (!r.wolfRect || Math.abs(r.wolfRect.len - 5.4) > 1e-6 || Math.abs(r.wolfRect.width - 2.4) > 1e-6) throw new Error(`狼扑预警应为 5.4×2.4 的长条:${JSON.stringify(r.wolfRect)}`);
     if (r.braceDmg !== 2) throw new Error(`疾驰冲进举刀扎马的盗贼应挨 2 下,实际 ${r.braceDmg}`);
   },
+  // 霜龙:俯冲的贴地航线长条 = 判定(头 5 米半空段不判、横偏出 2.6 米不判);冰息追着人砸(站着不动必挨);
+  // 空中两招间隔 3~5 秒;落地爪击能用盾挡、龙尾横扫(紫环)挡不住
+  async dragon(page) {
+    await boot(page);
+    await installArena(page);
+    const r = await page.evaluate(async () => {
+      const g = window.__gtm, P = g.player, d = g.dragonRT, out = {};
+      const dm = await import('/src/systems/dragon.js');
+      g.setTime(0.9);
+      const SX = g.DRAGON_SKULL.x, SZ = g.DRAGON_SKULL.z;
+      const fresh = () => {
+        if (d.on && d.ent) g.scene.remove(d.ent.group);
+        d.on = false; g.awakenDragon();
+        Object.assign(P, { hp: P.maxHp, invulnT: 0, blocking: false, blockHeld: false, staggerT: 0, sta: P.maxSta, dead: false });
+      };
+      // 1) 俯冲:龙从 (SX-20, SZ) 沿 +X 扑向 (SX, SZ),冲过 6 米
+      const swoop = (along, lat) => {
+        fresh();
+        d.ent.group.position.set(SX - 20, 10, SZ); d.phase = 'circle';
+        P.pos.set(SX, 0, SZ);
+        d.swoopsLeft = 1; dm.beginSwoopWind(0.05);
+        const strip = g.dangerFX.find((f) => f.rect && !f.watch);
+        const hp0 = P.hp;
+        for (let i = 0; i < 120 && d.phase !== 'circle'; i++) { P.pos.set(SX - 20 + along, 0, SZ + lat); P.invulnT = 0; g.step(1); }
+        return { hit: hp0 - P.hp > 0, strip: strip ? { x: +(strip.e.pos.x - SX).toFixed(2), len: +strip.range.toFixed(2), w: strip.width } : null };
+      };
+      out.swoop = { on10: swoop(10, 0), side29: swoop(10, 2.9), side24: swoop(10, 2.4), dive3: swoop(3, 0), past24: swoop(24, 0), past29: swoop(29, 0) };
+      // 2) 冰息:人站着不动 → 至少挨一下;第二团的圈跟到人挪过去的新位置
+      fresh();
+      d.ent.group.position.set(SX, 9, SZ - 15); d.phase = 'breath'; d.t = 2; d.breathN = 0; d.breathT = 0;
+      P.pos.set(SX, 0, SZ); const hp1 = P.hp;
+      g.step(2);
+      const ring1 = g.dangerFX.filter((f) => f.fixed).map((f) => [f.e.pos.x, f.e.pos.z]).pop();
+      P.pos.set(SX + 8, 0, SZ); g.step(1);
+      let ring2 = null;
+      for (let i = 0; i < 40 && !ring2; i++) { g.step(1); P.pos.set(SX + 8, 0, SZ); const rs = g.dangerFX.filter((f) => f.fixed); if (rs.length >= 2) ring2 = [rs[rs.length - 1].e.pos.x, rs[rs.length - 1].e.pos.z]; }
+      P.pos.set(SX, 0, SZ);
+      for (let i = 0; i < 90; i++) { g.step(1); }
+      out.breath = { ring1: ring1 && [+(ring1[0] - SX).toFixed(1), +(ring1[1] - SZ).toFixed(1)], ring2: ring2 && [+(ring2[0] - SX).toFixed(1), +(ring2[1] - SZ).toFixed(1)], hurtStanding: hp1 - P.hp };
+      for (let i = 0; i < 120 && d.phase === 'breath'; i++) g.step(1);
+      out.gap = d.phase === 'circle' ? +d.t.toFixed(2) : null;
+      // 3) 落地:爪击正面举盾挡得住(只扣体力);龙尾横扫举盾也挡不住
+      const landHit = (claw) => {
+        fresh();
+        d.ent.group.position.set(SX, 0, SZ); d.ent.group.rotation.set(0, 0, 0);
+        d.phase = 'land'; d.t = 7; d.landDmg = 0; d.atkT = 0; d.landAtk = null; d.nextClaw = claw;
+        P.pos.set(SX, 0, SZ + 3); P.yaw = Math.PI; P.blockHeld = true; P.parryReadyAt = 1e12; // 只举盾,不弹反
+        const hp0 = P.hp, sta0 = P.sta;
+        for (let i = 0; i < 70; i++) { P.pos.set(SX, 0, SZ + 3); P.yaw = Math.PI; g.step(1); }
+        P.blockHeld = false;
+        return { hurt: hp0 - P.hp, sta: +(sta0 - P.sta).toFixed(1) };
+      };
+      out.claw = landHit(true); out.tail = landHit(false);
+      if (d.on && d.ent) g.scene.remove(d.ent.group);
+      d.on = false;
+      return out;
+    });
+    const s = r.swoop;
+    if (!s.on10.hit || !s.side24.hit || !s.past24.hit) throw new Error(`站在俯冲航线长条里没挨:${JSON.stringify(s)}`);
+    if (s.side29.hit || s.dive3.hit || s.past29.hit) throw new Error(`长条外(横偏 2.9 / 半空段 / 航线尽头外)也挨了:${JSON.stringify(s)}`);
+    const st = s.on10.strip;
+    if (!st || Math.abs(st.x - -15) > 0.01 || Math.abs(st.len - 23.6) > 0.01 || st.w !== 5.2) throw new Error(`俯冲预警长条尺寸不对:${JSON.stringify(st)}`);
+    const b = r.breath;
+    if (!(b.hurtStanding >= 2)) throw new Error(`站着不动没挨冰息:${JSON.stringify(b)}`);
+    if (!b.ring2 || Math.abs(b.ring2[0] - 8) > 1.5) throw new Error(`冰息没有追着人砸:${JSON.stringify(b)}`);
+    if (!(r.gap >= 2.4 && r.gap <= 5)) throw new Error(`空中两招间隔应为 3~5 秒(半血后 ×0.8),实际 ${r.gap}`);
+    if (r.claw.hurt !== 0 || !(r.claw.sta > 0)) throw new Error(`龙爪应能被正面举盾挡下:${JSON.stringify(r.claw)}`);
+    if (!(r.tail.hurt >= 2)) throw new Error(`龙尾横扫(紫环)不该被盾挡住:${JSON.stringify(r.tail)}`);
+  },
   // 序章教学:锁定 → 翻滚 → 格挡 → 出刀 → 魔光弹 → 清场;做到才进下一步,结束回满血并送马
   async prologue(page) {
     await boot(page, { start: false });
@@ -653,6 +722,75 @@ const TESTS = {
     if (!r.compDead || r.compKill !== 0) throw new Error(`伙伴击杀结算不对:${JSON.stringify(r)}`);
     if (r.playerKill !== 1) throw new Error('亲手击杀没有进连杀');
     if (!(r.playerWanted > 0)) throw new Error('你伤到卫兵却没有通缉');
+  },
+  // 受击目标注册表:近战/箭/爆炸/踩踏 × 卫兵/盗贼/狼/鹿/鸡/村民,每一格都打得到,副作用(犯罪、连杀、任务进度)锁死
+  async hitMatrix(page) {
+    await boot(page);
+    await installArena(page);
+    const r = await page.evaluate(async () => {
+      const g = window.__gtm, A = window.__arena, P = g.player;
+      const law = await import('/src/systems/law.js'), fauna = await import('/src/systems/fauna.js');
+      const X = 0, Z = 180;
+      const wolf = g.wolves.find((w) => !w._prol), deer = g.deers[0], hen = g.chickens.find((c) => !c.extra);
+      const vil = g.villagers[0], gd = g.guards[0];
+      g.setTime(0.45); // 白天:村民不回家睡觉
+      const qi = g.missions.findIndex((m) => m.type === 'bandits');
+      // 每一格:把目标摆在玩家正前方(每帧钉住,免得走开/逃开),施加伤害源,看结果
+      const setups = {
+        guard: () => { Object.assign(gd, { downT: 0, stunT: 0, hp: 3, wantedHit: false, windupT: 0, state: 'patrol' }); return gd; },
+        bandit: () => { const [b] = A.foes(1); b.hp = 1; b.ambient = false; return b; },
+        wolf: () => { Object.assign(wolf, { dead: false, hp: 1, stunT: 0, hitStunT: 0, biteT: 0, lunging: 0, attackCd: 99, lungeCd: 99, respawnT: 1e9, raidTarget: null, _hold: false }); wolf.group.visible = true; return wolf; },
+        deer: () => { Object.assign(deer, { dead: false, hp: 1, fleeT: 0 }); deer.group.visible = true; return deer; },
+        chicken: () => { Object.assign(hen, { state: 'idle', timer: 99 }); return hen; },
+        villager: () => { Object.assign(vil, { downT: 0, sleeping: false, fleeT: 0, timer: 99 }); vil.group.visible = true; vil.group.rotation.x = 0; return vil; },
+      };
+      const outcome = (kind, e) => kind === 'chicken' ? e.state === 'flee'
+        : kind === 'deer' ? (e.dead || e.fleeT > 1.5)
+          : kind === 'villager' ? e.downT > 0
+            : kind === 'guard' ? (e.hp < 3 || e.stunT > 0 || e.downT > 0)
+              : (e.dead || e.stunT > 0);
+      const sources = {
+        melee: () => { P.weapon = 'sword'; P.attackT = 0; P.strike = null; g.tryAttack(); return 30; },
+        arrow: () => { P.weapon = 'bow'; P.attackT = 0; g.tryAttack(); return 50; },
+        blast: (e) => { g.explodeAt(e.pos.x, e.pos.z, 2, 1.5); return 2; },
+        stomp: () => { P.pos.set(X, 1.2, Z + 1.6); P.vy = -6; P.onGround = false; return 20; },
+      };
+      const out = {};
+      for (const [src, fire] of Object.entries(sources)) {
+        for (const [kind, setup] of Object.entries(setups)) {
+          A.reset(); law.clearWanted();
+          g.quest.active = true; g.quest.idx = qi; g.quest.progress = 0; g.quest.timer = 0;
+          const e = setup();
+          const at = src !== 'arrow' ? 1.6 : kind === 'chicken' ? 16 : 3.5; // 箭要飞出十五六米才掉到鸡的高度
+          const pin = () => { e.pos.set(X, 0, Z + at); if (e.group) e.group.position.copy(e.pos); };
+          pin(); P.yaw = 0; g.step(1); pin();
+          const k0 = g.stats.kills || 0;
+          const n = fire(e);
+          for (let i = 0; i < n; i++) { g.step(1); if (!(e.dead || e.downT > 0)) pin(); }
+          out[`${src}:${kind}`] = { hit: outcome(kind, e), wanted: g.getWanted(), kills: (g.stats.kills || 0) - k0, quest: g.quest.progress };
+          P.weapon = 'sword';
+          e.pos.set(X + 80 + Object.keys(out).length * 3, 0, Z + 80); // 挪开,别让下一格的刀/箭/爆炸顺带打到它
+          if (e.group) e.group.position.copy(e.pos);
+          if (kind === 'chicken') { fauna.startChickenRiot(0.001); g.step(1); } // 鸡记的仇清零(连戳三次会招来复仇鸡群,混进下一格)
+        }
+      }
+      g.quest.active = false;
+      law.clearWanted();
+      return out;
+    });
+    const bad = [];
+    for (const [cell, o] of Object.entries(r)) {
+      const [src, kind] = cell.split(':');
+      const reach = cell !== 'stomp:deer'; // 鹿是大个子,踩不上去
+      if (o.hit !== reach) bad.push(`${cell} ${reach ? '没打到' : '不该踩得到'}`);
+      const wantCrime = kind === 'guard' || kind === 'villager';
+      if (wantCrime !== (o.wanted > 0)) bad.push(`${cell} 犯罪不对(通缉 ${o.wanted})`);
+      const kills = src !== 'stomp' && (kind === 'bandit' || kind === 'wolf') ? 1 : 0;
+      if (o.kills !== kills) bad.push(`${cell} 连杀计数应 +${kills},实际 +${o.kills}`);
+      const quest = src !== 'stomp' && kind === 'bandit' ? 1 : 0;
+      if (o.quest !== quest) bad.push(`${cell} 委托进度应 +${quest},实际 +${o.quest}`);
+    }
+    if (bad.length) throw new Error(bad.join(';'));
   },
   // 交互与提示同源:提示说什么,按 E 就做什么(且提示本身不产生副作用)
   async interact(page) {

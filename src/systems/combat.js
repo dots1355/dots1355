@@ -14,7 +14,7 @@ import { later, simNow } from '../core/timers.js';
 import { dist2, resolveCollisions } from '../entities.js';
 import { scene } from '../gfx/core.js';
 import { pooledMat, releaseMat } from '../gfx/pools.js';
-import { callout, hitFX, registerKill, showDamage, startFall, whiteHot } from '../ui/feedback.js';
+import { callout, hideCombo, hitFX, showCombo, showDamage, startFall } from '../ui/feedback.js';
 import { dropQuestToasts, toast, toastQuest } from '../ui/toast.js';
 import { stats, unlockAch } from './achievements.js';
 import { choreProgress } from './activities.js';
@@ -283,8 +283,42 @@ export function updateCombatMusic(dt) {
   combatCalmT = hot ? 4 : Math.max(0, combatCalmT - dt);
   setCombatMusic(combatCalmT > 0, (warband.active && warband.siege) || dragonRT.on); // 屠龙也配战鼓
 }
+// ================= 连杀(玩法规则;连杀条的显示在 ui/feedback.js) =================
+// 进你连杀的击杀(伙伴/环境击杀不算)每次续 4 秒:二连起计数,三连浮字,五连"势不可挡"回满体力,
+// 八连"一骑当千"白热(出刀更快、剑光化金);窗口过了就断。全部按游戏时钟结算(updateCombo 在主循环里)
+export const killStreak = { n: 0, t: 0 };
+export function registerKill() {
+  stats.kills = (stats.kills || 0) + 1;
+  if (stats.kills >= 100) unlockAch('slayer');
+  killStreak.t = 4;
+  killStreak.n++;
+  sfx.kill();
+  hitStop(0.09);
+  const n = killStreak.n;
+  if (n >= 2) { sfx.combo(Math.min(n, 8)); showCombo(n); }
+  // 连杀里程碑:越杀越勇
+  if (n === 3) callout('三连杀!', 'gold');
+  else if (n === 5) {
+    callout('势不可挡!体力回满', 'gold');
+    player.sta = player.maxSta;
+    sfx.fanfare();
+  } else if (n === 8) {
+    callout('一骑当千!剑光化金', 'gold');
+    unlockAch('rampage');
+    sfx.fanfare();
+  }
+}
+// 白热:八连杀燃起的状态,连杀窗口内攻速 +28%、剑光化金,断了连杀就熄
+export const whiteHot = () => killStreak.n >= 8 && killStreak.t > 0;
+export function updateCombo(dt) {
+  if (killStreak.t > 0) {
+    killStreak.t -= dt;
+    if (killStreak.t <= 0) { killStreak.n = 0; hideCombo(); }
+  }
+}
 // ================= 士气(骑砍式):血腥震慑,残兵溃逃 =================
-let streakN = 0, streakT = 0;
+// 6 秒内(游戏时钟)连斩三名盗贼:附近的盗贼胆寒溃逃
+const morale = { n: 0, at: -1e9 };
 export function frightenBandits(radius = 14, except = null) {
   let fled = 0;
   for (const o of bandits) {
@@ -313,13 +347,13 @@ export function banditSlain(b) {
     remember(`阵斩战团枭首,夺下第 ${stats.banners} 面军旗`, `banner-${stats.banners}`);
     refreshTrophies(); // 军旗直接挂上家里的战利品墙
   }
-  const now = performance.now();
-  streakN = (now - streakT < 6000) ? streakN + 1 : 1;
-  streakT = now;
-  if (streakN >= 3) {
-    streakN = 0;
+  const now = simNow();
+  morale.n = now - morale.at < 6000 ? morale.n + 1 : 1;
+  morale.at = now;
+  if (morale.n >= 3) {
+    morale.n = 0;
     if (frightenBandits() > 0) {
-      toast('😱 连杀震慑:附近的盗贼胆寒溃逃!', 2.5);
+      callout('连杀震慑:附近的盗贼胆寒溃逃!', 'gold');
       sfx.warn();
     }
   }
@@ -492,6 +526,95 @@ function strikeRuneStones(range, arcDot) {
   }
   callout('符文碎光 +5 金币', 'blue', { x: b.x, y: b.y + 1.2, z: b.z });
 }
+// ================= 受击目标注册表 =================
+// 近战横扫(meleeSweep)、箭/法弹/飞刀(projectiles)、爆炸(magic.explodeAt)、踩踏(player.checkStomp)都从这一张表取候选:
+// 新加一种目标只登记一处,不会再有"某种伤害源打不到某种目标"的漏网(曾经剑砍不到村民和鹿)。
+// 每类:名单 list()、敌对 hostile(近战按敌对优先占刀数、挨打会被打断起手)、能否挨打 alive(e)、箭/踩踏的判定尺寸,
+// 以及四种伤害源各自的结算 melee(e, h) / arrow(e, a, dmg) / blast(e, dmg, src) / stomp(e)(没有 = 这种伤害源够不着它)。
+// 罪责、连杀、任务进度、掉落仍由 applyDamage / killDeer / pokeChicken / hurtVillager 统一结算。
+const STOMP_STUN = 1.5; // 踩头:晕一下(不开处决)
+const aliveFoe = (e) => !e.dead && !(e.downT > 0);
+function stunFoe(e) { e.stunT = Math.max(e.stunT || 0, STOMP_STUN); e.stunSrc = 'other'; e.windupT = 0; e.braceT = 0; }
+function hurtVillager(v, downT, crimeN, msg) {
+  v.downT = downT;
+  v.group.rotation.x = -Math.PI / 2;
+  sfx.hit();
+  crime(crimeN, msg);
+}
+export const TARGET_KINDS = [
+  { kind: 'guard', hostile: true, list: () => guards, alive: aliveFoe,
+    melee(g, h) { const n = h.execDmg(g); sfx.hitMetal(); if (!applyDamage(g, n, { knock: h.knock })) g.state = 'chase'; },
+    arrow(g, a, dmg) { sfx.hit(); if (!applyDamage(g, dmg, { knock: 0.4, crit: false, crimeMsg: '你放箭射击卫兵!' })) g.state = 'chase'; },
+    blast(g, dmg, src) { // 龙息之类的环境爆炸不牵连卫兵,也不会因此通缉你
+      if (src === 'player') applyDamage(g, dmg, { knock: 1.2, crit: true, crime: 2, crimeMsg: '你的火球炸到了卫兵!' });
+    },
+    stomp(g) { stunFoe(g); callout('踩晕了卫兵!', 'red', g.pos); crime(1); } },
+  { kind: 'bandit', hostile: true, list: () => bandits, alive: aliveFoe,
+    melee: (b, h) => banditMelee(b, h),
+    arrow(b, a, dmg) {
+      // 战术演化:被射多了的匪帮学会侧身闪箭(贴脸射/法术/飞刀不受影响)
+      if (!a.mag && !a.knife && rand() < EVO.tactics.dodge * 0.45) { showDamage(b.pos, 0); hitFX(b, 0.15); return; }
+      sfx.hit();
+      if (applyDamage(b, dmg, { knock: 0.4, crit: false })) EVO.kills.arrow++;
+      else flinch(b, false); // 箭/法弹也能打断起手
+    },
+    blast(b, dmg, src) { applyDamage(b, dmg, { source: src === 'player' ? 'player' : 'env', knock: 1.2, crit: true }); },
+    stomp(b) { stunFoe(b); callout('踩晕了!', 'gold', b.pos); } },
+  { kind: 'wolf', hostile: true, list: () => wolves, alive: aliveFoe,
+    melee(w, h) { const n = h.execDmg(w); sfx.hitFlesh(); applyDamage(w, n, { knock: h.knock }); }, // 砍进皮肉闷声
+    arrow(w, a, dmg) { sfx.hit(); if (!applyDamage(w, dmg, { knock: 0.4, crit: false })) flinch(w, false); },
+    blast(w, dmg, src) { applyDamage(w, dmg, { source: src === 'player' ? 'player' : 'env', knock: 1.2, crit: true }); },
+    stomp(w) { stunFoe(w); callout('踩晕了!', 'gold', w.pos); } },
+  { kind: 'deer', hostile: false, list: () => deers, alive: (d) => !d.dead,
+    melee(d) { sfx.hitFlesh(); killDeer(d); },
+    arrow(d) { sfx.hit(); killDeer(d); },
+    blast(d, dmg, src) { if (src === 'player') killDeer(d); } }, // 鹿是大个子,踩不上去(没有 stomp)
+  // 鸡不会死,但它们会记住你
+  { kind: 'chicken', hostile: false, list: () => chickens, arrowR2: 0.5, arrowY: [-1, 1], stompR2: 1.1,
+    alive: (c) => c !== player.carrying && c.state !== 'thrown',
+    melee: (c) => pokeChicken(c), arrow: (c) => pokeChicken(c),
+    blast(c, dmg, src) { if (src === 'player') pokeChicken(c); },
+    stomp: (c) => pokeChicken(c) },
+  { kind: 'villager', hostile: false, list: () => villagers, alive: (v) => !(v.downT > 0) && !v.sleeping,
+    melee(v) { hurtVillager(v, 10, 2, '你袭击了村民!这是重罪!'); },
+    arrow(v) { hurtVillager(v, 10, 2, '你射伤了村民!这是重罪!'); },
+    blast(v, dmg, src) { if (src === 'player') hurtVillager(v, 10, 2, '你的火球炸伤了村民!这是重罪!'); },
+    stomp(v) { hurtVillager(v, 4, 1, '你一脚踩翻了村民!'); } },
+];
+// 刀砍在盗贼身上:学来的格挡、处决、破防/截击都在这里
+function banditMelee(b, h) {
+  const winding = b.windupT > 0; // 正在起手:下劈/重击砸上去能破架
+  const guarding = h.dmg > 0 && !(b.stunT > 0) && rand() < EVO.tactics.block * 0.5; // 战术演化:学会了举盾
+  // 举盾挡下:轻刀被格开;破架的招(下劈/重击)照样砸开
+  if (guarding && !h.gb && h.dmg < 3) {
+    sfx.clank();
+    hitFX(b, h.knock * 0.3);
+    showDamage(b.pos, 0);
+    callout('被格挡', 'dim', b.pos);
+    return;
+  }
+  const n = h.execDmg(b);
+  sfx.hit();
+  if (b.boss && b.hp - n <= 0) toast('⚔️ 血斧巴罗克倒下了!黑石兄弟会土崩瓦解!', 5);
+  if (applyDamage(b, n, { knock: b.boss ? h.knock * 0.4 : h.knock })) { // 统一结算(连杀/村务/军旗/任务/掉落)
+    EVO.kills.melee++;
+    // 近战击杀的犒赏:血少时必掉一颗心,平时两成——换血不能白换
+    if (player.hp <= player.maxHp * 0.3 || rand() < 0.2) addPickup('heart', b.pos.x, b.pos.z + 1, 30);
+    return;
+  }
+  if (b.stunT > 0 || b === h.execTarget) return; // 刚被处决的这一刀不再顺手破防
+  if (h.gb === 'full') { // 满蓄重击:盾开人晃,处决窗口大开
+    b.stunT = 1.2;
+    b.stunSrc = 'break';
+    sfx.clank();
+    callout('破防!再砍=处决', 'gold', b.pos);
+  } else if (h.gb === 'counter' && (winding || guarding)) { // 下劈截在起手上/砸在盾上:破架,留一个空档
+    b.stunT = 0.6;
+    b.stunSrc = 'counter';
+    sfx.clank();
+    callout(winding ? '截击!' : '破架!', 'gold', b.pos);
+  }
+}
 // 处决封顶:精英/首领一次处决最多掉最大血量的 35%——Boss 战至少要两三次弹反或破防
 const EXEC_ELITE_CAP = 0.35;
 // 近战横扫判定:普通挥击与蓄力重击共用(dmg/范围/角度/击退可调),在出招的判定帧调用。
@@ -501,99 +624,53 @@ export function meleeSweep(dmg, range, arcDot, knock, opts = {}) {
   const fx = Math.sin(player.yaw), fz = Math.cos(player.yaw);
   const maxHits = opts.maxHits ?? 3;
   const heavy = !!opts.heavy;
-  const gb = opts.guardBreak || null; // 'full' 满蓄重击:必破防(可处决);'counter' 下劈/半蓄:砸在起手中或举盾的人身上才破架
-  // 处决:只对"弹反"或"满蓄重击破防"造成的踉跄出手 = ×5 终结,一刀只处决一人;处决用掉这次踉跄
-  // (一次弹反只换一次处决)。盾击/冰霜/战吼/下劈破架的踉跄只是空档,不开处决
-  let executed = false, execTarget = null;
   const execBase = opts.execBase || dmg; // 处决基准:出招方带入的无乘区伤害(不含偷袭乘区)
   const rearOf = (e) => opts.rearDmg !== undefined &&
     ((e.pos.x - player.pos.x) * fx + (e.pos.z - player.pos.z) * fz) < 0;
-  // 先收集刀锋范围内的目标,按远近只取前 maxHits 个:一刀不再横扫半条街
+  // 这一刀的结算上下文。gb:'full' 满蓄重击必破防(可处决);'counter' 下劈/半蓄砸在起手中或举盾的人身上才破架。
+  // 处决:只对"弹反"或"满蓄重击破防"造成的踉跄出手 = ×5 终结,一刀只处决一人;处决用掉这次踉跄
+  // (一次弹反只换一次处决)。盾击/冰霜/战吼/下劈破架的踉跄只是空档,不开处决
+  const h = { dmg, knock, gb: opts.guardBreak || null, execTarget: null,
+    execDmg(e) {
+      if (dmg > 0 && !h.execTarget && e.stunT > 0.3 && (e.stunSrc === 'parry' || e.stunSrc === 'break')) {
+        h.execTarget = e;
+        e.stunT = 0; // 踉跄就此用掉:再砍就是普通的一刀
+        e.stunSrc = '';
+        // 处决按基础伤害 ×5 结算(偷袭 ×3 不叠上去);精英/首领封顶最大血量的 35%
+        const n = execBase * 5;
+        return isElite(e) ? Math.min(n, Math.max(1, Math.round((e.maxHp || e.hp) * EXEC_ELITE_CAP))) : n;
+      }
+      const base = rearOf(e) ? Math.min(dmg, opts.rearDmg) : dmg;
+      const bs = base > 0 ? backstabMul(e) : 1;
+      if (bs > 1) callout('背刺 ×1.5', 'gold', e.pos);
+      return Math.round(base * bs);
+    } };
+  // 候选:注册表里刀锋范围内的目标——敌对的优先占刀数(砍盗贼时旁边的鸡、村民不抢刀),同类按远近,最多 maxHits 个;
+  // 不伤人的推挤(盾击)只对敌人
   const cand = [];
-  for (const list of [guards, bandits, wolves]) {
-    for (const e of list) {
-      if (e.downT > 0 || e.dead) continue;
+  for (const T of TARGET_KINDS) {
+    if (!T.hostile && dmg <= 0) continue;
+    for (const e of T.list()) {
+      if (!T.alive(e)) continue;
       const dx = e.pos.x - player.pos.x, dz = e.pos.z - player.pos.z;
       const d = Math.hypot(dx, dz);
-      if (d < range && (dx * fx + dz * fz) / (d || 1) > arcDot) cand.push({ e, d });
+      if (d < range && (dx * fx + dz * fz) / (d || 1) > arcDot) cand.push({ e, T, d });
     }
   }
-  cand.sort((a, b) => a.d - b.d);
-  const hitSet = new Set(cand.slice(0, maxHits).map((c) => c.e));
-  const execDmg = (e) => {
-    if (dmg > 0 && !executed && e.stunT > 0.3 && (e.stunSrc === 'parry' || e.stunSrc === 'break')) {
-      executed = true;
-      execTarget = e;
-      e.stunT = 0; // 踉跄就此用掉:再砍就是普通的一刀
-      e.stunSrc = '';
-      // 处决按基础伤害 ×5 结算(偷袭 ×3 不叠上去);精英/首领封顶最大血量的 35%
-      const n = execBase * 5;
-      return isElite(e) ? Math.min(n, Math.max(1, Math.round((e.maxHp || e.hp) * EXEC_ELITE_CAP))) : n;
+  cand.sort((a, b) => (b.T.hostile - a.T.hostile) || (a.d - b.d));
+  for (const { e, T } of cand.slice(0, maxHits)) {
+    if (!T.alive(e)) continue;
+    T.melee(e, h);
+    if (e === h.execTarget && !e.dead && !(e.downT > 0)) {
+      // 处决后没死:晃一下缓过神(0.5 秒),之后一段霸体——别想趁势轻刀连控
+      e.hitStunT = Math.max(e.hitStunT || 0, 0.5);
+      e.armorT = Math.max(e.armorT || 0, 1.2);
+      e.windupT = 0;
+      continue;
     }
-    const base = rearOf(e) ? Math.min(dmg, opts.rearDmg) : dmg;
-    const bs = base > 0 ? backstabMul(e) : 1;
-    if (bs > 1) callout('背刺 ×1.5', 'gold', e.pos);
-    return Math.round(base * bs);
-  };
-  // 处决后没死:晃一下缓过神(0.5 秒),之后一段霸体——别想趁势轻刀连控
-  const recoverFromExec = (e) => {
-    if (e !== execTarget || e.dead || e.downT > 0) return false;
-    e.hitStunT = Math.max(e.hitStunT || 0, 0.5);
-    e.armorT = Math.max(e.armorT || 0, 1.2);
-    e.windupT = 0;
-    return true;
-  };
-  const hitOne = (list, onHit) => {
-    for (const e of list) {
-      if (!hitSet.has(e) || e.downT > 0 || e.dead) continue;
-      onHit(e);
-      if (recoverFromExec(e)) continue;
-      if (!e.dead && !(e.downT > 0) && dmg > 0) flinch(e, heavy);
-    }
-  };
-  hitOne(guards, (g) => {
-    const dmg = execDmg(g);
-    sfx.hitMetal(); // 砍在甲上叮当响
-    if (!applyDamage(g, dmg, { knock })) g.state = 'chase';
-  });
-  hitOne(bandits, (b) => {
-    const winding = b.windupT > 0; // 正在起手:下劈/重击砸上去能破架
-    const guarding = dmg > 0 && !(b.stunT > 0) && rand() < EVO.tactics.block * 0.5; // 战术演化:学会了举盾
-    // 举盾挡下:轻刀被格开;破架的招(下劈/重击)照样砸开
-    if (guarding && !gb && dmg < 3) {
-      sfx.clank();
-      hitFX(b, knock * 0.3);
-      showDamage(b.pos, 0);
-      callout('被格挡', 'dim', b.pos);
-      return;
-    }
-    const dmg2 = execDmg(b);
-    sfx.hit();
-    if (b.boss && b.hp - dmg2 <= 0) toast('⚔️ 血斧巴罗克倒下了!黑石兄弟会土崩瓦解!', 5);
-    if (applyDamage(b, dmg2, { knock: b.boss ? knock * 0.4 : knock })) { // 统一结算(连杀/村务/军旗/任务/掉落)
-      EVO.kills.melee++;
-      // 近战击杀的犒赏:血少时必掉一颗心,平时两成——换血不能白换
-      if (player.hp <= player.maxHp * 0.3 || rand() < 0.2) addPickup('heart', b.pos.x, b.pos.z + 1, 30);
-      return;
-    }
-    if (b.stunT > 0 || b === execTarget) return; // 刚被处决的这一刀不再顺手破防
-    if (gb === 'full') { // 满蓄重击:盾开人晃,处决窗口大开
-      b.stunT = 1.2;
-      b.stunSrc = 'break';
-      sfx.clank();
-      callout('破防!再砍=处决', 'gold', b.pos);
-    } else if (gb === 'counter' && (winding || guarding)) { // 下劈截在起手上/砸在盾上:破架,留一个空档
-      b.stunT = 0.6;
-      b.stunSrc = 'counter';
-      sfx.clank();
-      callout(winding ? '截击!' : '破架!', 'gold', b.pos);
-    }
-  });
-  hitOne(wolves, (w) => {
-    const dmg3 = execDmg(w);
-    sfx.hitFlesh(); // 砍进皮肉闷声
-    applyDamage(w, dmg3, { knock });
-  });
+    if (T.hostile && !e.dead && !(e.downT > 0) && dmg > 0) flinch(e, heavy);
+  }
+  const execTarget = h.execTarget, executed = !!execTarget;
   if (executed) { // 处决演出:时停 + 震屏 + 镜头急推;目击者胆寒;按武器各有终结技
     hitStop(0.22);
     cam.shake = Math.max(cam.shake, 0.45);
@@ -628,20 +705,6 @@ export function meleeSweep(dmg, range, arcDot, knock, opts = {}) {
     stats.executions = (stats.executions || 0) + 1;
     if (stats.executions >= 10) unlockAch('executioner');
   }
-  hitOne(deers, (d) => {
-    sfx.hitFlesh();
-    killDeer(d);
-  });
-  // 鸡不会死,但它们会记住你
-  hitOne(chickens, (c) => {
-    if (c.state !== 'thrown' && c !== player.carrying) pokeChicken(c);
-  });
-  hitOne(villagers, (v) => {
-    if (v.downT > 0) return;
-    v.downT = 10; v.group.rotation.x = -Math.PI / 2;
-    sfx.hit();
-    crime(2, '你袭击了村民!这是重罪!');
-  });
   // 落地喘息的霜龙:近战窗口
   if (dragonRT.on && dragonRT.hp > 0 && dragonRT.phase === 'land' && dmg > 0) {
     const gp = dragonRT.ent.group.position;
