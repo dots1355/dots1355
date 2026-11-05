@@ -156,6 +156,7 @@ const PHOTO_HIDE = ['hearts', 'coins', 'equip', 'wanted', 'mission', 'region', '
   'stamina', 'lockhp', 'bosshp', 'save-icon', 'actionbar', 'keyhint'];
 export function togglePhoto() {
   photoMode = !photoMode;
+  document.body.classList.toggle('photo', photoMode); // 技能栏/提示等由 CSS 统一藏(index.html 的 body.photo)
   for (const id of PHOTO_HIDE) {
     const el = document.getElementById(id);
     if (el) el.style.visibility = photoMode ? 'hidden' : '';

@@ -95,6 +95,10 @@ export function buildWorld(scene) {
 
   // ---- 城墙(矩形 x:-70..70, z:-55..55,南门/东门开口)----
   const wallMat = texMat(TX.stone, 1.2, 1.2, { roughness: 0.92 });
+  // 基座/扶壁:按面朝向做平面投影 UV(米),石块大小与墙身一致(以前 140m 的基座共用 1.2 倍平铺,被拉成横条)
+  const wallTile = texMat(TX.stone, 1 / 4.4, 1 / 4.4, { color: 0xc8c2b8, roughness: 0.92 });
+  const stoneBoxGeo = (w, h, d) => { const g = new THREE.BoxGeometry(w, h, d).toNonIndexed(); g.deleteAttribute('uv'); planarUV(g); return g; };
+  const BUTTRESS_GEO = { h: stoneBoxGeo(1.1, 4.2, 1.5), v: stoneBoxGeo(1.5, 4.2, 1.1) };
   function wallRun(x1, z1, x2, z2) {
     const dx = x2 - x1, dz = z2 - z1;
     const len = Math.hypot(dx, dz);
@@ -117,8 +121,7 @@ export function buildWorld(scene) {
       scene.add(merlon);
     }
     // 底部收分基座(墙脚外扩,天际城墙的厚重感)
-    const plinth = new THREE.Mesh(
-      new THREE.BoxGeometry(horizontal ? len : 2.6, 1.4, horizontal ? 2.6 : len), wallMat);
+    const plinth = new THREE.Mesh(stoneBoxGeo(horizontal ? len : 2.6, 1.4, horizontal ? 2.6 : len), wallTile);
     plinth.position.set((x1 + x2) / 2, 0.7, (z1 + z2) / 2);
     plinth.receiveShadow = true;
     scene.add(plinth);
@@ -128,7 +131,7 @@ export function buildWorld(scene) {
       const t = i / bn;
       const bx = x1 + dx * t, bz = z1 + dz * t;
       const out = horizontal ? Math.sign(z1) : Math.sign(x1); // 朝城外
-      const but = new THREE.Mesh(new THREE.BoxGeometry(horizontal ? 1.1 : 1.5, 4.2, horizontal ? 1.5 : 1.1), wallMat);
+      const but = new THREE.Mesh(horizontal ? BUTTRESS_GEO.h : BUTTRESS_GEO.v, wallTile);
       but.position.set(bx + (horizontal ? 0 : out * 1.4), 2.1, bz + (horizontal ? out * 1.4 : 0));
       but.castShadow = true;
       scene.add(but);

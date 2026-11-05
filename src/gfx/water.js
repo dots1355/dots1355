@@ -79,7 +79,9 @@ const FRAG = `
     vec3 sky = mix(uSkyHor, uSkyTop, pow(clamp(R.y, 0.0, 1.0), 0.6));
     float dk = 1.0 - exp(-depth * uMurk);
     vec3 light = uSkyHor * 0.42 + uSkyTop * 0.18 + uSunCol * max(uSunDir.y, 0.0) * 0.5;
-    vec3 body = mix(uShallow, uDeep, dk) * light;
+    // 浅水底:细沙纹 + 斑驳(水下不再透出 4m 地形网格的三角明暗)
+    vec3 shallowC = uShallow * (0.86 + 0.22 * wNoise(p * 1.6 + flow * 0.2) + 0.08 * sin(p.x * 3.1 + wNoise(p * 0.7) * 6.0));
+    vec3 body = mix(shallowC, uDeep, dk) * light;
     vec3 col = mix(body, sky, fres * 0.85);
     col += uSunCol * pow(max(dot(R, uSunDir), 0.0), 260.0) * 2.4 * (1.0 - uRain * 0.75) * (1.0 - uIce);
     // 岸边泡沫:最浅的一条带,碎成斑驳
@@ -88,7 +90,7 @@ const FRAG = `
     // 浮萍:成片的小绿点
     float duck = uDuck * smoothstep(0.52, 0.64, wNoise(p * 0.32 + 4.0)) * smoothstep(0.42, 0.72, wNoise(p * 4.3)) * (0.75 + 0.25 * wNoise(p * 11.0));
     col = mix(col, vec3(0.16, 0.21, 0.07) * light * 1.15, duck);
-    float alpha = smoothstep(0.0, 0.7, depth) * mix(0.55, 0.94, dk);
+    float alpha = smoothstep(0.0, 0.32, depth) * mix(0.8, 0.95, dk);
     alpha = max(alpha, fres * 0.9 * smoothstep(0.0, 0.12, depth));
     alpha = max(alpha, max(duck, foam * 0.7) * smoothstep(0.0, 0.05, depth));
     // 冰面:不透明的蓝白冰,浅色裂纹与积雪斑
@@ -143,6 +145,7 @@ export function waterMaterial(kind = 'lake', normalTex = null) {
     fog: true,
   });
   m.userData.isWater = true;
+  m.userData.shared = true; // 同类水面全场一份(荒野区块卸载时不能把它释放)
   mats[kind] = m;
   return m;
 }

@@ -169,19 +169,37 @@ function buildGeometries() {
     }
   });
   // ---- 作物(农田/菜园,见 buildCropMesh):麦丛 / 卷心菜 / 葱韭 ----
-  GEO.wheat = makeGeo((api) => { // 麦:细直茎 + 顶端麦穗(穗不随实例色,保持金黄)
-    for (let i = 0; i < 7; i++) {
-      const a = (i / 7) * Math.PI * 2 + r() * 0.5, h = 0.78 + r() * 0.22;
-      blade(api, a, h, 0.035, 0.12 + r() * 0.1, 2, 0.55, 0.95, 0.03);
+  GEO.wheat = makeGeo((api) => { // 麦:细直茎 + 顶端饱满的纺锤形麦穗(六棱、带芒,微微低头;穗不随实例色,保持金黄)
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2 + r() * 0.5, h = 0.78 + r() * 0.22;
+      blade(api, a, h, 0.03, 0.12 + r() * 0.1, 2, 0.55, 0.95, 0.03);
       const ox = Math.cos(a) * (0.03 + 0.17 * h * 0.5), oz = Math.sin(a) * (0.03 + 0.17 * h * 0.5);
-      const y0 = h * 0.86, y1 = h * 1.08, w2 = 0.026;
-      const b = api.v(ox - w2, y0, oz, 0, 1, 0, 0.82, 0.66, 0.34, 0.9, 0);
-      const c = api.v(ox + w2, y0, oz, 0, 1, 0, 0.82, 0.66, 0.34, 0.9, 0);
-      const d = api.v(ox, y1, oz + 0.004, 0, 1, 0, 0.92, 0.78, 0.44, 1, 0);
-      api.tri(b, c, d);
-      const e = api.v(ox, y0, oz - w2, 0, 1, 0, 0.8, 0.64, 0.32, 0.9, 0);
-      const f = api.v(ox, y0, oz + w2, 0, 1, 0, 0.8, 0.64, 0.32, 0.9, 0);
-      api.tri(e, f, d);
+      const nod = 0.05 + r() * 0.04; // 穗头朝外垂一点
+      const tx = Math.cos(a) * nod, tz = Math.sin(a) * nod;
+      const y0 = h * 0.8, ym = h * 0.92, y1 = h * 1.06, R = 0.024 + r() * 0.006;
+      const ring = (y, k, rad, sh) => {
+        const out = [];
+        for (let j = 0; j < 6; j++) {
+          const b = (j / 6) * Math.PI * 2;
+          const nx = Math.cos(b), nz = Math.sin(b);
+          out.push(api.v(ox + tx * k + nx * rad, y, oz + tz * k + nz * rad, nx, 0.4, nz, 0.86 * sh, 0.7 * sh, 0.36 * sh, 0.85 + 0.15 * k, 0));
+        }
+        return out;
+      };
+      const A = ring(y0, 0, R * 0.55, 0.85), B = ring(ym, 0.55, R, 1.0);
+      const tip = api.v(ox + tx, y1, oz + tz, 0, 1, 0, 0.95, 0.82, 0.48, 1, 0);
+      for (let j = 0; j < 6; j++) {
+        const j2 = (j + 1) % 6;
+        api.tri(A[j], B[j], B[j2]); api.tri(A[j], B[j2], A[j2]);
+        api.tri(B[j], tip, B[j2]);
+      }
+      // 两根麦芒
+      for (const s2 of [-1, 1]) {
+        const b0 = api.v(ox + tx - 0.004 * s2, y1 - 0.02, oz + tz, 0, 1, 0, 0.9, 0.8, 0.5, 1, 0);
+        const b1 = api.v(ox + tx + 0.004 * s2, y1 - 0.02, oz + tz, 0, 1, 0, 0.9, 0.8, 0.5, 1, 0);
+        const b2 = api.v(ox + tx * 1.6 + 0.02 * s2, y1 + 0.07, oz + tz * 1.6, 0, 1, 0, 0.92, 0.84, 0.56, 1, 0);
+        api.tri(b0, b1, b2);
+      }
     }
   });
   GEO.cabbage = makeGeo((api) => { // 卷心菜:一圈外翻宽叶 + 中心叶球

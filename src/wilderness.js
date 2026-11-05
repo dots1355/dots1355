@@ -6,7 +6,8 @@ import * as THREE from 'three';
 import { lambert, addCircles, removeCircles } from './entities.js';
 import { buildTree, buildPine, buildDeadTree, buildCactus, buildRock, buildBush, natureProp, natureSpec,
   buildNatureInstances, releaseNatureInstances, warmNatureTemplate, NIGHT_GLOW } from './flora.js';
-import { dominantBiome, groundH, buildGroundMesh, getGroundMaterial, GRID } from './terrain.js';
+import { dominantBiome, groundH, buildGroundMesh, getGroundMaterial, GRID, vnoise } from './terrain.js';
+import { waterMesh, polarWaterGeo } from './gfx/water.js';
 import { plainStandard, vpbrMaterial, bakeVPBRSteps } from './gfx/vpbr.js';
 
 export const CHUNK = 128;
@@ -98,16 +99,16 @@ function addRock(g, rng, x, z, cols) {
 
 // ---- 群系地标:每块按群系撒 Blender 地标(期望个数),让每片荒野一眼可辨 ----
 export const LANDMARKS = {
-  plains: [['Outcrop1', 0.35], ['Outcrop2', 0.3], ['Bush1', 0.9], ['Bush2', 0.8], ['Log', 0.25], ['Stump', 0.25]],
+  plains: [['Outcrop1', 0.35], ['Outcrop2', 0.3], ['Bush1', 0.9], ['Bush2', 0.8], ['Log', 0.25], ['Stump', 0.25], ['Haystack', 0.2]],
   forest: [['Log', 0.8], ['Stump', 0.7], ['Bush1', 1.2], ['Bush2', 1.0], ['Outcrop2', 0.35], ['DeadTree1', 0.2]],
   hills: [['Outcrop1', 0.7], ['Outcrop2', 0.6], ['Bush2', 0.6], ['Stump', 0.2]],
   desert: [['Mesa', 0.55], ['Ribcage', 0.12], ['DeadTree2', 0.35], ['Outcrop2', 0.2]],
-  snow: [['IceRock', 0.8], ['DeadTree1', 0.35], ['Outcrop1', 0.3]],
+  snow: [['IceRock', 1.2], ['Crag1', 0.3], ['Crag2', 0.25], ['DeadTree1', 0.45], ['Log', 0.3], ['Outcrop1', 0.4]], // 冰碛石、雪顶岩、枯木
   swamp: [['Willow', 1.4], ['DeadTree1', 0.6], ['DeadTree2', 0.5], ['Log', 0.5], ['Stump', 0.4], ['Bush2', 0.5]],
   ash: [['Spires', 0.9], ['DeadTree2', 0.6], ['DeadTree1', 0.4], ['Ribcage', 0.12]],
   rock: [['Outcrop1', 0.8], ['Outcrop2', 0.8], ['Spires', 0.4], ['Stump', 0.15]],
 };
-export const BIG_PROP = { Mesa: 1, Outcrop1: 1, Outcrop2: 1, IceRock: 1, Spires: 1 };
+export const BIG_PROP = { Mesa: 1, Outcrop1: 1, Outcrop2: 1, IceRock: 1, Spires: 1, Crag1: 1, Crag2: 1 };
 // 放一件地标;返回是否放成。insts 给了就只记放置参数交给实例化(随机数消耗与克隆版一致),
 // 否则克隆一份真网格挂到 parent 上(需要单独摆弄的,比如翻倒的货车)
 export function placeLandmark(parent, rng, name, x, z, cols, colList, yaw = null, insts = null) {
@@ -178,13 +179,46 @@ function* chunkJob(cx, cz) {
   g.add(buildGroundMesh(baseX, baseZ, CHUNK, getGroundMaterial()));
   yield;
 
+  // 茂密林海:抖动网格撒 250~300 棵实例化的 Blender 树(松为主,橡、桦穿插),林窗噪声留出几片空地;
+  // 实例块离镜头远了自动换成树冠团(flora.js 的树 LOD),几百棵树也画得起。林下另有灌木/蕨/蘑菇(vegetation.js)
+  if (biome === 'forest') {
+    const C = 7;
+    for (let gx = 0; gx < CHUNK; gx += C) {
+      for (let gz = 0; gz < CHUNK; gz += C) {
+        const x = baseX + gx + rng() * C, z = baseZ + gz + rng() * C;
+        if (vnoise(x / 37 + 3.3, z / 37 - 1.7) < 0.24) continue; // 林窗
+        const r = rng();
+        placeLandmark(g, rng, r < 0.7 ? 'Tree_pine' : r < 0.88 ? 'Tree_oak' : 'Tree_birch', x, z, cols, null, null, insts);
+      }
+      if (gx % 28 === 0) yield;
+    }
+  } else if (biome === 'plains' && rng() < 0.65) {
+    // 苍绿平原:一两道树篱(成排灌木,隔一段一棵橡树),把空旷的草地切成田块
+    for (let k = 0, n = 1 + Math.floor(rng() * 2); k < n; k++) {
+      const a = rng() * Math.PI, len = 26 + rng() * 22;
+      const sx = baseX + 20 + rng() * (CHUNK - 40), sz = baseZ + 20 + rng() * (CHUNK - 40);
+      const dx = Math.cos(a), dz = Math.sin(a);
+      for (let t = -len / 2; t <= len / 2; t += 1.7) {
+        if (rng() < 0.08) continue; // 树篱里的缺口
+        const x = sx + dx * t + (rng() - 0.5) * 0.5, z = sz + dz * t + (rng() - 0.5) * 0.5;
+        const tree = Math.abs(((t + len / 2) % 12) - 6) < 0.85 && rng() < 0.7;
+        placeLandmark(g, rng, tree ? 'Tree_oak' : rng() < 0.5 ? 'Bush1' : 'Bush2', x, z, cols, null, null, insts);
+      }
+    }
+    yield;
+  }
   // 植被密度按群系
-  const treeN = biome === 'forest' ? 30 + Math.floor(rng() * 12) // 茂密林海:名副其实(林下另有灌木/蕨/蘑菇,见 vegetation.js)
+  const treeN = biome === 'forest' ? 4 + Math.floor(rng() * 4) // 林海的主林分已实例化(见上),这里只添几丛灌木/枯树的零碎
     : biome === 'plains' || biome === 'hills' ? 3 + Math.floor(rng() * 4)
     : biome === 'swamp' ? 5 + Math.floor(rng() * 4)
+    : biome === 'snow' ? 12 + Math.floor(rng() * 8) // 白霜旷野:两三片积雪的松林,不再是一片白地
     : 3 + Math.floor(rng() * 3);
+  const groves = biome === 'snow' ? [0, 1, 2].map(() => [baseX + 16 + rng() * (CHUNK - 32), baseZ + 16 + rng() * (CHUNK - 32)]) : null;
   for (let i = 0; i < treeN; i++) {
-    addTree(g, rng, baseX + rng() * CHUNK, baseZ + rng() * CHUNK, biome, cols);
+    if (groves) { // 成片:围着林心长,越外越稀
+      const [gx, gz] = groves[i % groves.length], a = rng() * Math.PI * 2, d = Math.sqrt(rng()) * 15;
+      addTree(g, rng, gx + Math.cos(a) * d, gz + Math.sin(a) * d, biome, cols);
+    } else addTree(g, rng, baseX + rng() * CHUNK, baseZ + rng() * CHUNK, biome, cols);
     if (i % 4 === 3) yield;
   }
   const rockN = 1 + Math.floor(rng() * 3);
@@ -385,6 +419,32 @@ function* chunkJob(cx, cz) {
       g.add(c);
     }
     for (let i = 0; i < 5; i++) drop(px + (rng() - 0.5) * 5, pz + (rng() - 0.5) * 5);
+  } else if (roll < 0.66 && biome === 'snow') {
+    // 冻湖:一汪冰面,冰缘一圈冰碛石,湖边一棵枯树
+    const R = 7 + rng() * 5;
+    const iceGeo = polarWaterGeo(px, pz, (a) => R * (1 + 0.12 * Math.sin(3 * a + R) + 0.07 * Math.sin(5 * a)), { margin: 0, rings: 6, segs: 40 });
+    const ip = iceGeo.attributes.position;
+    for (let i = 0; i < ip.count; i++) ip.setY(i, groundH(ip.getX(i), ip.getZ(i)) + 0.05); // 冰面顺着雪地铺(荒野没有挖好的湖盆)
+    const lake = waterMesh(iceGeo, 'ice', { depth: 0.6 });
+    lake.userData.isGround = true; // 顶点已是绝对高度:不再按中心点地面高抬一次
+    g.add(lake);
+    for (let i = 0; i < 9; i++) {
+      const a = (i / 9) * Math.PI * 2 + rng() * 0.4;
+      prop(i % 3 ? 'IceRock' : 'Outcrop1', px + Math.cos(a) * (R + 2 + rng() * 2), pz + Math.sin(a) * (R + 2 + rng() * 2));
+    }
+    prop('DeadTree1', px + R + 4, pz - 2);
+    drop(px + R + 1, pz + 1);
+  } else if (roll < 0.66 && biome === 'plains') {
+    // 农庄遗址:草垛、水井、一段篱笆与半截残墙
+    prop('Haystack', px - 3, pz + 2);
+    prop('Haystack', px - 5.5, pz - 1.5);
+    prop('Well', px + 3, pz - 2);
+    prop('Fence', px + 1, pz + 5, 0);
+    prop('Fence', px + 5.2, pz + 5.2, 0.15);
+    prop('Ruin', px - 2, pz - 7, Math.PI * 0.1);
+    prop('Cart', px + 6, pz + 1);
+    drop(px, pz);
+    drop(px + 2, pz + 2);
   } else if (roll < 0.69 && biome !== 'snow') {
     // 商队残骸:翻倒的货车 + 散落钱箱 + 一个劫道的
     if (prop('Cart', px, pz, null, true)) {
@@ -475,7 +535,7 @@ function* chunkJob(cx, cz) {
   let inst = null;
   if (insts.length) {
     for (const name of new Set(insts.map((p) => p.name))) if (warmNatureTemplate(name)) yield;
-    inst = buildNatureInstances(insts);
+    inst = buildNatureInstances(insts, CHUNK); // 一块一格:同种地标一块只画一次
     g.add(inst);
     yield;
   }

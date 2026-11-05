@@ -149,8 +149,14 @@ export function terrainH(x, z) {
   const m = maskAt(x, z);
   if (m <= 0) return -waterBasin(x, z);
   const w = biomeWeights(x, z, _wh);
+  // 荒野里平原与雪原的起伏放大约一倍(核心手绘区不变):无尽荒野不再是一片平地
+  const wildAmp = smooth(470, 540, Math.max(Math.abs(x), Math.abs(z)));
   let h = 0;
-  for (let i = 0; i < NB; i++) if (w[i] > 0.002) h += w[i] * biomeH(i, x, z);
+  for (let i = 0; i < NB; i++) {
+    if (w[i] <= 0.002) continue;
+    const amp = i === BIOME.plains ? 1 + wildAmp : i === BIOME.snow ? 1 + 0.8 * wildAmp : 1;
+    h += w[i] * biomeH(i, x, z) * amp;
+  }
   return (h + mountainH(x, z)) * m - waterBasin(x, z); // 湖/河/水塘挖成盆地(水位 0)
 }
 
