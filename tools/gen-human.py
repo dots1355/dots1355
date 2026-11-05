@@ -75,28 +75,67 @@ pants = mat('pants', (0.28, 0.22, 0.16), 0.92)
 boots = mat('boots', (0.16, 0.12, 0.09), 0.6)
 eye = mat('eye', (0.05, 0.04, 0.03), 0.3)
 
-# ---- 腿(髋→膝→踝→靴,靴头前伸) ----
+buckle = mat('buckle', (0.55, 0.4, 0.14), 0.4)  # 铜扣:不在游戏的换色槽里,全员同色
+
+
+def join_into(target, parts):
+    """把几个小件并进主件(同一个网格、同一套材质槽;细分修改器一并作用)"""
+    bpy.ops.object.select_all(action='DESELECT')
+    for p in parts:
+        p.select_set(True)
+    target.select_set(True)
+    bpy.context.view_layer.objects.active = target
+    bpy.ops.object.join()
+    return target
+
+
+def blob(name, size, at, material, subdiv=1):
+    bm = bmesh.new()
+    ret = bmesh.ops.create_icosphere(bm, subdivisions=subdiv, radius=1.0)
+    for v in ret['verts']:
+        v.co.x = v.co.x * size[0] + at[0]
+        v.co.y = v.co.y * size[1] + at[1]
+        v.co.z = v.co.z * size[2] + at[2]
+    me = bpy.data.meshes.new(name)
+    bm.to_mesh(me)
+    bm.free()
+    ob = bpy.data.objects.new(name, me)
+    ob.data.materials.append(material)
+    for p in ob.data.polygons:
+        p.use_smooth = True
+    bpy.context.collection.objects.link(ob)
+    return ob
+
+
+# ---- 腿(髋→膝→裤腿塞进靴筒→翻边靴口→靴筒→踝→靴,靴头前伸):靴子高到小腿肚,靴口一圈翻边 ----
 loft('Leg', [
     (0.02, 0.105, 0.115, 0),
     (-0.10, 0.100, 0.108, 0.005),
     (-0.22, 0.078, 0.085, 0.01),   # 膝
-    (-0.30, 0.083, 0.09, 0.005),   # 小腿肚
-    (-0.40, 0.055, 0.06, 0),       # 踝
-    (-0.41, 0.085, 0.095, -0.015), # 靴口
-    (-0.46, 0.088, 0.11, -0.045),  # 靴身(前伸=脸朝 -Y)
-    (-0.50, 0.09, 0.13, -0.06),    # 靴底带鞋头
-], [pants, boots], lambda li: 0 if li <= 4 else 1)
+    (-0.255, 0.079, 0.086, 0.008), # 裤腿收进靴筒
+    (-0.262, 0.096, 0.102, 0.008), # 翻边靴口(上沿)
+    (-0.30, 0.094, 0.1, 0.006),    # 翻边下沿
+    (-0.312, 0.084, 0.09, 0.005),  # 靴筒
+    (-0.39, 0.066, 0.072, 0),      # 踝
+    (-0.43, 0.085, 0.1, -0.02),
+    (-0.47, 0.09, 0.118, -0.048),  # 靴身(前伸=脸朝 -Y)
+    (-0.50, 0.092, 0.132, -0.062), # 靴底带鞋头
+], [pants, boots], lambda li: 0 if li <= 2 else 1)
 
-# ---- 臂(肩→肘→腕→手) ----
-loft('Arm', [
+# ---- 臂(肩→肘→袖口翻边→腕→手掌→四指拢成拳,外加一根拇指) ----
+arm = loft('Arm', [
     (0.03, 0.082, 0.082, 0),
     (-0.10, 0.070, 0.070, 0.004),
     (-0.20, 0.055, 0.055, 0.008),  # 肘
     (-0.28, 0.060, 0.060, 0.006),  # 前臂
-    (-0.38, 0.044, 0.044, 0),      # 腕
-    (-0.40, 0.052, 0.05, -0.008),  # 手掌
-    (-0.47, 0.045, 0.055, -0.012), # 指部(拳形)
-], [shirt, skin], lambda li: 0 if li <= 3 else 1)
+    (-0.335, 0.066, 0.066, 0.003), # 袖口外翻
+    (-0.358, 0.064, 0.064, 0.0),   # 袖口边
+    (-0.364, 0.042, 0.042, 0),     # 腕
+    (-0.395, 0.05, 0.048, -0.006), # 手掌
+    (-0.46, 0.047, 0.055, -0.012), # 四指(拳形)
+    (-0.49, 0.03, 0.04, -0.012),   # 指尖收口
+], [shirt, skin], lambda li: 0 if li <= 4 else 1)
+join_into(arm, [blob('Thumb', (0.018, 0.02, 0.034), (0.0, -0.05, -0.405), skin)])
 
 # ---- 躯干(外翻的短袍下摆→束腰→胸→肩→颈):腰带下面散开一圈袍摆,不再是一根圆柱 ----
 loft('Torso', [
@@ -110,11 +149,15 @@ loft('Torso', [
     (0.30, 0.09, 0.09, 0.0),      # 颈
 ], [shirt], lambda li: 0)
 
-# ---- 腰带 ----
-loft('Belt', [
+# ---- 腰带:皮带 + 正面铜扣 + 右胯一只皮囊 ----
+belt = loft('Belt', [
     (-0.20, 0.245, 0.195, 0),
     (-0.12, 0.25, 0.20, 0),
 ], [boots], lambda li: 0, subdiv=1, close_top=False, close_bottom=False)
+join_into(belt, [
+    blob('Buckle', (0.036, 0.014, 0.034), (0.0, -0.205, -0.16), buckle),
+    blob('Pouch', (0.05, 0.034, 0.06), (0.212, -0.112, -0.235), boots),
+])
 
 # ---- 头(颅顶→颧→颌收窄;眼窝/鼻/耳) ----
 head = loft('Head', [

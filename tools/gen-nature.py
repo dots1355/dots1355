@@ -43,8 +43,10 @@ M = {
     'wood': mat('wood', (0.55, 0.42, 0.28), 0.9),
     'leaf': mat('leaf', (0.18, 0.3, 0.11), 0.9),
     'leafdark': mat('leafdark', (0.11, 0.2, 0.08), 0.9),
+    'leaflight': mat('leaflight', (0.3, 0.4, 0.13), 0.9),
     'bone': mat('bone', (0.6, 0.55, 0.42), 0.75),
-    'willow': mat('willow', (0.25, 0.36, 0.12), 0.9, double=True),
+    'willow': mat('willow', (0.13, 0.19, 0.07), 0.9, double=True),
+    'willowstrand': mat('willowstrand', (0.19, 0.26, 0.09), 0.9, double=True),
 }
 
 
@@ -203,40 +205,63 @@ for k in range(2):
     ob = new_obj(f'DeadTree{k + 1}', bm, ['bark'])
     flat(ob)
 
-# ---------- 垂柳:沼泽(粗干 + 冠顶 + 垂丝条带,双面) ----------
+# ---------- 垂柳:沼泽 ----------
+# 粗短歪斜的主干分出三四根拱起的主枝;树冠是几团叠起来的圆穹(不是一张扁盘),
+# 柳丝从整片树冠的下半截成帘垂下、一直垂到离地一米多——远看是一座垂着绿帘的穹顶,不像水母
 bm = bmesh.new()
 r3 = random.Random(9)
-branch(bm, r3, Vector((0, 0, -0.2)), Vector((0.1, 0, 1)), 4.2, 0.36, 1, 0.25)
+tube(bm, [Vector((0, 0, -0.2)), Vector((0.15, 0.05, 1.2)), Vector((0.35, 0.1, 2.4))], [0.46, 0.4, 0.32], 7)
+limb_tips = []
+for j in range(4):
+    a = j * 1.6 + r3.uniform(-0.3, 0.3)
+    d = Vector((math.cos(a) * 0.8, math.sin(a) * 0.8, 1.0))
+    p0 = Vector((0.35, 0.1, 2.3))
+    pts, radii = [p0], [0.24]
+    p = p0.copy()
+    for s in range(1, 5):
+        d = (d + Vector((0, 0, -0.12 * s))).normalized()  # 先上扬、再向外拱下
+        p = p + d * 0.75
+        pts.append(p.copy())
+        radii.append(0.24 * (1 - s / 5 * 0.75))
+    tube(bm, pts, radii, 6)
+    limb_tips.append(pts)
 ob_trunk = new_obj('WillowTrunk', bm, ['bark'])
 flat(ob_trunk)
 bm = bmesh.new()
-crown = Vector((0.3, 0, 4.3))
-for i in range(46):
-    a = i / 46 * math.pi * 2 + r3.uniform(-0.1, 0.1)
-    rr = r3.uniform(1.4, 3.1)
-    top_p = crown + Vector((math.cos(a) * rr * 0.6, math.sin(a) * rr * 0.6, r3.uniform(0.2, 1.1)))
-    out = Vector((math.cos(a), math.sin(a), 0))
-    L = r3.uniform(2.2, 3.8)
-    prev = None
-    w = 0.22
-    for s in range(5):
-        t = s / 4
-        p = top_p + out * (rr * 0.45 * math.sin(t * 1.4)) - Vector((0, 0, L * t))
-        side = Vector((-out.y, out.x, 0)) * w * (1 - 0.6 * t)
-        a1 = bm.verts.new(p - side)
-        a2 = bm.verts.new(p + side)
-        if prev:
-            bm.faces.new((prev[0], prev[1], a2, a1))
-        prev = (a1, a2)
-# 冠顶一团叶
-ret = bmesh.ops.create_icosphere(bm, subdivisions=2, radius=1.0)
-for v in ret['verts']:
-    v.co.x *= 2.4
-    v.co.y *= 2.2
-    v.co.z *= 1.1
-    v.co *= 1 + 0.25 * noise.noise(v.co * 1.3)
-    v.co += crown + Vector((0, 0, 0.6))
-ob_leaf = new_obj('WillowLeaf', bm, ['willow'])
+domes = []
+for pts in limb_tips:
+    c = pts[3] + Vector((0, 0, 0.55))
+    domes.append((c, r3.uniform(1.5, 1.9)))
+domes.append((Vector((0.35, 0.1, 4.6)), 1.9))
+for (c, R) in domes:
+    ret = bmesh.ops.create_icosphere(bm, subdivisions=2, radius=1.0)
+    for v in ret['verts']:
+        v.co.x *= R
+        v.co.y *= R
+        v.co.z *= R * 0.72
+        v.co *= 1 + 0.18 * noise.noise(v.co * 1.4 + c)
+        v.co += c
+# 柳丝:从每团树冠的下沿一圈一圈垂下(内圈短、外圈长),条带略向外飘
+for (c, R) in domes:
+    for i in range(22):
+        a = i / 22 * math.pi * 2 + r3.uniform(-0.12, 0.12)
+        ring = r3.uniform(0.55, 0.95)
+        out = Vector((math.cos(a), math.sin(a), 0))
+        top_p = c + out * R * ring + Vector((0, 0, -R * 0.3 * ring))
+        L = max(1.2, top_p.z - r3.uniform(0.9, 1.6))
+        prev = None
+        w = 0.2
+        for s in range(5):
+            t = s / 4
+            p = top_p + out * (0.35 * math.sin(t * 1.3)) - Vector((0, 0, L * t))
+            side = Vector((-out.y, out.x, 0)) * w * (1 - 0.55 * t)
+            a1 = bm.verts.new(p - side)
+            a2 = bm.verts.new(p + side)
+            if prev:
+                f = bm.faces.new((prev[0], prev[1], a2, a1))
+                f.material_index = 1
+            prev = (a1, a2)
+ob_leaf = new_obj('WillowLeaf', bm, ['willow', 'willowstrand'])
 flat(ob_leaf)
 for ob in bpy.context.collection.objects:
     ob.select_set(ob.name in ('WillowTrunk', 'WillowLeaf'))
@@ -274,22 +299,28 @@ ob = new_obj('Stump', bm, ['bark', 'wood'])
 flat(ob)
 
 # ---------- 灌木丛 ×2 ----------
+# 十几团小叶簇拢成一蓬(底下一圈暗、顶上受光的偏黄绿):刻面小而碎,读起来是"一丛叶子",不是几颗绿宝石
 for k in range(2):
     bm = bmesh.new()
     r4 = random.Random(31 + k)
-    for i in range(7):
+    n_lumps = 13
+    for i in range(n_lumps):
         a = r4.uniform(0, 6.28)
-        d = r4.uniform(0, 0.9)
-        rr = r4.uniform(0.55, 0.95)
+        d = r4.uniform(0, 1.0) * (1.0 if i > 2 else 0.35)
+        rr = r4.uniform(0.34, 0.58) * (1.25 if i < 3 else 1.0)
+        h = rr * 0.6 + (r4.uniform(0.35, 0.75) if i < 3 else r4.uniform(0.0, 0.45))
         ret = bmesh.ops.create_icosphere(bm, subdivisions=1, radius=rr)
-        mi = 1 if i % 3 == 0 else 0
+        lv = set(ret['verts'])
         for v in ret['verts']:
-            v.co *= 1 + 0.22 * noise.noise(v.co * 2.0 + Vector((i, k, 0)))
-            v.co += Vector((math.cos(a) * d, math.sin(a) * d, rr * 0.7 + r4.uniform(0, 0.35)))
+            v.co *= 1 + 0.3 * noise.noise(v.co * 2.6 + Vector((i * 1.7, k * 3.1, 0)))
+            v.co.z *= 0.82
+            v.co += Vector((math.cos(a) * d, math.sin(a) * d, h))
         for f in bm.faces:
-            if all(v in set(ret['verts']) for v in f.verts):
-                f.material_index = mi
-    ob = new_obj(f'Bush{k + 1}', bm, ['leaf', 'leafdark'])
+            if all(v in lv for v in f.verts):
+                c = f.calc_center_median()
+                # 朝天且偏高的面受光(亮叶),贴地的一圈与背阴面暗,其余常绿
+                f.material_index = 2 if (f.normal.z > 0.45 and c.z > 0.75) else 1 if (c.z < 0.45 or f.normal.z < -0.3) else 0
+    ob = new_obj(f'Bush{k + 1}', bm, ['leaf', 'leafdark', 'leaflight'])
     flat(ob)
 
 # ---------- 巨兽肋骨:荒漠/龙骨之地 ----------
