@@ -10,18 +10,18 @@ import { hitStop } from '../core/timefx.js';
 import { simNow } from '../core/timers.js';
 import { dist2, lambert, resolveCollisions } from '../entities.js';
 import { scene } from '../gfx/core.js';
+import { callout } from '../ui/feedback.js';
 import { toast } from '../ui/toast.js';
 import { stats, unlockAch } from './achievements.js';
+import { bandits, guards, wolves } from './actors.js';
 import { calendar, dayPhase } from './calendar.js';
 import { cam } from './camera.js';
 import { awakenDragon, dragonRT } from './dragon.js';
 import { remember } from './mind.js';
+import { arrows } from './projectiles.js';
 import { prologue } from './prologue.js';
 import { spawnDust, weather } from './weather.js';
-import {
-  applyDamage, arrows, bandits, callout, dialog, faceNearestFoe, guards, keys, midHeld, openDialog,
-  saveGame, wolves,
-} from '../main.js';
+import { applyDamage, dialog, faceNearestFoe, keys, midHeld, openDialog, saveGame } from '../main.js';
 
 // ================= 魔法系统 =================
 // 四门法术分别来自四处地标:女巫卖火球、教堂授治愈、湖心祭坛赠冰霜、回响之镜予闪现。

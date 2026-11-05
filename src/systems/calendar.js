@@ -9,13 +9,15 @@ import { player, started, world } from '../core/state.js';
 import { toast } from '../ui/toast.js';
 import { setVegetationSeason } from '../vegetation.js';
 import { unlockAch } from './achievements.js';
+import { refreshProclaim } from './activities.js';
+import { EVO, evolveLegends, evolveTactics, growCorpus } from './evo.js';
+import { respawnMushrooms } from './fauna.js';
+import { payMercs } from './mercs.js';
 import { MIND, consolidate, mindMakeWish, recallLine, remember } from './mind.js';
 import { clock } from './sky.js';
+import { vendetta, vendettaLetter } from './vendetta.js';
 import { weather } from './weather.js';
-import {
-  EVO, addPickup, evolveLegends, evolveTactics, growCorpus, paused, payMercs, refreshProclaim,
-  respawnMushrooms, saveGame, vendetta, vendettaLetter,
-} from '../main.js';
+import { addPickup, paused, saveGame } from '../main.js';
 
 // ================= 历法:季节与日子 =================
 export const SEASONS = ['春', '夏', '秋', '冬'];

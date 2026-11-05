@@ -12,14 +12,14 @@ import { scene } from '../gfx/core.js';
 import { toast, toastAmbient } from '../ui/toast.js';
 import { CORE } from '../wilderness.js';
 import { stats, unlockAch } from './achievements.js';
+import { inDungeon, loreRead } from './activities.js';
+import { wolves } from './actors.js';
 import { calendar, dayPhase, isWinter, todaySpecial } from './calendar.js';
 import { cam } from './camera.js';
+import { shopOpen } from './gear.js';
 import { learnSpell } from './magic.js';
 import { weather } from './weather.js';
-import {
-  HOME, crestsFound, dialog, inDungeon, loreRead, missions, openDialog, paused, quest, shopOpen,
-  wanted, wolves,
-} from '../main.js';
+import { HOME, crestsFound, dialog, missions, openDialog, paused, quest, wanted } from '../main.js';
 
 // ================= 世界的意识(它记得你) =================
 // 编年史:世界替玩家记下值得记住的时刻,存档随身;
