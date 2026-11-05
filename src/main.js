@@ -197,9 +197,16 @@ ctx.mood = () => workspace.mood.v;
 ctx.inDungeon = inDungeon;
 setAmbientGate(() => quest.active || prologue.on); // 氛围提示:有委托在办、序章里时不播
 trackEntityLists([villagers, guards, bandits, wolves, horses, namedNPCs, chickens, deers, funnyNPCs, mercs]); // 兜底远近分级
-// 地图快照:地图模块只读这些,不碰玩法状态
-ctx.mapView = () => ({ guards, bandits, horses, wanted, warband, beacon, beaconRouted,
-  questGiver: exGroup.visible ? { x: steward.pos.x, z: steward.pos.z } : null, wildSpots });
+// 地图快照:地图模块只读这些,不碰玩法状态(小地图每两帧取一次:复用同一个对象,不分配)
+const mapSnap = { guards, bandits, horses, wanted, warband, beacon, beaconRouted, questGiver: null, wildSpots };
+const mapQuestGiver = { x: 0, z: 0 };
+ctx.mapView = () => {
+  mapSnap.wanted = wanted;
+  mapSnap.beaconRouted = beaconRouted;
+  mapSnap.questGiver = exGroup.visible ? mapQuestGiver : null;
+  if (mapSnap.questGiver) { mapQuestGiver.x = steward.pos.x; mapQuestGiver.z = steward.pos.z; }
+  return mapSnap;
+};
 
 // ================= 主循环:有序的系统表 =================
 // 每帧按表的顺序调用 update(dt, now);dt 已按打击停顿/慢镜缩放,now 是帧时钟(毫秒)。

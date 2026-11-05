@@ -22,6 +22,8 @@ import { quest } from './quests.js';
 // ================= 盗贼战团(骑砍式野战遭遇)=================
 // 每隔几分钟,一支五人战团(枭首+四喽啰)从旷野压向王都:半路截杀=犒赏,放进城=集市遭殃
 export const warband = { active: false, members: [], cd: 100 + rand() * 60, lootT: 0, wave: 0 };
+// 刷人摊开:每帧至多 2 人(本帧枭首 + 1 名喽啰,其余按游戏时钟逐帧补齐),攻城的十人大队也不会挤在一帧里建模
+const SPAWN_PER_FRAME = 2;
 export function spawnWarband() {
   warband.active = true;
   warband.members = [];
@@ -50,16 +52,24 @@ export function spawnWarband() {
   lead.warband = true;
   lead._ox = 0; lead._oz = 0;
   warband.members.push(lead);
-  for (let i = 0; i < grunts; i++) {
-    const ox = rand() * 8 - 4, oz = rand() * 8 - 4;
-    const b = addBandit(sx + ox, sz + oz, { hp: 3 });
-    b.warband = true;
-    b._ox = ox; b._oz = oz; // 队形:相对锚点的站位
-    warband.members.push(b);
-  }
+  const offs = []; // 队形:相对锚点的站位(随机数一次掷完,顺序与逐个现刷时一样)
+  for (let i = 0; i < grunts; i++) offs.push(rand() * 8 - 4, rand() * 8 - 4);
+  const list = warband.members, total = 1 + grunts;
+  const spawnSome = (n) => {
+    if (warband.members !== list) return; // 战团已散伙或换了一支
+    for (let k = 0; k < n && offs.length; k++) {
+      const ox = offs.shift(), oz = offs.shift();
+      const b = addBandit(warband.ax + ox, warband.az + oz, { hp: 3 });
+      b.warband = true;
+      b._ox = ox; b._oz = oz;
+      list.push(b);
+    }
+    if (offs.length) later(0, () => spawnSome(SPAWN_PER_FRAME));
+  };
+  spawnSome(SPAWN_PER_FRAME - 1);
   const compass = Math.abs(sx) > Math.abs(sz) ? (sx > 0 ? '东' : '西') : (sz > 0 ? '南' : '北');
   if (warband.siege) {
-    toast(`🚨 攻城警报!!枭首纠集 ${warband.members.length} 人大队从${compass}面强攻王都!卫兵已列阵迎敌——并肩守城!(冲到枭首面前按 E 可阵前单挑)`, 6);
+    toast(`🚨 攻城警报!!枭首纠集 ${total} 人大队从${compass}面强攻王都!卫兵已列阵迎敌——并肩守城!(冲到枭首面前按 E 可阵前单挑)`, 6);
     sfx.wanted();
     { // 城防:来袭方向支起两座拒马迟滞敌军
       const dl = Math.hypot(sx, sz - 10) || 1;
@@ -69,7 +79,7 @@ export function spawnWarband() {
       toast('🪵 卫兵连夜在城门外支起了拒马!(敌军踩入减速)', 3.5);
     }
   } else {
-    toast(`⚠️ 斥候急报:一支盗贼战团(${warband.members.length} 人)正从${compass}面逼近王都!半路截住他们!` +
+    toast(`⚠️ 斥候急报:一支盗贼战团(${total} 人)正从${compass}面逼近王都!半路截住他们!` +
       (warband.wave > 0 ? '(为复仇而来,比上次更凶)' : ''), 5);
   }
   sfx.warn();

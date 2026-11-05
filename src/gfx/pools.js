@@ -40,22 +40,27 @@ export function addLightSource(pl) {
 }
 export function removeLightSource(pl) { lightSources.delete(pl); }
 let lightPoolScan = 0;
-const _lpList = [];
+// 最近的 LIGHT_POOL 盏:插入排序进定长槽位(每次扫描零分配,不建临时对象、不排整表)
+const _lpSrc = new Array(LIGHT_POOL).fill(null), _lpD = new Float64Array(LIGHT_POOL);
+let _lpN = 0, _lpX = 0, _lpZ = 0;
+function lpConsider(src) {
+  if (!src.visible || src.intensity <= 0.01) return;
+  const d = Math.hypot(src.position.x - _lpX, src.position.z - _lpZ);
+  if (d > 110 || (_lpN === LIGHT_POOL && d >= _lpD[_lpN - 1])) return;
+  let i = _lpN < LIGHT_POOL ? _lpN++ : _lpN - 1;
+  while (i > 0 && _lpD[i - 1] > d) { _lpD[i] = _lpD[i - 1]; _lpSrc[i] = _lpSrc[i - 1]; i--; }
+  _lpD[i] = d; _lpSrc[i] = src;
+}
 export function updateLightPool(px, pz) {
   if (lightPoolScan-- > 0) return;
   lightPoolScan = 3;
-  _lpList.length = 0;
-  for (const src of lightSources) {
-    if (!src.visible || src.intensity <= 0.01) continue;
-    const d = Math.hypot(src.position.x - px, src.position.z - pz);
-    if (d > 110) continue;
-    _lpList.push({ src, d });
-  }
-  _lpList.sort((a, b) => a.d - b.d);
+  _lpN = 0; _lpX = px; _lpZ = pz;
+  lightSources.forEach(lpConsider);
+  const n = _lpN;
   for (let i = 0; i < LIGHT_POOL; i++) {
-    const pl = lightPool[i], it = _lpList[i];
-    if (!it) { pl.intensity = 0; continue; }
-    const s2 = it.src;
+    const pl = lightPool[i];
+    if (i >= n) { pl.intensity = 0; _lpSrc[i] = null; continue; }
+    const s2 = _lpSrc[i];
     pl.color.copy(s2.color);
     pl.intensity = s2.intensity;
     pl.distance = s2.distance;
@@ -80,4 +85,46 @@ export function releaseMat(m) {
   m.copy(base);
   m.userData.poolBase = base;
   matPools.get(base).push(m);
+}
+
+// 类型化数组池(荒野区块的地表与烘焙几何用):按约 √2 倍一档的容量分桶复用 ArrayBuffer,取出时给精确长度的视图。
+// 区块卸载时把它独占几何的数组还回来:流式期间不再反复申请、丢弃几 MB 的缓冲
+// (它们算外部内存,丢多了会逼出几十毫秒的 Major GC)。池里闲置的总量有上限,超出的照常交给 GC。
+const ARR_POOL_MAX = 32 << 20; // 闲置上限 32MB
+const arrPool = new Map(); // 容量(字节)→ ArrayBuffer[]
+const arrOut = new WeakSet(); // 从池里借出去的缓冲(只收它们回来,别的数组不碰)
+let arrIdle = 0;
+function arrCap(bytes) { // 容量档位:64KB 以下按 2 倍,以上按 √2 倍(取整到 4KB),浪费不超过约四成
+  let cap = 4096;
+  while (cap < bytes) cap = cap < 65536 ? cap * 2 : Math.ceil((cap * Math.SQRT2) / 4096) * 4096;
+  return cap;
+}
+export function takeArray(Type, n) {
+  const cap = arrCap(n * Type.BYTES_PER_ELEMENT);
+  const list = arrPool.get(cap);
+  let buf = list && list.pop();
+  if (buf) arrIdle -= cap;
+  else buf = new ArrayBuffer(cap);
+  arrOut.add(buf);
+  return new Type(buf, 0, n);
+}
+function giveBackArray(a) {
+  const buf = a && a.buffer;
+  if (!buf || !arrOut.has(buf)) return;
+  arrOut.delete(buf);
+  if (arrIdle + buf.byteLength > ARR_POOL_MAX) return;
+  let list = arrPool.get(buf.byteLength);
+  if (!list) arrPool.set(buf.byteLength, (list = []));
+  list.push(buf);
+  arrIdle += buf.byteLength;
+}
+// 几何体已 dispose(显存已还)之后调用:属性与索引里借自池的数组收回(之后这份几何不能再用)
+export function releaseGeometryArrays(geo) {
+  for (const k in geo.attributes) giveBackArray(geo.attributes[k].array);
+  if (geo.index) giveBackArray(geo.index.array);
+}
+export function arrayPoolStats() {
+  let n = 0;
+  for (const l of arrPool.values()) n += l.length;
+  return { idleMB: +(arrIdle / 1048576).toFixed(1), buffers: n, sizes: arrPool.size };
 }

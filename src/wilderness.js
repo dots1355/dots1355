@@ -10,6 +10,7 @@ import { mergeGeometries } from '../lib/jsm/utils/BufferGeometryUtils.js';
 import { dominantBiome, groundH, buildGroundMesh, getGroundMaterial, GRID, vnoise } from './terrain.js';
 import { waterMesh, polarWaterGeo } from './gfx/water.js';
 import { plainStandard, vpbrMaterial, bakeVPBRSteps } from './gfx/vpbr.js';
+import { releaseGeometryArrays, takeArray } from './gfx/pools.js';
 
 export const CHUNK = 128;
 // 加载距离(米):区块离玩家最近的一点在这个距离内就装,再远出 64m 才卸(回差)。
@@ -215,7 +216,7 @@ function* chunkJob(cx, cz) {
     if (iz % 9 === 8) yield;
   }
   yield;
-  g.add(buildGroundMesh(baseX, baseZ, CHUNK, getGroundMaterial()));
+  g.add(buildGroundMesh(baseX, baseZ, CHUNK, getGroundMaterial(), takeArray)); // 顶点数组借自池,卸载时还
   yield;
 
   // 茂密林海:抖动网格撒 250~300 棵实例化的 Blender 树(松为主,橡、桦穿插),林窗噪声留出几片空地;
@@ -553,7 +554,7 @@ function* chunkJob(cx, cz) {
   yield;
   const outs = [];
   for (const b of bins.values()) {
-    const geo = yield* bakeVPBRSteps(b.items, { chunk: 3000 });
+    const geo = yield* bakeVPBRSteps(b.items, { chunk: 3000, alloc: takeArray });
     yield;
     geo.computeBoundingSphere();
     const mesh = new THREE.Mesh(geo, vpbrMaterial({ side: b.side }));
@@ -600,8 +601,9 @@ function unloadChunk(key) {
   scene.remove(c.group);
   if (c.inst) { releaseNatureInstances(c.inst); c.group.remove(c.inst); }
   c.group.traverse((o) => {
-    // flora 库的几何/材质全场共享(userData.shared),不能释放;其余独占资源照常释放
-    if (o.geometry && !o.geometry.userData.shared) o.geometry.dispose();
+    // flora 库的几何/材质全场共享(userData.shared),不能释放;其余独占资源照常释放,
+    // 地表与烘焙网格借自池的顶点数组(显存先还)收回池里给下一块用
+    if (o.geometry && !o.geometry.userData.shared) { o.geometry.dispose(); releaseGeometryArrays(o.geometry); }
     if (o.material && !o.material.userData.shared) o.material.dispose();
   });
   removeCircles(colliders, c.cols);
@@ -633,9 +635,10 @@ function wanted(cx, cz, px, pz) {
 // 实例化的地标读区块的放置清单 c.props;没走实例化、单独挂在组里的(例如翻倒的货车)再扫一遍组
 const MARK_OF = { Campfire: 'camp', Tent: 'camp', TentDark: 'bandit', Banner: 'bandit', BrokenTower: 'tower',
   Ruin: 'ruin', Shrine: 'ruin', Mesa: 'rock', Spires: 'rock', IceRock: 'rock', Cart: 'camp' };
+// out:调用方复用的数组(先清空再填),每帧调用也不分配
 const _marks = new WeakMap();
-export function wildMarks() {
-  const out = [];
+export function wildMarks(out = []) {
+  out.length = 0;
   for (const c of chunks.values()) {
     let m = _marks.get(c.group);
     if (!m) {
@@ -653,7 +656,7 @@ export function wildMarks() {
       for (const o of c.group.children) if (o.userData.isProp && o.children[0]) add(o.children[0].name, o.position.x, o.position.z);
       _marks.set(c.group, m);
     }
-    for (const k of m) out.push(k);
+    for (let i = 0; i < m.length; i++) out.push(m[i]);
   }
   return out;
 }

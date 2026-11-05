@@ -15,6 +15,8 @@
 //   等同隐藏。
 // - 所有实体共用一个材质;受击闪白时 ui/feedback.js 的 ownMaterials 再给那一个实体克隆私有材质(克隆保留补丁)。
 // - 卸载走 disposeEntityGroup → releaseSkin;漏掉释放的实体被 GC 后,行号与几何体由 WeakRef/FinalizationRegistry 回收。
+// - 同一"身形 + 配色"只搭一次积木、烘一次(skinCached):之后的实体克隆原型的骨骼节点、共享烘好的几何,
+//   再分一行调色板——刷一个人从一两毫秒降到零点几毫秒。几何按引用计数,没人用的原型留最近的若干个。
 import * as THREE from 'three';
 import { VertexPBRMaterial, RigidDepthMaterial, plainStandard, bakeVPBR } from './vpbr.js';
 import { renderer } from './core.js';
@@ -84,9 +86,14 @@ function updatePalette() {
   }
   paletteTex.needsUpdate = true;
 }
-// 漏掉 dispose 的实体:根节点被 GC 后释放它独占的合并几何体(行号由 updatePalette 回收)
+// 漏掉 dispose 的实体:根节点被 GC 后释放它独占的合并几何体(缓存原型的几何只减引用;行号由 updatePalette 回收)
 const finalizer = typeof FinalizationRegistry === 'function'
-  ? new FinalizationRegistry((held) => { if (!held.released) { held.released = true; held.geometry.dispose(); } })
+  ? new FinalizationRegistry((held) => {
+    if (held.released) return;
+    held.released = true;
+    if (held.proto) unrefProto(held.proto);
+    else held.geometry.dispose();
+  })
   : null;
 
 // 全场实体共用的材质(颜色在顶点里,material.color 只当整体染色用;克隆出来的私有材质自动带补丁)
@@ -215,8 +222,6 @@ export function rigidSkin(model) {
   // 5) 蒙皮网格
   const mesh = new THREE.SkinnedMesh(geo, ENTITY_MAT);
   mesh.name = 'skin';
-  mesh.skeleton = SKELETON;
-  mesh.customDepthMaterial = DEPTH_MAT;
   mesh.castShadow = cast;
   mesh.receiveShadow = recv;
   const sph = new THREE.Sphere();
@@ -224,16 +229,81 @@ export function rigidSkin(model) {
   sph.radius += 0.35; // 抡臂/抬腿的余量
   mesh.boundingSphere = sph;
   root.add(mesh);
+  attachSkin(root, mesh, bones, null);
+  return model;
+}
+// 给一棵(新搭或克隆来的)实体树挂上共享骨骼与调色板行
+function attachSkin(root, mesh, bones, proto) {
+  mesh.skeleton = SKELETON;
+  mesh.customDepthMaterial = DEPTH_MAT;
   const slot = allocSlot();
   mesh.bindMatrix.identity();
   mesh.bindMatrix.elements[15] = slot * SLOT_BONES;
   const chains = bones.map((b) => { const ch = []; for (let p = b; p && p !== root; p = p.parent) ch.push(p); return ch; });
-  const held = { geometry: geo, released: false };
+  const held = { geometry: mesh.geometry, released: false, proto };
   const entry = { root, mesh, bones, chains, slot, held, lod: 0, upd: true, half: false, top: false };
   slots[slot] = new WeakRef(entry);
   root._skin = entry;
   mesh._skin = entry;
   if (finalizer) finalizer.register(root, held, held);
+}
+
+// ---- 烘好的实体缓存 ----
+// key 必须涵盖外观的全部输入(调用方用构建参数拼);build() 里不能有随机:随机外观由调用方先掷好、写进参数。
+// 原型 = 刚烘好那一份的干净克隆(不入场、不占调色板行);树里除了骨骼节点和那一个蒙皮网格还有别的网格的,不缓存。
+const protos = new Map();
+const IDLE_KEEP = 24; // 没有实体在用的原型最多留这么多个(按最近闲下来的顺序)
+let idleClock = 0;
+const pathOf = (root, o) => { const p = []; for (let q = o; q !== root; q = q.parent) p.unshift(q.parent.children.indexOf(q)); return p; };
+const atPath = (root, path) => { let o = root; for (let i = 0; i < path.length; i++) o = o.children[path[i]]; return o; };
+function makeProto(key, model) {
+  const root = model.group, e = root._skin;
+  if (!e || e.held.proto) return null;
+  const inTree = (o) => { for (let q = o; q; q = q.parent) if (q === root) return true; return false; };
+  let other = false;
+  root.traverse((o) => { if (o !== e.mesh && (o.isMesh || o.isLight || o.isPoints || o.isLine || o.isSprite)) other = true; });
+  if (other) return null;
+  const parts = [];
+  for (const k of Object.keys(model.parts || {})) {
+    const v = model.parts[k];
+    if (Array.isArray(v)) {
+      if (!v.every((x) => x && x.isObject3D && inTree(x))) return null;
+      parts.push({ k, many: true, v: v.map((x) => pathOf(root, x)) });
+    } else if (v && v.isObject3D && inTree(v)) parts.push({ k, many: false, v: pathOf(root, v) });
+    else return null; // 部件里有不是本树节点的东西:不知道该不该共享,不缓存
+  }
+  e.mesh.geometry.userData.shared = true; // 退场时 disposeEntityGroup 不再释放它:由引用计数管
+  const proto = { key, root: root.clone(true), parts, bones: e.bones.map((b) => pathOf(root, b)), mesh: pathOf(root, e.mesh),
+    geometry: e.mesh.geometry, refs: 1, idle: 0 };
+  e.held.proto = proto;
+  return proto;
+}
+function instantiate(p) {
+  const root = p.root.clone(true);
+  const parts = {};
+  for (const { k, many, v } of p.parts) parts[k] = many ? v.map((q) => atPath(root, q)) : atPath(root, v);
+  attachSkin(root, atPath(root, p.mesh), p.bones.map((q) => atPath(root, q)), p);
+  p.refs++;
+  return { group: root, parts };
+}
+function unrefProto(p) {
+  if (--p.refs > 0) return;
+  p.idle = ++idleClock;
+  let idle = 0, oldest = null;
+  for (const q of protos.values()) {
+    if (q.refs > 0) continue;
+    idle++;
+    if (!oldest || q.idle < oldest.idle) oldest = q;
+  }
+  if (idle > IDLE_KEEP && oldest) { protos.delete(oldest.key); oldest.geometry.dispose(); }
+}
+// 按键取一个实体模型:缓存里有就克隆(几何共享),没有就 build() 搭好、烘好,再留一份原型
+export function skinCached(key, build) {
+  const p = protos.get(key);
+  if (p) return instantiate(p);
+  const model = rigidSkin(build());
+  const proto = makeProto(key, model);
+  if (proto) protos.set(key, proto);
   return model;
 }
 
@@ -243,6 +313,7 @@ export function releaseSkin(mesh) {
   if (!e || e.held.released) return;
   e.held.released = true;
   if (finalizer) finalizer.unregister(e.held);
+  if (e.held.proto) unrefProto(e.held.proto);
   if (slots[e.slot] && slots[e.slot].deref() === e) { slots[e.slot] = null; freeSlots.push(e.slot); }
   mesh.visible = false; // 万一还留在场景里:宁可不画,也别借用下一个实体的骨骼
 }
@@ -294,7 +365,8 @@ export function updateSkinLOD(cx, cz, shadowD, hideD, halfD = 30) {
   }
 }
 export function skinStats() {
-  let live = 0;
+  let live = 0, idle = 0;
   for (const r of slots) if (r && r.deref()) live++;
-  return { live, slots: slots.length, capacity };
+  for (const p of protos.values()) if (p.refs <= 0) idle++;
+  return { live, slots: slots.length, capacity, protos: protos.size, idleProtos: idle };
 }

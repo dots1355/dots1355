@@ -134,7 +134,9 @@ export function bakeVPBR(items, opts) {
   return r.value;
 }
 // 可分帧的版本:每烘完约 chunk 个顶点 yield 一次(荒野区块用它把重活摊到多帧)
-export function* bakeVPBRSteps(items, { skin = false, box = null, chunk = Infinity } = {}) {
+// alloc(Type, n):输出数组从哪来(荒野区块传池子的 takeArray,卸载时还回去),缺省 new
+const newArray = (Type, n) => new Type(n);
+export function* bakeVPBRSteps(items, { skin = false, box = null, chunk = Infinity, alloc = newArray } = {}) {
   let nv = 0, ni = 0;
   const prep = items.map((item) => {
     let g = item.geometry;
@@ -148,9 +150,9 @@ export function* bakeVPBRSteps(items, { skin = false, box = null, chunk = Infini
     ni += ic;
     return p;
   });
-  const P = new Float32Array(nv * 3), N = new Float32Array(nv * 3);
-  const C = new Uint8Array(nv * 3), RM = new Uint8Array(nv * 3), SI = skin ? new Uint8Array(nv) : null;
-  const I = nv < 65536 ? new Uint16Array(ni) : new Uint32Array(ni);
+  const P = alloc(Float32Array, nv * 3), N = alloc(Float32Array, nv * 3);
+  const C = alloc(Uint8Array, nv * 3), RM = alloc(Uint8Array, nv * 3), SI = skin ? alloc(Uint8Array, nv) : null;
+  const I = nv < 65536 ? alloc(Uint16Array, ni) : alloc(Uint32Array, ni);
   let io = 0, done = 0;
   for (const { item, g, mats, flat, n, ic, v0 } of prep) {
     const matrix = item.matrix, e = matrix.elements;

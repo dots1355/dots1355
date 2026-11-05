@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import { rand } from './core/rng.js';
 import { mergeGeometries } from '../lib/jsm/utils/BufferGeometryUtils.js';
-import { rigidSkin, releaseSkin } from './gfx/skin.js';
+import { rigidSkin, releaseSkin, skinCached } from './gfx/skin.js';
 
 // 名字沿用 lambert,实际已升级为 PBR 标准材质
 // 北境写实调:所有过手的颜色饱和度砍半、整体沉一分——把糖果色世界拉回大地色系
@@ -348,8 +348,13 @@ function applyHumanProps(g, parts, opts) {
   }
 }
 
-// 搭好积木层级后合成一个刚体蒙皮网格(gfx/skin.js):每个实体一次绘制
-export function makeHumanoid(opts = {}) { return rigidSkin(buildHumanoid(opts)); }
+// 搭好积木层级后合成一个刚体蒙皮网格(gfx/skin.js):每个实体一次绘制。
+// 同样的参数只搭一次、烘一次(skinCached 按参数缓存烘好的几何,之后只克隆骨骼节点):
+// 构建函数里不要掷随机数——随机外观由调用方先决定、写进参数(参数整个进缓存键)
+const optsKey = (o) => { let k = ''; for (const n of Object.keys(o).sort()) k += n + ':' + JSON.stringify(o[n]) + ';'; return k; };
+export function makeHumanoid(opts = {}) {
+  return skinCached((HUMAN_TPL ? 'hT|' : 'hB|') + optsKey(opts), () => buildHumanoid(opts));
+}
 function buildHumanoid(opts = {}) {
   const {
     skin = 0xf1c27d, shirt = 0x2f8f4e, pants = 0x4a3320,
@@ -551,8 +556,15 @@ export function getWeaponModel(name) {
 }
 
 // ---- 马(面朝 +Z)----
-// 搭好积木层级后合成一个刚体蒙皮网格(gfx/skin.js):每个实体一次绘制
-export function makeHorse(color = 0x8b5a2b, saddled = true, opts = {}) { return rigidSkin(buildHorse(color, saddled, opts)); }
+// 搭好积木层级后合成一个刚体蒙皮网格(gfx/skin.js):每个实体一次绘制;同样的毛色/鞍/鹿角/面斑只烘一次。
+// 面斑(三成的马有)在这里先掷好再进缓存键,随机数的消耗与原来逐个现搭时完全一样
+let horseTplBlaze = null;
+export function makeHorse(color = 0x8b5a2b, saddled = true, opts = {}) {
+  if (HORSE_TPL && horseTplBlaze === null) horseTplBlaze = !!HORSE_TPL.getObjectByName('Blaze');
+  const blaze = HORSE_TPL ? !opts.antlers && horseTplBlaze && rand() < 0.3 : rand() < 0.3;
+  const o = { ...opts, blaze };
+  return skinCached(`${HORSE_TPL ? 'mT' : 'mB'}|${color}|${saddled ? 1 : 0}|${optsKey(o)}`, () => buildHorse(color, saddled, o));
+}
 function buildHorse(color = 0x8b5a2b, saddled = true, opts = {}) {
   // Blender 写实马:脊柱放样整体身躯,腿为模板克隆挂进原枢轴
   if (HORSE_TPL) {
@@ -571,7 +583,7 @@ function buildHorse(color = 0x8b5a2b, saddled = true, opts = {}) {
       if (o.name.startsWith('Antlers') && !opts.antlers) toRemove.push(o);
       if (o.name === 'Saddle' && !saddled) toRemove.push(o);
       if (o.name === 'Mane' && opts.antlers) toRemove.push(o);
-      if (o.name === 'Blaze' && (opts.antlers || rand() >= 0.3)) toRemove.push(o);
+      if (o.name === 'Blaze' && (opts.antlers || !(opts.blaze ?? rand() < 0.3))) toRemove.push(o);
     });
     for (const o of toRemove) o.parent && o.parent.remove(o);
     g.add(body);
@@ -634,7 +646,7 @@ function buildHorse(color = 0x8b5a2b, saddled = true, opts = {}) {
   muzzle.position.set(0, 1.8, 1.28);
   g.add(muzzle);
   // 面斑(三成的马有一道白)
-  if (rand() < 0.3) {
+  if (opts.blaze ?? rand() < 0.3) {
     const blaze = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.2, 0.3), lambert(0xe8e2d4));
     blaze.position.set(0, 1.94, 1.1);
     blaze.rotation.x = -0.2;
@@ -696,8 +708,10 @@ function buildHorse(color = 0x8b5a2b, saddled = true, opts = {}) {
 }
 
 // ---- 狼(面朝 +Z)----
-// 搭好积木层级后合成一个刚体蒙皮网格(gfx/skin.js):每个实体一次绘制
-export function makeWolf(furHex = 0x5a5a62, eyeHex = 0xff3322, eyeGlow = 0xaa1100) { return rigidSkin(buildWolf(furHex, eyeHex, eyeGlow)); }
+// 搭好积木层级后合成一个刚体蒙皮网格(gfx/skin.js):每个实体一次绘制;同样的毛色/眼色只烘一次
+export function makeWolf(furHex = 0x5a5a62, eyeHex = 0xff3322, eyeGlow = 0xaa1100) {
+  return skinCached(`${WOLF_TPL ? 'wT' : 'wB'}|${furHex}|${eyeHex}|${eyeGlow}`, () => buildWolf(furHex, eyeHex, eyeGlow));
+}
 function buildWolf(furHex = 0x5a5a62, eyeHex = 0xff3322, eyeGlow = 0xaa1100) {
   // Blender 写实狼:耸肩薄腰的兽形放样,双眼替换为发光材质
   if (WOLF_TPL) {
