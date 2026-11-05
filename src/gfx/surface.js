@@ -29,6 +29,39 @@ import * as THREE from 'three';
   }
 }
 
+// 角色与生物的程序化质感(只在刚体蒙皮的实体上生效,接在 gfx/vpbr.js 的顶点色 PBR 里):按骨骼本地坐标取 3D 值噪声,
+// 顶点里的粗糙度/金属度当"材质类别"——布料与皮毛:洗旧的深浅斑 + 经纬织纹;皮革:皮纹与磨亮的旧斑;
+// 金属:顺着一个方向的拉丝;皮肤:极淡的红晕。纹样钉在身体部件上(跑动时不"游动"),远处按屏幕导数淡出细纹(不闪)
+export const ENTITY_DETAIL_PARS = `
+  varying vec3 vObjP;
+  float edH(vec3 p) { p = fract(p * 0.3183099 + 0.1); p *= 17.0; return fract(p.x * p.y * p.z * (p.x + p.y + p.z)); }
+  float edN(vec3 x) {
+    vec3 i = floor(x), f = fract(x);
+    f = f * f * (3.0 - 2.0 * f);
+    return mix(mix(mix(edH(i), edH(i + vec3(1.0, 0.0, 0.0)), f.x), mix(edH(i + vec3(0.0, 1.0, 0.0)), edH(i + vec3(1.0, 1.0, 0.0)), f.x), f.y),
+      mix(mix(edH(i + vec3(0.0, 0.0, 1.0)), edH(i + vec3(1.0, 0.0, 1.0)), f.x), mix(edH(i + vec3(0.0, 1.0, 1.0)), edH(i + vec3(1.0)), f.x), f.y), f.z);
+  }`;
+export const ENTITY_DETAIL_COLOR = `
+  {
+    float edR = vRM.x, edM = vRM.y;
+    vec3 edP = vObjP;
+    float edFine = 1.0 - smoothstep(0.012, 0.03, length(fwidth(edP)));
+    float edBig = edN(edP * 7.0) - 0.5, edMid = edN(edP * 23.0 + 7.1) - 0.5;
+    float edK;
+    if (edM > 0.5) {
+      edK = 1.0 + (edN(vec3(edP.x * 90.0, edP.y * 4.0, edP.z * 90.0)) - 0.5) * 0.35 * edFine + edBig * 0.18;
+    } else if (edR < 0.6) {
+      edK = 1.0 + edMid * 0.22 + edBig * 0.2 + (edN(edP * 70.0) - 0.5) * 0.25 * edFine;
+    } else if (edR < 0.72) {
+      edK = 1.0 + edBig * 0.1;
+      diffuseColor.r *= 1.0 + max(0.0, edBig) * 0.08;
+    } else {
+      float edFold = edN(vec3(edP.x * 16.0, edP.y * 2.6, edP.z * 16.0)) - 0.5; // 顺着垂向的褶
+      edK = 1.0 + edFold * 0.42 + edBig * 0.24 + edMid * 0.12 + sin(edP.x * 520.0 + edP.z * 520.0) * sin(edP.y * 520.0) * 0.08 * edFine;
+    }
+    diffuseColor.rgb *= edK;
+  }`;
+
 export const surfaceUniforms = {
   uWet: { value: 0 },      // 0 干 → 1 湿透
   uTime: { value: 0 },
