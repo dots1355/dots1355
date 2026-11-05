@@ -88,6 +88,21 @@ async function installArena(page) {
   });
 }
 
+// 只留第一个活着的普通盗贼当靶子:它的同伙和野狼都藏起来(否则会在测试中途冲上来砍人、打断蓄力,结果看运气);
+// 随机数定种子,结果才可复现
+async function soloBandit(page) {
+  await page.evaluate(() => {
+    const g = window.__gtm;
+    g.seedRng(7);
+    const b = g.bandits.find((x) => !x.dead && !x.boss);
+    for (const o of [...g.bandits, ...g.wolves]) {
+      if (o === b || o.dead) continue;
+      Object.assign(o, { dead: true, respawnT: 1e9, windupT: 0, biteT: 0, lunging: 0 });
+      o.group.visible = false;
+    }
+  });
+}
+
 const TESTS = {
   // 启动无报错,核心地标与地形就位
   async boot(page, errors) {
@@ -184,6 +199,7 @@ const TESTS = {
   // 近战击杀盗贼走统一结算(连杀计数 + 掉落)
   async melee(page) {
     await boot(page);
+    await soloBandit(page);
     const r = await page.evaluate(() => {
       const g = window.__gtm;
       const b = g.bandits.find((x) => !x.dead && !x.boss);
@@ -259,6 +275,7 @@ const TESTS = {
   // 出招时序:伤害在判定帧(刀落下)才结算;按住蓄力→松手重击 ≥3 倍;轻击打断敌人起手
   async combatTiming(page) {
     await boot(page);
+    await soloBandit(page);
     const r = await page.evaluate(() => {
       const g = window.__gtm;
       const b = g.bandits.find((x) => !x.dead && !x.boss);
@@ -302,6 +319,7 @@ const TESTS = {
   // 战斗规则:出招中按键进缓冲不吞;敌人的刀只砍正前方扇形;挨打打断自己的刀;弹反窗口按游戏时钟
   async combatRules(page) {
     await boot(page);
+    await soloBandit(page);
     const r = await page.evaluate(() => {
       const g = window.__gtm, out = {};
       const b = g.bandits.find((x) => !x.dead && !x.boss);
@@ -379,6 +397,10 @@ const TESTS = {
       let n = 1, sta0 = P.sta;
       while (!P.plunging && n < 60) { sta0 = P.sta; g.step(1); n++; }
       out.plungeAt = n / 60; out.plungeH = P.pos.y; out.plungeSta = sta0 - P.sta;
+      // 前摇:出手后在半空顿住约 0.12 秒(举剑),之后才砸下去
+      const y0 = P.pos.y; let hang = 0, yHang = y0;
+      for (let i = 0; i < 30 && !P.onGround; i++) { g.step(1); n++; if (P.vy !== 0) break; hang++; yHang = P.pos.y; }
+      out.hangFrames = hang; out.hangDrift = Math.abs(yHang - y0);
       while (!P.onGround && n < 120) { g.step(1); n++; }
       out.landLag = P.landLagT;
       out.frontDmg = 50 - front.hp; out.backDmg = 50 - back.hp; out.sideDmg = 50 - side.hp;
@@ -427,9 +449,21 @@ const TESTS = {
       out.rolled = P.rollT > 0;
       out.iframes = P.invulnT;
       out.rollSta = 100 - 12 - P.sta; // 轻斩 12 + 翻滚
+      // 4) 蓄力不足 0.3 秒就松手:只有先出的那一记轻击,重击不出手("轻 + 秒放重击"不再白赚一刀)
+      A.reset(1);
+      const [q] = A.foes(1);
+      A.place(q, 0, 1.6);
+      P.sta = 100;
+      g.attackDown();
+      let c = 0;
+      while (!P.charging && c < 40) { g.step(1); c++; }
+      out.quickCharged = P.charging;
+      g.step(6); g.attackUp(); g.step(40);
+      out.quickDmg = 50 - q.hp;
       return out;
     });
     if (r.plungeEarly) throw new Error('起跳下一帧就出了跳劈(应等跳够高)');
+    if (!(r.hangFrames >= 6 && r.hangFrames <= 8) || r.hangDrift > 0.01) throw new Error(`跳劈前摇应在半空顿住约 0.12 秒:${r.hangFrames} 帧,漂移 ${r.hangDrift}`);
     if (!(r.plungeAt >= 0.14 && r.plungeAt <= 0.3)) throw new Error(`跳劈起手时刻不对:${r.plungeAt.toFixed(2)}s(缓冲应在够高时自动出手)`);
     if (!(r.plungeH >= 0.99)) throw new Error(`跳劈起手高度不够:${r.plungeH.toFixed(2)}m`);
     if (!(r.landLag > 0.5)) throw new Error(`跳劈落地没有硬直:${r.landLag}`);
@@ -447,6 +481,8 @@ const TESTS = {
     if (!r.bufferedHit || !r.rolled) throw new Error(`缓冲翻滚不对:刀${r.bufferedHit ? '' : '没'}落下,${r.rolled ? '' : '没'}滚出去`);
     if (Math.abs(r.iframes - 0.25) > 0.02) throw new Error(`翻滚无敌帧应为 0.25 秒,实际 ${r.iframes}`);
     if (r.rollSta !== 20) throw new Error(`翻滚体力应为 20,实际 ${r.rollSta}`);
+    if (!r.quickCharged) throw new Error('按住没有转入蓄力');
+    if (r.quickDmg !== 1) throw new Error(`蓄力不足 0.3 秒松手不该出重击:总伤害 ${r.quickDmg}(应只有轻击的 1)`);
   },
   // 防御规则:弹反窗 150ms;松盾 0.4 秒内再举不重开弹反窗、举了 0.3 秒没等到刀 = 落空冷却 0.6 秒(连点右键换不来弹反);
   // 一次弹反只换一次处决;精英处决封顶最大血量 35%;紫圈(破盾)弹不开、挡下也吃满伤害 + 0.6 秒硬直
@@ -549,6 +585,8 @@ const TESTS = {
       A.reset(); const [w0] = A.foes(1); A.place(w0, 0, 2, Math.PI); w0.stunT = 1.5; w0.stunSrc = 'parry';
       let wob = 0; for (let i = 0; i < 20; i++) { g.step(1); wob = Math.max(wob, Math.abs(w0.group.rotation.z)); }
       out.wobble = wob;
+      w0.stunT = 0; w0.stunSrc = ''; g.step(1); // 踉跄被处决用掉:身子要扶正
+      out.wobbleAfter = Math.abs(w0.group.rotation.z);
       // 7) 狼扑:走廊判定(侧偏 1.1 米咬中、1.3 米落空),自然起扑时画 5.4×2.4 的长条
       A.reset();
       const wolf = g.wolves.find((x) => !x._prol);
@@ -591,6 +629,7 @@ const TESTS = {
     if (r.slashArmL < -1) throw new Error('红圈劈砍不该双手举刀(和紫圈分不开)');
     if (r.fleeWindup > 0 || r.fleeSector > 0) throw new Error(`吓跑后起手没收(windup ${r.fleeWindup},扇形 ${r.fleeSector})`);
     if (!(r.wobble > 0.05)) throw new Error('踉跄时身子不晃');
+    if (r.wobbleAfter > 1e-6) throw new Error(`踉跄被用掉后身子还歪着:${r.wobbleAfter}`);
     if (!r.wolf.lat11 || r.wolf.lat13) throw new Error(`狼扑判定走廊应为两侧 1.2m:${JSON.stringify(r.wolf)}`);
     if (!r.wolfRect || Math.abs(r.wolfRect.len - 5.4) > 1e-6 || Math.abs(r.wolfRect.width - 2.4) > 1e-6) throw new Error(`狼扑预警应为 5.4×2.4 的长条:${JSON.stringify(r.wolfRect)}`);
     if (r.braceDmg !== 2) throw new Error(`疾驰冲进举刀扎马的盗贼应挨 2 下,实际 ${r.braceDmg}`);

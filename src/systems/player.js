@@ -262,7 +262,10 @@ export function updatePlayer(dt) {
   player.airT = player.onGround ? 0 : (player.airT || 0) + dt; // 滞空计时(跳劈要跳够高/够久)
   const wasAirborne = !player.onGround;
   const fallSpeed = player.vy;
-  player.vy -= 22 * dt;
+  if (player.plunging && player.plungeHangT > 0) { // 跳劈前摇:半空顿住举剑,顿完 16 m/s 砸下去
+    player.plungeHangT -= dt;
+    player.vy = player.plungeHangT > 0 ? 0 : -16;
+  } else player.vy -= 22 * dt;
   // 抱着鸡:扑腾缓降(塞尔达欠我们的)
   if (player.carrying && player.vy < -2.4) player.vy = -2.4;
   player.pos.y += player.vy * dt;
@@ -316,12 +319,23 @@ export function updatePlayer(dt) {
     player.parts.armR.rotation.z = 0;
   }
   if (!player.blocking) player.parts.armL.rotation.z = 0;
+  // 出招时左手不再跟着走路甩:巨剑双手握柄、跟着右手一起抡;持盾的手在挥刀时收到身前护住
+  if (player.parts._attackAnim && !player.blocking) {
+    if (player.weapon === 'greatsword') player.parts.armL.rotation.x = player.parts.armR.rotation.x * 0.92;
+    else if (player.attackT > 0) {
+      const t = 1 - player.attackT / (player.attackDur || 0.35);
+      player.parts.armL.rotation.x = -0.7 * Math.sin(Math.min(1, t * 1.25) * Math.PI);
+    }
+  }
   playerShield.rotation.y = player.blocking ? -1.1 : 0; // 举盾时盾面转向正前
-  // 施法:抬手前推(火球聚能时一直举着)
-  if ((player.castPoseT > 0 || player.fireCharging) && !player.parts._attackAnim && !player.blocking) {
-    player.parts.armR.rotation.x = -1.45;
-    player.parts.armR.rotation.z = 0.15;
-    player.parts.armL.rotation.x = -1.1;
+  // 施法:抬手前推(火球聚能时一直举着);抬起/放下用 0.08 秒过渡,不再一帧瞬切
+  const casting = (player.castPoseT > 0 || player.fireCharging) && !player.parts._attackAnim && !player.blocking;
+  player._castK = Math.max(0, Math.min(1, (player._castK || 0) + (casting ? dt : -dt) / 0.08));
+  if (player._castK > 0 && !player.parts._attackAnim && !player.blocking) {
+    const k = player._castK * player._castK * (3 - 2 * player._castK); // 缓入缓出
+    player.parts.armR.rotation.x += (-1.45 - player.parts.armR.rotation.x) * k;
+    player.parts.armR.rotation.z += (0.15 - player.parts.armR.rotation.z) * k;
+    player.parts.armL.rotation.x += (-1.1 - player.parts.armL.rotation.x) * k;
   }
   // 挨打:身子一缩、往后一仰(0.3 秒硬直)
   if (player.hurtT > 0) {

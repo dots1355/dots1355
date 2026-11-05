@@ -126,7 +126,7 @@ export function updatePrologue(dt) {
     P.step = 3; P.t = 0;
     F.blocked = false;
     callout(F.rolled ? '漂亮的翻滚!' : '下次早点滚', 'gold');
-    setTutor('右键', '按住右键举盾,挡下它的下一次扑咬', '亮区快长满(出手前一瞬)时才举盾 = 完美弹反:它会踉跄,还击伤害 ×2.5');
+    setTutor('右键', '按住右键举盾,挡下它的下一次扑咬', '亮区快长满(出手前一瞬)时才举盾 = 完美弹反:它会踉跄,下一刀就是处决 ×5');
   } else if (P.step === 3 && (F.blocked || P.t > 25)) {
     P.step = 4; P.t = 0;
     callout(F.parried ? '完美弹反!' : '挡住了!', 'gold');

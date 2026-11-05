@@ -31,9 +31,13 @@ import { spawnDust } from './weather.js';
 // 出招中按下的键进缓冲(0.35 秒内有效),收刀前一刻自动接上,连按不吞键。
 // 伤害在"判定帧"(刀真正劈到的那一刻)结算,刀光与命中同帧;被打断则这刀作废。
 const CHARGE_START = 0.2, CHARGE_FULL = 1.0, ATK_BUFFER = 0.35;
+// 蓄力不足 0.3 秒就松手:这口气没提起来,重击不出手(轻击已经砍出去了)——"轻 + 秒放重击"不再白赚一刀
+const HEAVY_MIN = 0.3;
 // 跳劈:离地 ≥1m 或滞空 ≥0.25 秒才砸得下去(早按的进缓冲,够高了自动出手);体力 22(起跳另耗 8)。
+// 出手先在半空顿住 0.12 秒、把剑举过头顶(看得见的前摇),再砸下去;
 // 落地后 0.6 秒硬直(跳不起、滚不了、举不起盾);正前 180° 内 2 伤、身后 1 伤,最多砸中两人(player.js 落地结算)
 const PLUNGE_MIN_H = 1.0, PLUNGE_MIN_AIR = 0.25, PLUNGE_STA = 22;
+const PLUNGE_HANG = 0.12;
 export const plungeReady = () => player.pos.y >= PLUNGE_MIN_H || (player.airT || 0) >= PLUNGE_MIN_AIR;
 const plungeWait = () => !player.onGround && !player.mounted && player.weapon !== 'bow' && !player.plunging && !plungeReady();
 // 弹反:举盾那一刻起 150ms 内挨刀 = 完美弹反。松盾后 0.4 秒内再举不重开弹反窗;
@@ -103,6 +107,7 @@ export function cancelCharge() {
   if (!(player.attackT > 0)) player.parts._attackAnim = false;
 }
 function releaseCharge() {
+  if (player.weapon !== 'bow' && player.chargeT < HEAVY_MIN) { cancelCharge(); return; } // 弓例外:没拉满就是普通一箭
   const k = Math.min(1, player.chargeT / CHARGE_FULL);
   player.charging = false;
   player.chargeT = 0;
@@ -266,9 +271,11 @@ export function tryAttack() {
     if (!spendSta(Math.round(PLUNGE_STA * (def.staMul || 1)))) return false;
     player._stance = 'overhead'; // 跳劈就是从天而降的下劈
     player.plunging = true;
-    player.vy = -16;
-    player.attackT = def.cd;
-    player.attackDur = def.cd * 1.4;
+    player.plungeHangT = PLUNGE_HANG; // 半空顿住举剑,随后 16 m/s 砸下(player.js)
+    player.vy = 0;
+    player._animFrom = 0;
+    player.attackT = 0.5; // 举剑(顿住的这一下)→ 砸落 → 落地收势,动作铺满整段
+    player.attackDur = 0.5;
     sfx.sword();
     return true;
   }
@@ -424,9 +431,6 @@ function chargedShot() {
   skillXp('archery', 2);
   toast('🏹 满月!', 1);
 }
-
-
-
 
 // 蓄力光与圆盾挂上玩家的手臂(玩家建好后,启动装配调用)
 export function initAttack() {

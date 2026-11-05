@@ -673,6 +673,7 @@ export function meleeSweep(dmg, range, arcDot, knock, opts = {}) {
     if (T.hostile && !e.dead && !(e.downT > 0) && dmg > 0) flinch(e, heavy);
   }
   const execTarget = h.execTarget, executed = !!execTarget;
+  if (foesHit && dmg > 0) hitStop(0.06); // 刀砍实了:顿一帧半(受击闪白那 35ms 太短,手上没分量)
   if (foesHit && dmg > 0 && !executed && opts.kind) notePracticeHit(opts.kind); // 序章的出刀练习按"打中"计
   if (executed) { // 处决演出:时停 + 震屏 + 镜头急推;目击者胆寒;按武器各有终结技
     hitStop(0.22);

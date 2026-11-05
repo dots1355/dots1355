@@ -133,6 +133,10 @@ function staggerPose(e) {
   if (e.parts && e.parts.armR) { e.parts.armR.rotation.x = 0.45 * k; e.parts.armR.rotation.z = 0; }
   if (k <= 0) e.group.rotation.z = 0;
 }
+// 踉跄被提前收掉(处决用掉了这次踉跄、被别的效果清零)时,把打晃的身子扶正——否则会一直歪着站
+function settleStagger(e) {
+  if (e.group.rotation.z !== 0 && !(e.stunT > 0)) e.group.rotation.z = 0;
+}
 
 // ================= 反骑兵(盗贼) =================
 // 疾驰的马头正冲着自己、7 米内:四成侧扑让开,三成五举刀扎马(红扇形;骑手冲进 2.4 米正面就挨 2 下、半数被掀下马),
@@ -187,11 +191,10 @@ function tickBrace(b, dt) {
 }
 
 // ================= 实体更新 =================
-
-
 export function updateGuards(dt) {
   for (const g of guards) {
     clearStaleMove(g);
+    settleStagger(g);
     if (g.downT > 0) {
       g.downT -= dt;
       if (g.downT <= 0) { g.hp = 3; g.group.rotation.x = 0; g.state = 'patrol'; }
@@ -311,6 +314,7 @@ export function updateBandits(dt) {
       continue;
     }
     clearStaleMove(b);
+    settleStagger(b);
     if (!specialBandit(b) && !b.warband && entFar(b)) continue; // 远处匪徒待机(特殊身份/战团要行军,不休眠)
     // Boss 二阶段:血量过半即狂暴——提速、加伤、召两名亲卫
     if (b.boss && !b.enraged && b.hp <= (b.maxHp || 12) / 2) {
@@ -540,6 +544,7 @@ export function updateWolves(dt) {
       w.group.rotation.z = w.stunT > 0 ? Math.sin(simNow() * 0.012 + w.walkT) * 0.14 * Math.min(1, w.stunT * 2) : 0;
       continue;
     }
+    settleStagger(w);
     if (w._hold) { // 序章:在场边候着,盯着你看
       w.yaw = angleLerp(w.yaw, Math.atan2(player.pos.x - w.pos.x, player.pos.z - w.pos.z), dt * 4);
       w.group.rotation.y = w.yaw;
@@ -653,7 +658,6 @@ export function updateWolves(dt) {
     w.parts.legs[3].rotation.x = swing;
   }
 }
-
 
 // 村民日程:清晨在家门口 → 白天上工 → 黄昏去旅店/广场 → 夜里回家睡觉
 export function updateVillagers(dt) {
