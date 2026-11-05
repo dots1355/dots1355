@@ -116,6 +116,16 @@ function hoodGeo() {
   if (_hatGeo.hood) return _hatGeo.hood;
   const shell = new THREE.SphereGeometry(HOOD_R, 24, 16, 0, Math.PI * 2, 0, Math.PI * 0.74);
   const p = shell.attributes.position, v = new THREE.Vector3(), ax = new THREE.Vector3();
+  // 三个角都落在开口锥里的三角形整片删掉:推到开口边上的三个点方位各不相同,三角形并不退化,
+  // 会在脸前张一张"布膜"(只有鼻尖戳得出来——上一版主角的绿脸就是它)
+  const inside = new Uint8Array(p.count);
+  for (let i = 0; i < p.count; i++) inside[i] = Math.acos(Math.min(1, v.fromBufferAttribute(p, i).normalize().dot(HOOD_C))) < HOOD_A ? 1 : 0;
+  const src = shell.index.array, keep = [];
+  for (let k = 0; k < src.length; k += 3) {
+    if (inside[src[k]] && inside[src[k + 1]] && inside[src[k + 2]]) continue;
+    keep.push(src[k], src[k + 1], src[k + 2]);
+  }
+  shell.setIndex(keep);
   for (let i = 0; i < p.count; i++) {
     v.fromBufferAttribute(p, i).normalize();
     const b = Math.acos(Math.min(1, v.dot(HOOD_C)));

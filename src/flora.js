@@ -6,6 +6,7 @@
 import * as THREE from 'three';
 import { nordicColor } from './entities.js';
 import { plainStandard, vpbrMaterial, bakeVPBR, INSTANCED_DEPTH } from './gfx/vpbr.js';
+import { mergeGeometries } from '../lib/jsm/utils/BufferGeometryUtils.js';
 
 // ---- 可复现随机(素材池用固定种子,形状稳定) ----
 function makeRng(seed) {
@@ -192,6 +193,50 @@ export function setNatureModels(root) {
   }
 }
 export function hasNature() { return Object.keys(NATURE).length > 0; }
+// 原始模板(只读:world.js 拿营地道具按材质槽配贴图,另建自己的几何,不改模板)
+export function natureTemplate(name) { return NATURE[name] || null; }
+
+// 立石(符文立石 / 先祖石环 / 铭文碑共用):六棱、收分、斜顶的粗糙石板,刻面 + 顶点色(根部青苔、顶部风化发白)
+// + 正面平面投影 UV(刻字/石纹贴图只落在正反两块大面上),脚下一圈半埋的碎石。
+// w 宽度倍率、h 高、d 前后压扁比例、slant 斜顶量、rubble 碎石块数;同一 seed 同一块石头(默认参数即符文立石)
+export function standingStoneGeo(seed, { w = 1, h = 2.15, d = 0.62, slant = 0.26, rubble = 6 } = {}) {
+  let sd = seed;
+  const rr = () => { sd = (sd * 16807) % 2147483647; return sd / 2147483647; };
+  const k = h / 2.15; // 青苔/风化带随高度等比
+  const parts = [];
+  const body = new THREE.CylinderGeometry(0.5 * w, 0.56 * w, h, 6, 4, false, Math.PI / 6).translate(0, h / 2, 0);
+  const p = body.attributes.position;
+  const bump = new Map(); // 同一位置的顶点同样扰动(棱面不裂缝)
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
+    const key = `${x.toFixed(3)},${y.toFixed(3)},${z.toFixed(3)}`;
+    if (!bump.has(key)) bump.set(key, [(rr() - 0.5) * 0.08 * w, (rr() - 0.5) * 0.06 * k, (rr() - 0.5) * 0.05 * w]);
+    const [jx, jy, jz] = bump.get(key);
+    const t = y / h; // 0 底 → 1 顶:上窄下宽、前后压扁成板、斜顶
+    p.setXYZ(i, x * (1 - t * 0.2) + jx, y + jy + x * slant * t * t, z * d * (1 - t * 0.12) + jz);
+  }
+  parts.push(body.toNonIndexed());
+  for (let j = 0; j < rubble; j++) { // 脚下半埋的碎石(二十面体本就是非索引几何)
+    const a = (j / rubble) * Math.PI * 2 + rr() * 0.7, r = (0.72 + rr() * 0.3) * w, s = (0.12 + rr() * 0.14) * w;
+    parts.push(new THREE.IcosahedronGeometry(s, 0).scale(1.2, 0.6, 1)
+      .translate(Math.cos(a) * r, s * 0.15, Math.sin(a) * r * 0.8));
+  }
+  const g = mergeGeometries(parts.map((q) => { q.deleteAttribute('uv'); q.deleteAttribute('normal'); return q; }));
+  g.computeVertexNormals();
+  const P = g.attributes.position, col = new Float32Array(P.count * 3), uv = new Float32Array(P.count * 2);
+  const lin = (v) => Math.pow(v, 2.2); // 顶点色按线性空间进着色器:这里按 sRGB 调好再换算
+  for (let i = 0; i < P.count; i++) {
+    const x = P.getX(i), y = P.getY(i), n = Math.sin(x * 9.1 + y * 5.3 + P.getZ(i) * 7.7) * 0.5 + 0.5;
+    const moss = Math.max(0, 1 - y / (0.8 * k)) * (0.4 + 0.4 * n); // 根部青苔(橄榄绿,不是薄荷绿)
+    const top = Math.max(0, (y - 1.6 * k) / (0.6 * k)); // 顶部风化发白
+    const base = (0.5 + 0.1 * n + 0.16 * top) * (1 - 0.22 * moss);
+    col[i * 3] = lin(base * (1 - moss * 0.3)); col[i * 3 + 1] = lin(base * (1 - moss * 0.1)); col[i * 3 + 2] = lin(base * (0.95 - moss * 0.55));
+    uv[i * 2] = x / (0.78 * w) + 0.5; uv[i * 2 + 1] = (y - 0.42 * k) / (1.25 * k); // 正面平面投影
+  }
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  return g;
+}
 // 其他 GLB 模板(写实橡树/白桦/松树)也登记进实例化管线:核心森林几百棵树只占十来次绘制
 export function registerNatureTemplate(name, obj, spec) {
   obj.updateMatrixWorld(true);

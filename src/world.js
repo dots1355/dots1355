@@ -1,7 +1,9 @@
 // 中世纪开放世界构建:城墙王国、城堡主堡、村庄、集市、风车、农田、森林、湖泊、盗贼营地
 import * as THREE from 'three';
 import { rand } from './core/rng.js';
-import { buildTree, buildPine, buildDeadTree, buildCactus, buildRock, buildBush, getBuildingModel } from './flora.js';
+import {
+  buildTree, buildPine, buildDeadTree, buildCactus, buildBush, getBuildingModel, natureTemplate, standingStoneGeo,
+} from './flora.js';
 import { lambert } from './entities.js';
 import { makeTextures } from './textures.js';
 import { worldTint } from './gfx/surface.js';
@@ -277,6 +279,50 @@ export function buildWorld(scene) {
     glass: windowMat,
   };
   const houseTpls = prepHouseTemplates(getBuildingModel('house'));
+  // ---- 地标建筑(landmarks.glb:风车、黑石要塞、哨塔遗迹、镜框;camp.glb:帐篷、篝火、木箱、旗杆)----
+  // 和民居一样按材质槽拆件、刻面、平面投影 UV(1 单位 = 1 米),贴图按真实米数平铺;同槽材质全图共享(可合批)
+  const LM_MATS = {
+    stone: tileMat(TX.stone, 2.2, { color: 0xe4ded2, roughness: 0.95 }),
+    dstone: tileMat(TX.stone, 1.6, { color: 0xa8a297, roughness: 0.95 }),
+    bstone: tileMat(TX.stone, 2.0, { color: 0x6c6b72, roughness: 0.95 }),
+    wood: HOUSE_MATS.wood, woodlight: tileMat(TX.wood, 1.1, { color: 0x8a6e52, roughness: 0.9 }),
+    plank: HOUSE_MATS.plank, door: HOUSE_MATS.door,
+    roof: tileMat(TX.roof, 2.0, { color: 0x6c5e52, roughness: 0.8 }),
+    canvas: tileMat(TX.canvas, 1.8, { color: 0xc9bc9c, roughness: 0.95, side: THREE.DoubleSide }),
+    canvasdark: tileMat(TX.canvas, 1.8, { color: 0x5a5048, roughness: 0.95, side: THREE.DoubleSide }),
+    cloth: tileMat(TX.canvas, 1.2, { color: 0x8a2c26, roughness: 0.95, side: THREE.DoubleSide }),
+    straw: tileMat(TX.planks, 0.6, { color: 0xb09050, roughness: 1 }),
+    hay: tileMat(TX.planks, 0.5, { color: 0xc8a050, roughness: 1 }),
+    iron: lambert(0x3a3a40, { roughness: 0.45, metalness: 0.75 }),
+    rope: lambert(0x9a8a66, { roughness: 1 }),
+    slit: new THREE.MeshStandardMaterial({ color: 0x0c0c0e, roughness: 1 }),
+    moss: lambert(0x56622e, { roughness: 1 }),
+    ember: new THREE.MeshStandardMaterial({ color: 0xff8a3a, emissive: 0xff5a10, emissiveIntensity: 1.4, roughness: 0.6 }),
+  };
+  LM_MATS.default = LM_MATS.stone;
+  const lmRoot = getBuildingModel('landmarks');
+  const lmParts = new Map();
+  // name:landmarks.glb 里的建筑或 camp.glb 的道具;mats 按材质槽覆盖(比如黑旗);返回 null = 没有模板(走回退)
+  function texModel(name, { x = 0, z = 0, y = 0, yaw = 0, s = 1, mats = null, shadow = true } = {}) {
+    if (!lmParts.has(name)) {
+      const node = (lmRoot && lmRoot.getObjectByName(name)) || natureTemplate(name);
+      lmParts.set(name, node ? prepParts(node) : null);
+    }
+    const parts = lmParts.get(name);
+    if (!parts) return null;
+    const g = new THREE.Group();
+    for (const p of parts) {
+      const m = new THREE.Mesh(p.geo, (mats && mats[p.slot]) || LM_MATS[p.slot] || LM_MATS.default);
+      m.castShadow = shadow;
+      m.receiveShadow = true;
+      g.add(m);
+    }
+    g.position.set(x, y, z);
+    g.rotation.y = yaw;
+    if (s !== 1) g.scale.setScalar(s);
+    return g;
+  }
+  const facing = (x, z, tx, tz) => Math.atan2(tz - z, -(tx - x)); // 让模板的 -X 面(帐篷门、风车帆)朝向目标
   const propRng = (() => { let s = 0x5eed1234; return () => { s = (s * 16807) % 2147483647; return (s - 1) / 2147483646; }; })();
   let houseIdx = 0;
   function house(x, z, rotDeg = 0, w = 6, d = 5, h = 3.2, kind = null, props = true) {
@@ -604,27 +650,31 @@ export function buildWorld(scene) {
   field(-18, 92, 20, 12, 'cabbage');
   field(52, 96, 18, 10, 'wheat');
 
-  // ---- 风车磨坊(投递任务目标)----
+  // ---- 风车磨坊(投递任务目标):石砌塔身 + 观风台 + 木瓦葱头帽 + 尾杆;格栅风帆朝西(迎着王都)转 ----
   const windmillPos = new THREE.Vector3(140, 0, 20);
   {
-    const t = new THREE.Mesh(new THREE.CylinderGeometry(2.6, 3.6, 10, 8), lambert(0xe8dcc0));
-    t.position.set(140, 5, 20);
-    t.castShadow = true;
-    scene.add(t);
-    const roof = new THREE.Mesh(new THREE.ConeGeometry(3.2, 2.6, 8), lambert(0x8a5a33));
-    roof.position.set(140, 11.2, 20);
-    roof.castShadow = true;
-    scene.add(roof);
     const hub = new THREE.Group();
-    hub.position.set(140 - 3.1, 8.5, 20);
-    for (let i = 0; i < 4; i++) {
-      const bladePivot = new THREE.Group();
-      bladePivot.rotation.x = (i * Math.PI) / 2;
-      const blade = new THREE.Mesh(new THREE.BoxGeometry(0.12, 6.2, 1.1), lambert(0xd9cdae));
-      blade.position.y = 3.4;
-      blade.castShadow = true;
-      bladePivot.add(blade);
-      hub.add(bladePivot);
+    const mill = texModel('Windmill', { x: 140, z: 20 });
+    if (mill) {
+      scene.add(mill);
+      for (const m of mill.children) if (m.material === LM_MATS.stone) occluders.push(m); // 塔身挡相机
+      hub.position.set(140 - 3.6, 11.0, 20); // 轮毂(gen-landmarks.py 的 HUB)
+      hub.add(texModel('MillSails'));
+      circle(140 + 7.5, 20, 0.8); // 尾杆落地的绞盘
+    } else {
+      const t = new THREE.Mesh(new THREE.CylinderGeometry(2.6, 3.6, 10, 8), lambert(0xe8dcc0));
+      t.position.set(140, 5, 20);
+      t.castShadow = true;
+      scene.add(t);
+      hub.position.set(140 - 3.1, 8.5, 20);
+      for (let i = 0; i < 4; i++) {
+        const bladePivot = new THREE.Group();
+        bladePivot.rotation.x = (i * Math.PI) / 2;
+        const blade = new THREE.Mesh(new THREE.BoxGeometry(0.12, 6.2, 1.1), lambert(0xd9cdae));
+        blade.position.y = 3.4;
+        bladePivot.add(blade);
+        hub.add(bladePivot);
+      }
     }
     scene.add(hub);
     windmills.push(hub);
@@ -632,24 +682,38 @@ export function buildWorld(scene) {
     feat('windmill', 140, 20, 7, 7);
   }
 
-  // ---- 盗贼营地 ----
+  // ---- 盗贼营地:三顶 A 字帆布帐篷围着石圈篝火,门帘朝火;木箱、黑旗、一道拒马 ----
   const banditCamp = new THREE.Vector3(-130, 0, -60);
   {
-    for (const [dx, dz] of [[-4, -3], [5, -1], [0, 5]]) {
-      const tent = new THREE.Mesh(new THREE.ConeGeometry(2.4, 3.2, 6), lambert(0x5d4a33));
-      tent.position.set(-130 + dx, 1.6, -60 + dz);
-      tent.castShadow = true;
-      scene.add(tent);
-      circle(-130 + dx, -60 + dz, 2.2);
-      feat('tent', -130 + dx, -60 + dz, 4, 4);
+    const C = banditCamp;
+    const tents = [['Tent', -4, -3], ['Tent', 5, -1], ['TentDark', 0, 5]];
+    for (const [name, dx, dz] of tents) {
+      const x = C.x + dx, z = C.z + dz;
+      const t = texModel(name, { x, z, yaw: facing(x, z, C.x, C.z), s: 1.25 });
+      if (t) scene.add(t);
+      else {
+        const cone = new THREE.Mesh(new THREE.ConeGeometry(2.4, 3.2, 6), lambert(0x5d4a33));
+        cone.position.set(x, 1.6, z);
+        scene.add(cone);
+      }
+      circle(x, z, 2.2);
+      feat('tent', x, z, 4, 4);
     }
-    // 篝火
-    const fire = new THREE.Mesh(new THREE.ConeGeometry(0.5, 1, 6),
-      new THREE.MeshLambertMaterial({ color: 0xff7722, emissive: 0xff5500 }));
-    fire.position.set(-130, 0.5, -60);
+    const fireRing = texModel('Campfire', { x: C.x, z: C.z, s: 1.2 });
+    if (fireRing) scene.add(fireRing);
+    for (const [name, dx, dz, yaw, sc] of [['Crates', -7.5, 1.5, 0.4, 1], ['Crates', 7.8, 3.6, 2.1, 0.85], ['Banner', 3.5, -6.5, 0.3, 1.1],
+      ['Fence', -2.5, -9.5, 0.15, 1], ['Fence', 6.5, -8.0, -0.5, 1]]) {
+      const m = texModel(name, { x: C.x + dx, z: C.z + dz, yaw, s: sc, mats: name === 'Banner' ? { cloth: LM_MATS.canvasdark } : null });
+      if (m) scene.add(m);
+    }
+    circle(C.x - 7.5, C.z + 1.5, 0.9); circle(C.x + 7.8, C.z + 3.6, 0.8);
+    // 篝火:两片交叉的火舌(入夜随火把一起闪)
+    const flameMat = new THREE.MeshLambertMaterial({ color: 0xff7722, emissive: 0xff5500, side: THREE.DoubleSide });
+    const fire = new THREE.Mesh(new THREE.ConeGeometry(0.42, 1.1, 6, 1, true), flameMat);
+    fire.position.set(C.x, 0.62, C.z);
     scene.add(fire);
     const fireLight = new THREE.PointLight(0xff8844, 0, 22, 2);
-    fireLight.position.set(-130, 1.5, -60);
+    fireLight.position.set(C.x, 1.5, C.z);
     scene.add(fireLight);
     torches.push({ light: fireLight, flame: fire, base: 12 });
   }
@@ -710,43 +774,7 @@ export function buildWorld(scene) {
   // 本体是六棱、收分、斜顶的粗糙石板(平直着色 + 顶点色:根部青苔、顶部风化发白),脚下一圈半埋的碎石;
   // 符文沿正面平面投影:底色贴图只画刻槽(其余纯白,乘顶点色),发光贴图只画刻痕;另有一片深色泥土垫底
   const rune = makeRuneTextures();
-  const RUNE_GEO = (() => {
-    let sd = 4242;
-    const rr = () => { sd = (sd * 16807) % 2147483647; return sd / 2147483647; };
-    const parts = [];
-    const body = new THREE.CylinderGeometry(0.5, 0.56, 2.15, 6, 4, false, Math.PI / 6).translate(0, 1.075, 0);
-    const p = body.attributes.position;
-    const bump = new Map(); // 同一位置的顶点同样扰动(棱面不裂缝)
-    for (let i = 0; i < p.count; i++) {
-      const x = p.getX(i), y = p.getY(i), z = p.getZ(i);
-      const key = `${x.toFixed(3)},${y.toFixed(3)},${z.toFixed(3)}`;
-      if (!bump.has(key)) bump.set(key, [(rr() - 0.5) * 0.08, (rr() - 0.5) * 0.06, (rr() - 0.5) * 0.05]);
-      const [jx, jy, jz] = bump.get(key);
-      const t = y / 2.15; // 0 底 → 1 顶:上窄下宽、前后压扁成板、斜顶
-      p.setXYZ(i, x * (1 - t * 0.2) + jx, y + jy + x * 0.26 * t * t, z * 0.62 * (1 - t * 0.12) + jz);
-    }
-    parts.push(body.toNonIndexed());
-    for (let k = 0; k < 6; k++) { // 脚下半埋的碎石(二十面体本就是非索引几何)
-      const a = (k / 6) * Math.PI * 2 + rr() * 0.7, r = 0.72 + rr() * 0.3, s = 0.12 + rr() * 0.14;
-      parts.push(new THREE.IcosahedronGeometry(s, 0).scale(1.2, 0.6, 1)
-        .translate(Math.cos(a) * r, s * 0.15, Math.sin(a) * r * 0.8));
-    }
-    const g = mergeGeometries(parts.map((q) => { q.deleteAttribute('uv'); q.deleteAttribute('normal'); return q; }));
-    g.computeVertexNormals();
-    const P = g.attributes.position, col = new Float32Array(P.count * 3), uv = new Float32Array(P.count * 2);
-    for (let i = 0; i < P.count; i++) {
-      const x = P.getX(i), y = P.getY(i), n = Math.sin(x * 9.1 + y * 5.3 + P.getZ(i) * 7.7) * 0.5 + 0.5;
-      const moss = Math.max(0, 1 - y / 0.8) * (0.4 + 0.4 * n); // 根部青苔(橄榄绿,不是薄荷绿)
-      const top = Math.max(0, (y - 1.6) / 0.6); // 顶部风化发白
-      const base = (0.5 + 0.1 * n + 0.16 * top) * (1 - 0.22 * moss);
-      const lin = (v) => Math.pow(v, 2.2); // 顶点色按线性空间进着色器:这里按 sRGB 调好再换算
-      col[i * 3] = lin(base * (1 - moss * 0.3)); col[i * 3 + 1] = lin(base * (1 - moss * 0.1)); col[i * 3 + 2] = lin(base * (0.95 - moss * 0.55));
-      uv[i * 2] = x / 0.78 + 0.5; uv[i * 2 + 1] = (y - 0.42) / 1.25; // 正面平面投影:刻痕只落在正反两块大面上
-    }
-    g.setAttribute('color', new THREE.BufferAttribute(col, 3));
-    g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
-    return g;
-  })();
+  const RUNE_GEO = standingStoneGeo(4242); // 六棱收分斜顶石板 + 脚下碎石 + 顶点色 + 正面投影 UV(flora.js,石环/铭文碑同一画法)
   const RUNE_SOIL = new THREE.CircleGeometry(1.3, 14).rotateX(-Math.PI / 2).translate(0, 0.025, 0);
   const runeSoilMat = new THREE.MeshStandardMaterial({ color: 0x4a4032, roughness: 1, transparent: true, opacity: 0.5,
     depthWrite: false, polygonOffset: true, polygonOffsetFactor: -1 });
@@ -1037,7 +1065,12 @@ export function buildWorld(scene) {
   }
 
   // 北境群山已并入地形(terrain.js 的 mountainH);地图上的岩灰与雪顶由 mapColor 按山体高度着色
-  const rockMat = lambert(0x6e6a72, { roughness: 0.98, flatShading: true }); // 立石/方尖碑共用
+  // 立石(石环、三石村)共用:顶点色给青苔与风化,地衣石纹贴图给麻点与斑驳(平面投影在正反两面)
+  const menhirMat = new THREE.MeshStandardMaterial({ vertexColors: true, map: TX.lichen.map, normalMap: TX.lichen.normalMap,
+    roughness: 0.95, metalness: 0 });
+  menhirMat.userData.wettable = true;
+  menhirMat.userData.baseRough = 0.95;
+  const menhirGeos = [101, 202, 303].map((sd) => standingStoneGeo(sd, { w: 1.5, h: 3.4, d: 0.6, rubble: 4 }));
 
   // ---- 苇岸渔村 ----
   house(-110, 58, 90, 5, 4, 2.6, 'HouseC');
@@ -1093,22 +1126,22 @@ export function buildWorld(scene) {
     scene.add(bench);
   }
 
-  // ---- 哨塔遗迹 ----
+  // ---- 哨塔遗迹:断顶的圆石塔(拱门朝南、窗洞、斜插的残梁),塌下来的方石散了一地;能从门洞走进去 ----
   {
-    const ruin = new THREE.Mesh(new THREE.CylinderGeometry(3.4, 3.9, 7, 10, 1, false), towerMat);
-    ruin.position.set(80, 3.5, -120);
-    ruin.rotation.z = 0.06;
-    ruin.castShadow = true;
-    scene.add(ruin);
-    // 断口碎石
-    for (let i = 0; i < 7; i++) {
-      const a = rand() * Math.PI * 2;
-      const rk = buildRock(rand);
-      rk.group.scale.setScalar(0.7);
-      rk.group.position.set(80 + Math.cos(a) * (4.5 + rand() * 3), 0, -120 + Math.sin(a) * (4.5 + rand() * 3));
-      scene.add(rk.group);
+    const ruin = texModel('WatchRuin', { x: 80, z: -120 });
+    if (ruin) {
+      scene.add(ruin);
+      for (let i = 0; i < 14; i++) { // 环墙碰撞(门洞朝 +Z 留口)
+        const a = (i / 14) * Math.PI * 2;
+        if (Math.abs(Math.atan2(Math.sin(a - Math.PI / 2), Math.cos(a - Math.PI / 2))) < 0.3) continue;
+        circle(80 + Math.cos(a) * 3.12, -120 + Math.sin(a) * 3.12, 0.78);
+      }
+    } else {
+      const m = new THREE.Mesh(new THREE.CylinderGeometry(3.4, 3.9, 7, 10, 1, false), towerMat);
+      m.position.set(80, 3.5, -120);
+      scene.add(m);
+      circle(80, -120, 4.2);
     }
-    circle(80, -120, 4.2);
     feat('tower', 80, -120, 7, 7);
   }
 
@@ -1133,57 +1166,111 @@ export function buildWorld(scene) {
     feat('tent', -40, -120, 18, 14);
   }
 
-  // ---- 先祖石环 ----
-  for (let i = 0; i < 6; i++) {
-    const a = (i / 6) * Math.PI * 2;
-    const sx = 170 + Math.cos(a) * 8, sz = -60 + Math.sin(a) * 8;
-    const menhir = new THREE.Mesh(new THREE.BoxGeometry(1.3, 3 + rand(), 0.9), rockMat);
-    menhir.position.set(sx, 1.5, sz);
-    menhir.rotation.y = a;
-    menhir.rotation.z = (rand() - 0.5) * 0.15;
-    menhir.castShadow = true;
-    scene.add(menhir);
-    circle(sx, sz, 0.9);
+  // ---- 先祖石环:九块风化立石(与符文立石同一画法:六棱收分、刻面、根部青苔),北面一座三石门,两块已经倒了 ----
+  {
+    const SC = { x: 170, z: -60 };
+    const circleMat = menhirMat, stoneGeos = menhirGeos;
+    const N = 9;
+    for (let i = 0; i < N; i++) {
+      const a = (i / N) * Math.PI * 2 + 0.2;
+      const sx = SC.x + Math.cos(a) * 8.5, sz = SC.z + Math.sin(a) * 8.5;
+      const north = Math.sin(a) < -0.85; // 北面那一块做成三石门(两根立柱 + 横楣)
+      const fallen = i === 2 || i === 6;
+      const st = new THREE.Mesh(stoneGeos[i % 3], circleMat);
+      st.castShadow = st.receiveShadow = true;
+      const s0 = 0.85 + ((i * 37) % 10) / 30;
+      st.scale.setScalar(s0);
+      st.position.set(sx, fallen ? 0.35 : 0, sz);
+      st.rotation.set(fallen ? Math.PI / 2 - 0.08 : (((i * 13) % 5) - 2) * 0.03, -a + Math.PI / 2, fallen ? 0.2 : 0);
+      if (north) {
+        const tc = Math.cos(a + Math.PI / 2), ts = Math.sin(a + Math.PI / 2);
+        for (const k of [-1, 1]) {
+          const post = new THREE.Mesh(stoneGeos[(i + 1) % 3], circleMat);
+          post.castShadow = post.receiveShadow = true;
+          post.scale.set(0.8, 1.15, 0.9);
+          post.position.set(sx + tc * k * 1.55, 0, sz + ts * k * 1.55);
+          post.rotation.y = -a + Math.PI / 2;
+          scene.add(post);
+          circle(post.position.x, post.position.z, 0.75);
+        }
+        const lintel = new THREE.Mesh(stoneGeos[2], circleMat);
+        lintel.castShadow = lintel.receiveShadow = true;
+        lintel.scale.set(0.75, 1.25, 0.8);
+        lintel.position.set(sx - tc * 2.1, 4.25, sz - ts * 2.1);
+        lintel.rotation.set(0, -a + Math.PI / 2, -Math.PI / 2);
+        lintel.rotation.order = 'YXZ';
+        scene.add(lintel);
+        continue;
+      }
+      scene.add(st);
+      circle(sx, sz, fallen ? 1.2 : 0.9);
+    }
+    feat('tower', SC.x, SC.z, 18, 18);
   }
-  feat('tower', 170, -60, 18, 18);
 
-  // ---- 黑石要塞(盗贼老巢) ----
+  // ---- 黑石要塞(盗贼老巢):八边形黑石城墙(南面门楼、两段塌墙可翻进去)、七座角楼与一座塌了半边的圆塔,
+  //      院里是头目的大帐、黑旗和篝火 ----
   const fortPos = new THREE.Vector3(-170, 0, -90);
   {
-    // 木栅栏圆环(南侧留门)
-    for (let i = 0; i < 26; i++) {
-      const a = (i / 26) * Math.PI * 2;
-      if (a > Math.PI * 0.38 && a < Math.PI * 0.62) continue; // 南门缺口
-      const px = -170 + Math.cos(a) * 14, pz = -90 + Math.sin(a) * 14;
-      const log = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.4, 4.4 + (i % 3) * 0.3, 6), woodMat);
-      log.position.set(px, 2.2, pz);
-      log.castShadow = true;
-      scene.add(log);
-      circle(px, pz, 0.6);
+    const F = fortPos;
+    const WL = 10.8, RV = WL / (2 * Math.sin(Math.PI / 8)), AP = RV * Math.cos(Math.PI / 8); // 边长、顶点半径、边心距
+    const hasFort = !!(lmRoot && lmRoot.getObjectByName('FortWall'));
+    for (let k = 0; k < 8; k++) {
+      const th = (k + 1) * Math.PI / 4; // 边的中点方位(π/2 = 南,门楼)
+      const cx = F.x + Math.cos(th) * AP, cz = F.z + Math.sin(th) * AP;
+      const yaw = Math.PI / 2 - th;    // 模板 +Z(游戏)= 城外
+      const gate = k === 1, breach = k === 3 || k === 6;
+      const name = gate ? 'FortGate' : breach ? 'FortWallB' : 'FortWall';
+      if (hasFort) scene.add(texModel(name, { x: cx, z: cz, yaw }));
+      const tx = -Math.sin(th), tz = Math.cos(th); // 沿墙方向
+      if (gate) { // 门楼两墩
+        for (const t of [-1, 1]) {
+          circle(cx + tx * t * 3.6, cz + tz * t * 3.6, 1.35);
+          circle(cx + tx * t * 4.7, cz + tz * t * 4.7, 1.0);
+        }
+      } else if (breach) { // 只有两头的残墙挡人
+        for (const t of [-4.6, -3.6, 3.6, 4.6]) circle(cx + tx * t, cz + tz * t, 0.95);
+      } else {
+        for (let t = -4.5; t <= 4.51; t += 1.5) circle(cx + tx * t, cz + tz * t, 1.0);
+      }
+      if (!hasFort && !gate) { // 回退:一排木桩
+        for (let t = -4.5; t <= 4.51; t += 1.5) {
+          const log = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.4, 4.4, 6), woodMat);
+          log.position.set(cx + tx * t, 2.2, cz + tz * t);
+          scene.add(log);
+        }
+      }
+      // 顶点(两墙相接处)立角楼;西北角那座塌了半边
+      const ph = th + Math.PI / 8;
+      const vx = F.x + Math.cos(ph) * RV, vz = F.z + Math.sin(ph) * RV;
+      if (hasFort) scene.add(texModel(k === 4 ? 'FortRuin' : 'FortTower', { x: vx, z: vz, yaw: Math.PI / 2 - ph }));
+      circle(vx, vz, k === 4 ? 2.9 : 2.8);
     }
-    // 头目大帐
-    const bigTent = new THREE.Mesh(new THREE.ConeGeometry(4, 5, 7), lambert(0x3a3a42, { roughness: 1 }));
-    bigTent.position.set(-170, 2.5, -96);
-    bigTent.castShadow = true;
-    scene.add(bigTent);
-    circle(-170, -96, 3.6);
-    // 黑石旗
-    const fpole = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.1, 6, 5), woodMat);
-    fpole.position.set(-165, 3, -84);
-    scene.add(fpole);
-    const fflag = new THREE.Mesh(new THREE.PlaneGeometry(1.8, 1),
-      new THREE.MeshStandardMaterial({ color: 0x1a1a20, side: THREE.DoubleSide, roughness: 1 }));
-    fflag.position.set(-164, 5.4, -84);
-    scene.add(fflag);
-    const fire2 = new THREE.Mesh(new THREE.ConeGeometry(0.5, 1, 6),
-      new THREE.MeshLambertMaterial({ color: 0xff7722, emissive: 0xff5500 }));
-    fire2.position.set(-168, 0.5, -86);
+    // 头目大帐(深色帆布,放大一号)+ 黑旗 + 篝火 + 木箱
+    const big = texModel('TentDark', { x: F.x, z: F.z - 6, yaw: facing(F.x, F.z - 6, F.x, F.z + 4), s: 1.8 });
+    if (big) scene.add(big);
+    else {
+      const bigTent = new THREE.Mesh(new THREE.ConeGeometry(4, 5, 7), lambert(0x3a3a42, { roughness: 1 }));
+      bigTent.position.set(F.x, 2.5, F.z - 6);
+      scene.add(bigTent);
+    }
+    circle(F.x, F.z - 6, 3.6);
+    for (const [name, dx, dz, yaw, sc] of [['Banner', 5, 6, 0.5, 1.4], ['Banner', -5.5, -1, 2.2, 1.2], ['Crates', -6.5, 4, 0.8, 1], ['Crates', 6.8, -3.5, 2.5, 1.1],
+      ['Campfire', 2, 4, 0, 1.2], ['Tent', -7, -4.5, 0.9, 1.1]]) {
+      const m = texModel(name, { x: F.x + dx, z: F.z + dz, yaw, s: sc, mats: { cloth: LM_MATS.canvasdark } });
+      if (m) scene.add(m);
+      if (name === 'Crates') circle(F.x + dx, F.z + dz, 0.9);
+      if (name === 'Tent') circle(F.x + dx, F.z + dz, 1.8);
+    }
+    const fire2 = new THREE.Mesh(new THREE.ConeGeometry(0.42, 1.1, 6, 1, true),
+      new THREE.MeshLambertMaterial({ color: 0xff7722, emissive: 0xff5500, side: THREE.DoubleSide }));
+    fire2.position.set(F.x + 2, 0.62, F.z + 4);
     scene.add(fire2);
     const fireLight2 = new THREE.PointLight(0xff8844, 0, 24, 2);
-    fireLight2.position.set(-168, 1.6, -86);
+    fireLight2.position.set(F.x + 2, 1.6, F.z + 4);
     scene.add(fireLight2);
     torches.push({ light: fireLight2, flame: fire2, base: 13 });
-    feat('tent', -170, -90, 28, 28);
+    feat('tent', F.x, F.z, 28, 28);
   }
 
   // ---- 路边木哨塔 ----
@@ -1259,10 +1346,12 @@ export function buildWorld(scene) {
   house(-3, 294, 90, 5, 4, 2.8, 'HouseA');
   {
     // 村中三块立石与水井
-    for (const [sx, sz] of [[8, 302], [12, 303], [10, 306]]) {
-      const st = new THREE.Mesh(new THREE.BoxGeometry(1.1, 2.2 + rand(), 0.9), rockMat);
-      st.position.set(sx, 1.1, sz);
-      st.castShadow = true;
+    for (const [sx, sz, k] of [[8, 302, 0], [12, 303, 1], [10, 306, 2]]) {
+      const st = new THREE.Mesh(menhirGeos[k], menhirMat);
+      st.scale.set(0.75, (2.2 + rand()) / 3.4 * 1.1, 0.8);
+      st.position.set(sx, 0, sz);
+      st.rotation.y = k * 2.1 + 0.4;
+      st.castShadow = st.receiveShadow = true;
       scene.add(st);
       circle(sx, sz, 0.8);
     }
@@ -1293,12 +1382,25 @@ export function buildWorld(scene) {
     cactus(300 + Math.cos(a) * rr, 190 + Math.sin(a) * rr);
   }
   {
-    // 沙漠方尖碑
-    const ob = new THREE.Mesh(new THREE.CylinderGeometry(0.7, 1.4, 9, 4), rockMat);
-    ob.position.set(312, 4.5, 178);
-    ob.rotation.y = 0.4;
-    ob.castShadow = true;
-    scene.add(ob);
+    // 沙漠方尖碑:砂岩砌块的四棱收分碑身 + 金字塔尖 + 两级碑座(贴图按真实米数平铺)
+    const sand = tileMat(TX.stone, 1.4, { color: 0xd8c09a, roughness: 0.95 });
+    const sandDark = tileMat(TX.stone, 1.2, { color: 0xb09872, roughness: 0.95 });
+    const obG = new THREE.Group();
+    const shaft = new THREE.CylinderGeometry(0.62, 1.05, 8.2, 4, 1).rotateY(Math.PI / 4).translate(0, 1.2 + 4.1, 0);
+    const cap = new THREE.CylinderGeometry(0, 0.62, 1.1, 4, 1).rotateY(Math.PI / 4).translate(0, 1.2 + 8.2 + 0.55, 0);
+    const steps = [new THREE.BoxGeometry(3.2, 0.6, 3.2).translate(0, 0.3, 0), new THREE.BoxGeometry(2.3, 0.6, 2.3).translate(0, 0.9, 0)];
+    for (const [g, m] of [[shaft, sand], [cap, sandDark], [steps[0], sandDark], [steps[1], sand]]) {
+      const gg = g.toNonIndexed();
+      gg.deleteAttribute('uv');
+      gg.computeVertexNormals();
+      planarUV(gg);
+      const mesh = new THREE.Mesh(gg, m);
+      mesh.castShadow = mesh.receiveShadow = true;
+      obG.add(mesh);
+    }
+    obG.position.set(312, 0, 178);
+    obG.rotation.y = 0.4;
+    scene.add(obG);
     circle(312, 178, 1.6);
     feat('tower', 312, 178, 3, 3);
   }
@@ -1553,6 +1655,7 @@ export function buildWorld(scene) {
     dungeon: { hatch: { x: 10, z: -50 }, inX0: 316, inZ0: -316, inW: 72, inD: 72,
       spawn: { x: 324, z: -308 }, exit: { x: 324, z: -308 }, relic: { x: 378, z: -252 } },
     colliders, features, windmills, torches, chests, qBlocks, runeStrike, animRunes, coinSpots, clouds, waterMats, occluders,
+    texModel, // 地标模板 → 贴图建筑(回响之镜的石拱框等开局后才立的布景也用它)
     windmillPos, banditCamp, fortPos,
     questGiverPos: new THREE.Vector3(4, 0, 10),
     playerSpawn: new THREE.Vector3(0, 0, 20),

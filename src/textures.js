@@ -140,6 +140,53 @@ function texFromImage(img, repeat, normalStrength = 2) {
   return { map, normalMap };
 }
 
+// 铭文碑的刻字:成行的符文刻槽(底色贴图:近白底 + 深色刻槽,乘石头顶点色;发光贴图:刻槽里一线微光)
+export function makeInscriptionTextures(seed = 7) {
+  let s = seed;
+  const r = () => { s = (s * 16807) % 2147483647; return (s - 1) / 2147483646; };
+  const mk = () => { const c = document.createElement('canvas'); c.width = 128; c.height = 256; return c; };
+  const base = mk(), glow = mk();
+  const g = base.getContext('2d'), e = glow.getContext('2d');
+  g.fillStyle = '#fff'; g.fillRect(0, 0, 128, 256);
+  for (let i = 0; i < 900; i++) { // 石面麻点
+    const l = 200 + r() * 55;
+    g.fillStyle = `rgba(${l},${l},${l - 8},0.55)`;
+    g.fillRect(r() * 128, r() * 256, 1 + r() * 2, 1 + r() * 2);
+  }
+  e.fillStyle = '#000'; e.fillRect(0, 0, 128, 256);
+  const strokes = [];
+  // 顶上一个大徽记(圆环 + 十字),下面八行小符文(每行 4~6 个字,每字 2~3 笔)
+  for (let row = 0; row < 8; row++) {
+    const y0 = 92 + row * 19, n = 4 + Math.floor(r() * 3);
+    for (let c = 0; c < n; c++) {
+      const x0 = 24 + c * (80 / n) + r() * 4;
+      const k = 2 + Math.floor(r() * 2);
+      for (let j = 0; j < k; j++) {
+        const xa = x0 + r() * 10, ya = y0 + r() * 12, xb = x0 + r() * 10, yb = y0 + r() * 12;
+        strokes.push([xa, ya, xb, yb]);
+      }
+    }
+  }
+  const drawAll = (ctx, w, style, blur = 0) => {
+    ctx.save();
+    ctx.strokeStyle = style; ctx.lineWidth = w; ctx.lineCap = 'round';
+    if (blur) { ctx.shadowColor = style; ctx.shadowBlur = blur; }
+    ctx.beginPath(); ctx.arc(64, 48, 22, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(64, 20); ctx.lineTo(64, 76); ctx.moveTo(36, 48); ctx.lineTo(92, 48); ctx.stroke();
+    for (const [xa, ya, xb, yb] of strokes) { ctx.beginPath(); ctx.moveTo(xa, ya); ctx.lineTo(xb, yb); ctx.stroke(); }
+    ctx.restore();
+  };
+  drawAll(g, 5, 'rgba(70,64,56,0.55)');
+  drawAll(g, 3, 'rgba(38,34,30,0.92)');
+  drawAll(e, 3, 'rgba(255,255,255,0.3)', 5);
+  drawAll(e, 1.6, '#fff');
+  const map = new THREE.CanvasTexture(base);
+  map.colorSpace = THREE.SRGBColorSpace;
+  const glowT = new THREE.CanvasTexture(glow);
+  glowT.colorSpace = THREE.SRGBColorSpace;
+  return { map, glow: glowT };
+}
+
 // 简易值噪声(带插值,多八度)
 function makeNoise(seed = 1) {
   let s = seed;
@@ -159,6 +206,28 @@ function makeNoise(seed = 1) {
     let v = 0, amp = 0.5, f = 1;
     for (let o = 0; o < octaves; o++) { v += noise2(x * f, y * f) * amp; amp *= 0.5; f *= 2; }
     return v;
+  };
+}
+
+// 周期值噪声:格点按 freq 取模,u/v ∈ [0,1) 一张图正好一个周期——严格无缝平铺(新贴图都用它)
+function makeTileNoise(seed = 1) {
+  const h = (x, y) => {
+    let k = (Math.imul(x, 0x27d4eb2d) ^ Math.imul(y, 0x165667b1) ^ Math.imul(seed, 0x2c1b3c6d)) >>> 0;
+    k = Math.imul(k ^ (k >>> 15), 0x297a2d39) >>> 0;
+    return ((k ^ (k >>> 13)) >>> 0) / 4294967296;
+  };
+  const sm = (t) => t * t * (3 - 2 * t);
+  const one = (u, v, f) => {
+    const x = u * f, y = v * f, xi = Math.floor(x), yi = Math.floor(y);
+    const xf = sm(x - xi), yf = sm(y - yi);
+    const w = (a) => ((a % f) + f) % f;
+    const a = h(w(xi), w(yi)), b = h(w(xi + 1), w(yi)), c = h(w(xi), w(yi + 1)), d = h(w(xi + 1), w(yi + 1));
+    return a + (b - a) * xf + (c - a) * yf + (a - b - c + d) * xf * yf;
+  };
+  return (u, v, f, oct = 1) => {
+    let s = 0, amp = 0.5, norm = 0;
+    for (let o = 0; o < oct; o++) { s += one(u, v, f << o) * amp; norm += amp; amp *= 0.5; }
+    return s / norm;
   };
 }
 
@@ -355,6 +424,28 @@ export function makeTextures() {
     const h = stone * (0.3 + 0.7 * dome) + grain * 0.06;
     return [r, g, b, h];
   }, 2.6);
+
+  // 帆布:经纬细织纹 + 拼缝 + 大片水渍与补丁色差(帐篷、风帆、面粉袋、旗)——中性浅色,颜色交给材质
+  const tn = makeTileNoise(17);
+  T.canvas = texPair(256, 1, (u, v) => {
+    const warp = Math.sin(u * Math.PI * 2 * 64) * 0.5 + 0.5, weft = Math.sin(v * Math.PI * 2 * 64) * 0.5 + 0.5;
+    const weave = (warp + weft) * 0.5;
+    const stain = tn(u, v, 4, 3), fine = tn(u, v, 32, 2);
+    const seam = Math.abs(((u * 2) % 1) - 0.5) > 0.488 ? 0.78 : 1;  // 每 0.5 张一道拼缝
+    const patch = tn(u + 0.3, v, 3, 2) > 0.68 ? 0.9 : 1;            // 补丁:颜色深一号
+    const r = (206 + weave * 20 + fine * 16 - 18 - Math.max(0, stain - 0.52) * 110) * seam * patch;
+    return [r, r * 0.95, r * 0.86, (weave * 0.5 + fine * 0.3) * seam];
+  }, 1.4);
+
+  // 地衣石面(立石、石环):近白的底(乘顶点色),细碎麻点、几道裂纹、成片的黄绿地衣斑
+  T.lichen = texPair(256, 1, (u, v) => {
+    const pit = tn(u, v, 48, 2), blot = tn(u, v, 6, 3), crust = tn(u + 0.41, v + 0.17, 10, 3);
+    const crack = Math.abs(tn(u, v + 0.5, 5, 2) - 0.5) < 0.012 ? 0.62 : 1;
+    let r = (196 + pit * 52 - 26 + (blot - 0.5) * 40) * crack, g = r * 0.985, b = r * 0.95;
+    const lich = Math.max(0, Math.min(1, (crust - 0.6) / 0.08));
+    r = mix(r, 178, lich); g = mix(g, 182, lich); b = mix(b, 120, lich);
+    return [r, g, b, (pit * 0.6 + blot * 0.4) * crack - lich * 0.1];
+  }, 2.2);
 
   // 水面波纹法线(供动画偏移)
   T.waterNormal = texPair(256, 4, (u, v) => {

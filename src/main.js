@@ -102,7 +102,7 @@ try {
         const br = gltf.scene.getObjectByName('Barrel');
         if (st) setBuildingModel('stall', st);
         if (br) setBuildingModel('barrel', br);
-      } else if (kind === 'house' || kind === 'keep') setBuildingModel(kind, gltf.scene);
+      } else if (kind === 'house' || kind === 'keep' || kind === 'landmarks') setBuildingModel(kind, gltf.scene);
       else if (kind === 'nature' || kind === 'camp') setNatureModels(gltf.scene);
       else if (kind === 'rocks') {
         const geos = [];

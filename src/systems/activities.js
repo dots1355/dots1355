@@ -11,8 +11,10 @@ import { rand } from '../core/rng.js';
 import { saveGame } from '../core/save.js';
 import { player, started, world } from '../core/state.js';
 import { dist2, lambert } from '../entities.js';
+import { standingStoneGeo } from '../flora.js';
 import { scene } from '../gfx/core.js';
 import { LORE, VILLAGERS } from '../story.js';
+import { makeInscriptionTextures } from '../textures.js';
 import { dialog, openDialog } from '../ui/dialog.js';
 import { toast } from '../ui/toast.js';
 import { ACH_DEFS, achUnlocked, stats, unlockAch } from './achievements.js';
@@ -584,21 +586,18 @@ export function initActivities() {
     scene.add(plank);
   }
   {
-    const slabG = new THREE.BoxGeometry(1.0, 1.5, 0.26);
-    const baseG = new THREE.BoxGeometry(1.3, 0.3, 0.5);
+    // 铭文碑:与符文立石同一画法的风化石板(六棱收分、刻面、根部青苔),正反两面刻着成行的符文,刻槽里一线微光(夜里也找得到)
+    const ins = makeInscriptionTextures();
+    const slabG = standingStoneGeo(5150, { w: 1.05, h: 1.85, d: 0.5, slant: 0.12, rubble: 4 });
+    const slabM = new THREE.MeshStandardMaterial({ vertexColors: true, map: ins.map, roughness: 0.92, metalness: 0,
+      emissive: 0x7fe0c8, emissiveMap: ins.glow, emissiveIntensity: 0.45 });
+    slabM.userData.wettable = true;
+    slabM.userData.baseRough = 0.92;
     for (const L of LORE) {
       const grp = new THREE.Group();
-      const slab = new THREE.Mesh(slabG, lambert(0x8d8a84, { roughness: 0.9 }));
-      slab.position.y = 0.95;
-      slab.castShadow = true;
+      const slab = new THREE.Mesh(slabG, slabM);
+      slab.castShadow = slab.receiveShadow = true;
       grp.add(slab);
-      const base = new THREE.Mesh(baseG, lambert(0x6f6c66));
-      base.position.y = 0.15;
-      grp.add(base);
-      const rune = new THREE.Mesh(new THREE.PlaneGeometry(0.7, 1.0),
-        new THREE.MeshStandardMaterial({ color: 0x9adcc8, emissive: 0x1a5548, emissiveIntensity: 0.5, roughness: 0.6 }));
-      rune.position.set(0, 0.98, 0.14);
-      grp.add(rune);
       grp.position.set(L.x, 0, L.z);
       grp.rotation.y = rand() * 6.28;
       scene.add(grp);
