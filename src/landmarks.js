@@ -6,7 +6,7 @@
 import { colliders, world } from './core/state.js';
 import { BIG_PROP, LANDMARKS } from './wilderness.js';
 import { NATURE_SPEC, buildNatureInstances, hasNature, specCols } from './flora.js';
-import { biomeWeights, dominantBiome, groundH, maskAt, vegAllowed } from './terrain.js';
+import { biomeWeights, dominantBiome, groundH, groundNormalY, maskAt, mountainH, smooth, vegAllowed } from './terrain.js';
 import { scene } from './gfx/core.js';
 
 export function scatterCoreLandmarks() {
@@ -50,17 +50,45 @@ export function scatterCoreLandmarks() {
         const x = gx + rng() * TREE_CELL, z = gz + rng() * TREE_CELL;
         biomeWeights(x, z, wts);
         // 每格种树概率:林海 0.85、雪原(松)0.45、丘陵 0.1、平原 0.06
-        const pForest = wts[1] * 0.85, pSnow = wts[3] * 0.45, pOpen = wts[7] * 0.1 + wts[0] * 0.06;
+        const mh0 = mountainH(x, z);
+        const belt = smooth(1, 6, mh0) * (1 - smooth(16, 24, mh0)); // 山脚林带:林线以下的雪松林更密
+        const pForest = wts[1] * 0.85, pSnow = wts[3] * (0.45 + 0.4 * belt), pOpen = wts[7] * 0.1 + wts[0] * 0.06;
         const roll = rng();
         if (roll > pForest + pSnow + pOpen) continue;
         if (maskAt(x, z) < 0.4 || !vegAllowed(x, z)) continue;
         if (Math.abs(x) < 82 && Math.abs(z) < 68) continue; // 城里不种
+        // 林线:北境群山上 25m 以上、坡度超过 30° 不长树,越往上越稀(从城里望北不再是满山漂着的松树)
+        if (mh0 > 25 || (mh0 > 1 && (groundNormalY(x, z) < 0.866 || rng() < smooth(12, 25, mh0) * 0.9))) continue;
         const name = roll < pForest ? (rng() < 0.62 ? 'Tree_oak' : rng() < 0.5 ? 'Tree_birch' : 'Tree_pine')
           : roll < pForest + pSnow ? 'Tree_pine' : (rng() < 0.6 ? 'Tree_oak' : 'Tree_birch');
         if (!NATURE_SPEC[name]) continue;
         const sc = 1.0 + rng() * 0.45;
         list.push({ name, x, y: groundH(x, z) - 0.12 * sc, z, yaw: rng() * Math.PI * 2, s: sc });
         colliders.circles.push({ x, z, r: 0.45 * sc });
+      }
+    }
+  }
+  // 北境群山的山脊与陡崖:雪顶岩峰(实例化),山脊上成串、陡坡上零星,越高越大
+  {
+    const CRAG = 15;
+    for (let gx = -455; gx < 455; gx += CRAG) {
+      for (let gz = -470; gz < -170; gz += CRAG) {
+        const x = gx + rng() * CRAG, z = gz + rng() * CRAG;
+        const mh = mountainH(x, z);
+        if (mh < 20 || maskAt(x, z) < 0.9) continue;
+        const h = groundH(x, z);
+        const ridgeK = h - (groundH(x + 12, z) + groundH(x - 12, z) + groundH(x, z + 12) + groundH(x, z - 12)) / 4; // 高出四周 = 山脊/峰
+        const ny = groundNormalY(x, z);
+        const p = ridgeK > 1.2 ? 0.5 : ridgeK > 0.5 && ny < 0.8 ? 0.12 : 0; // 只长在山脊与峰顶(陡坡中间的孤石看着像飘着)
+        if (rng() > p) continue;
+        const name = rng() < 0.5 ? 'Crag1' : 'Crag2';
+        if (!NATURE_SPEC[name]) continue;
+        const sc = (0.9 + rng() * 0.9) * (0.8 + smooth(20, 80, mh) * 0.9);
+        let hm = h;
+        for (let k = 0; k < 4; k++) hm = Math.min(hm, groundH(x + Math.cos(k * 1.57) * 2.2 * sc, z + Math.sin(k * 1.57) * 2.2 * sc));
+        const yaw = rng() * Math.PI * 2;
+        list.push({ name, x, y: hm - 0.7 * sc, z, yaw, s: sc });
+        for (const c of specCols(NATURE_SPEC[name], sc, yaw)) colliders.circles.push({ x: x + c.dx, z: z + c.dz, r: c.r });
       }
     }
   }

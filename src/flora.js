@@ -143,6 +143,7 @@ export const NATURE_SPEC = {
   DeadTree2: { r: 0.45, sink: 0.1 }, Willow: { r: 0.55, sink: 0.1 }, Log: { r: 0, sink: 0.12, log: true },
   Stump: { r: 0.6, sink: 0.08 }, Bush1: { r: 0, sink: 0.15 }, Bush2: { r: 0, sink: 0.15 },
   Ribcage: { r: 0, sink: 0.25 },
+  Crag1: { r: 2.2, sink: 0.7 }, Crag2: { r: 2.4, sink: 0.7 }, // 山脊岩峰(雪顶)
   // camp.glb:营地与路边
   Tent: { r: 1.5, sink: 0.04 }, TentDark: { r: 1.5, sink: 0.04 }, Campfire: { r: 0, sink: 0.03 },
   Cart: { r: 0, sink: 0.05, line: [-1.2, 0, 1.1], lr: 0.8 }, Well: { r: 1.25, sink: 0.05 },

@@ -321,6 +321,19 @@ for side in (-1, 1):
 ob = new_obj('Ribcage', bm, ['bone'])
 flat(ob)
 
+# ---------- 山脊岩峰 ×2(雪顶):北境群山的山脊与陡崖(独立随机数,不影响上面各件的形状) ----------
+crng = random.Random(9090)
+for k in range(2):
+    bm = None
+    spires = [(1.9, 1.5, 6.2, 0, 0), (1.3, 1.1, 4.0, 1.7, 0.6), (1.1, 0.9, 2.6, -1.5, -0.4), (2.4, 2.0, 1.6, 0.3, 0.2)]
+    if k == 1:
+        spires = [(2.6, 1.6, 4.6, 0, 0), (1.5, 1.2, 6.8, -1.2, 0.5), (1.2, 1.0, 3.0, 2.0, -0.6), (2.8, 2.2, 1.4, 0.0, 0.3)]
+    for (sx, sy, sz, ox, oy) in spires:
+        bm = rock_bm(crng, sx, sy, sz, freq=1.3, amp=0.5, cap=True, cap_z=0.78, ox=ox, oy=oy, bm=bm)  # 只有朝天的小面积雪
+    ob = new_obj(f'Crag{k + 1}', bm, ['rock', 'snow'])
+    flat(ob)
+    decimate(ob, 0.32)
+
 # ---------- 导出 ----------
 for ob in bpy.context.collection.objects:
     ob.select_set(True)

@@ -2,6 +2,33 @@
 // - worldTint:世界坐标低频明暗/冷暖斑块,打破平铺贴图的重复感(鹅卵石、墙、屋顶、木料)
 // - 湿润:下雨时反照率压暗、粗糙度降到 ~0.3;地面另有水洼(见 terrain.js 的地表材质)
 // 统一由 surfaceUniforms 驱动(天气系统每帧写 uWet / uTime)。
+import * as THREE from 'three';
+
+// 大气透视(全局雾补丁,模块加载期、任何着色器编译之前生效):高处的东西雾淡一些、偏蓝灰——
+// 北境群山从王都望去看得见山脊与岩壁,山上的岩峰、树与山体落在同一层雾里(不会山体发白、岩峰发灰,看着像飘在空中);
+// 到雾的远端(视距边缘)仍全部溶进雾里,不会露出被远裁剪面切断的山。世界高度由视空间位置反推(实例化/蒙皮都对)
+{
+  const SC = THREE.ShaderChunk;
+  const decl = 'varying float vFogDepth;';
+  if (SC.fog_pars_vertex.includes(decl) && SC.fog_vertex.includes('vFogDepth = - mvPosition.z;') && SC.fog_pars_fragment.includes(decl)) {
+    SC.fog_pars_vertex = SC.fog_pars_vertex.replace(decl, decl + '\n\tvarying float vFogY;');
+    SC.fog_vertex = SC.fog_vertex.replace('vFogDepth = - mvPosition.z;',
+      'vFogDepth = - mvPosition.z;\n\tvFogY = ( transpose( mat3( viewMatrix ) ) * ( mvPosition.xyz - viewMatrix[ 3 ].xyz ) ).y;');
+    SC.fog_pars_fragment = SC.fog_pars_fragment.replace(decl, decl + '\n\tvarying float vFogY;');
+    SC.fog_fragment = `#ifdef USE_FOG
+	float hazeK = 0.0;
+	#ifdef FOG_EXP2
+		float fogFactor = 1.0 - exp( - fogDensity * fogDensity * vFogDepth * vFogDepth );
+	#else
+		float fogFactor = smoothstep( fogNear, fogFar, vFogDepth );
+		hazeK = smoothstep( 14.0, 70.0, vFogY ) * ( 1.0 - smoothstep( fogFar * 0.78, fogFar, vFogDepth ) );
+		fogFactor *= 1.0 - 0.45 * hazeK;
+	#endif
+	gl_FragColor.rgb = mix( gl_FragColor.rgb, fogColor * mix( vec3( 1.0 ), vec3( 0.74, 0.82, 0.95 ), hazeK ), fogFactor );
+#endif`;
+  }
+}
+
 export const surfaceUniforms = {
   uWet: { value: 0 },      // 0 干 → 1 湿透
   uTime: { value: 0 },

@@ -342,13 +342,15 @@ const BIOME_COL = [
   [lin(0x969858), lin(0x7c8a4b)], // 平原:金橄榄 ↔ 青橄榄草(比旧的卡其多一分绿,远看不发灰)
   [lin(0x56633a), lin(0x4a5233)], // 林地:苔绿 ↔ 腐叶褐
   [lin(0xd8b67c), lin(0xc49a62)], // 荒漠:亮沙 ↔ 赭沙
-  [lin(0xe8eef4), lin(0xc9d4de)], // 雪原:新雪 ↔ 阴影雪
+  [lin(0xdce3eb), lin(0xbcc7d3)], // 雪原:新雪 ↔ 阴影雪(压一档亮度:雪地不再和雾、天一样白)
   [lin(0x4f5236), lin(0x3e4430)], // 沼泽:泥橄榄 ↔ 黑泥
   [lin(0x5c544c), lin(0x3f3935)], // 灰烬:灰褐 ↔ 焦黑
   [lin(0x8b857b), lin(0x6f6a62)], // 龙骨:碎石灰 ↔ 暗岩
   [lin(0x899a52), lin(0x6e8747)], // 丘陵:更绿的草坡
 ];
-const ROCK_COL = lin(0x77726a), SNOWCAP = lin(0xf1f5f9);
+const ROCK_COL = lin(0x77726a), SNOWCAP = lin(0xdfe6ee);
+// 北境群山:岩壁按层理在深浅两色间起伏;背阴(朝北)的雪偏蓝灰;林线附近是枯黄的高山草甸
+const ROCK_DARK = lin(0x4f4c49), ROCK_LIGHT = lin(0x878176), SNOW_SHADE = lin(0xa3afc2), ALPINE = lin(0x7d7a5a), TAIGA = lin(0x6c7566);
 // 地图配色(小地图/大地图):按群系权重混合的 sRGB 颜色 + 高度明暗;按 16m 格缓存
 const _mapCache = new Map();
 const _mw = new Float32Array(NB);
@@ -393,13 +395,25 @@ function groundColor(x, z, ny, h, out) {
   }
   // 陡坡露岩;雪原高处积雪更厚
   const steep = smooth(0.94, 0.8, ny);
-  if (steep > 0) out.lerp(ROCK_COL, steep * 0.85);
-  if (w[BIOME.snow] > 0.3) out.lerp(SNOWCAP, smooth(6, 12, h) * w[BIOME.snow] * (1 - steep));
-  // 北境群山:山腰裸岩、山顶积雪(按山体自身高度,不看群系)
   const mh = mountainH(x, z);
-  if (mh > 6) {
-    out.lerp(ROCK_COL, smooth(6, 26, mh) * 0.55);
-    out.lerp(SNOWCAP, smooth(36, 58, mh) * (1 - steep * 0.55));
+  if (steep > 0) out.lerp(ROCK_COL, steep * 0.85);
+  if (w[BIOME.snow] > 0.3 && mh < 4) out.lerp(SNOWCAP, smooth(6, 12, h) * w[BIOME.snow] * (1 - steep));
+  // 北境群山(按山体自身高度,不看群系):山脚雪松林 → 林线(约 25m)以上的枯黄草甸与碎石 → 裸岩(陡坡一律是带层理的岩壁)
+  // → 缓坡积雪;背阴(朝北)的雪面偏蓝灰。不再是从山脚白到山顶的一整块奶油
+  if (mh > 4) {
+    const gx = Math.round(x / GRID), gz = Math.round(z / GRID);
+    const nz = -(cornerH(gx, gz + 1) - cornerH(gx, gz - 1)) / (2 * GRID) * ny; // 地面法线的 z 分量(负 = 朝北背阴)
+    const strata = 0.5 + 0.5 * Math.sin(h * 0.85 + vnoise(x / 23, z / 23) * 5.0);
+    // 山脊(比四周高出一截)常年被风刮秃:岩脊连成线,山的骨架从远处就读得出来
+    const ridgeK = h - (cornerH(gx + 3, gz) + cornerH(gx - 3, gz) + cornerH(gx, gz + 3) + cornerH(gx, gz - 3)) / 4;
+    out.lerp(TAIGA, smooth(2, 8, mh) * (1 - smooth(18, 28, mh)) * 0.65); // 山脚林带的林下(雪斑、针叶、落枝)
+    out.lerp(ALPINE, smooth(14, 26, mh) * (1 - smooth(30, 44, mh)) * 0.55);
+    _c.copy(ROCK_DARK).lerp(ROCK_LIGHT, strata * 0.7 + patch * 0.3);
+    out.lerp(_c, Math.min(1, smooth(22, 40, mh) * 0.7 + smooth(0.86, 0.62, ny) * smooth(4, 14, mh) * 0.95 +
+      smooth(0.5, 2.2, ridgeK) * smooth(16, 30, mh)));
+    const snow = smooth(34, 60, mh + 14 * (vnoise(x / 41, z / 41) - 0.5)) * smooth(0.64, 0.84, ny) * (1 - smooth(0.8, 2.6, ridgeK) * 0.8);
+    _c.copy(SNOWCAP).lerp(SNOW_SHADE, smooth(0.08, -0.35, nz));
+    out.lerp(_c, snow);
   }
   // 水边:水下是泥滩(越深越暗),岸上两三米是潮湿的深色泥土
   const wp = waterProx(x, z);
