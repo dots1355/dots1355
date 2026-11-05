@@ -5,6 +5,7 @@
 // 玩家对象本身在启动装配时创建并登记进 core/state.js。
 import * as THREE from 'three';
 import { sfx } from '../audio.js';
+import { frame } from '../core/frame.js';
 import { rand } from '../core/rng.js';
 import { colliders, player, started, world } from '../core/state.js';
 import { hitStop } from '../core/timefx.js';
@@ -297,7 +298,7 @@ export function updatePlayer(dt) {
   player.group.rotation.y = player.yaw;
   player.group.rotation.z = player.lean || 0;
   // 受伤闪烁
-  player.group.visible = player.invulnT > 0 ? Math.floor(performance.now() / 80) % 2 === 0 : true;
+  player.group.visible = player.invulnT > 0 ? Math.floor(frame.now / 80) % 2 === 0 : true;
   animateLimbs(player.parts, player.walkT, moving, player.group, speed / 7.6);
   // 格挡姿势:有盾就把左臂的圆盾横在身前、剑收在腰侧;巨剑没盾,横剑挡
   playerShield.visible = player.weapon !== 'bow' && player.weapon !== 'greatsword';
@@ -409,6 +410,23 @@ export function doRoll() {
   player.invulnT = Math.max(player.invulnT, ROLL_IFRAMES); // 无敌帧只覆盖前 0.25 秒:滚早了照样挨打
   sfx.roll();
   spawnDust(player.pos.x, 0.05, player.pos.z, 4, 0.5, 1);
+}
+
+// 被掀下马(盗贼举刀扎马得手):摔在马侧,0.8 秒爬不起来;马留在原地
+export function throwFromHorse() {
+  const h = player.mounted;
+  if (!h) return;
+  player.mounted = null;
+  player._rideSpeed = 0;
+  player.pos.set(h.pos.x + Math.cos(h.yaw) * 1.3, 0, h.pos.z - Math.sin(h.yaw) * 1.3);
+  resolveCollisions(player.pos, 0.45, colliders);
+  player.vy = 0;
+  player.onGround = true;
+  player.parts.body.rotation.x = 0;
+  playerHitStagger(0.8);
+  cam.shake = Math.max(cam.shake, 0.5);
+  sfx.stomp();
+  callout('被掀下马!', 'red');
 }
 
 export function tryRob() {

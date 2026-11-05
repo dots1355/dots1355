@@ -499,6 +499,102 @@ const TESTS = {
     if (r.pierceDmg !== 3) throw new Error(`举盾挡紫圈应吃满 3 伤,实际 ${r.pierceDmg}`);
     if (!(r.pierceStagger > 0.55)) throw new Error(`挡紫圈应有 0.6 秒硬直,实际 ${r.pierceStagger}`);
   },
+  // 敌人出招:预警 = 判定(锚在起手站位,半径 = 刀长 + 跟步突进,±60°);起手末段真的往前冲;起手后 40% 轻击打不断;
+  // 紫圈是双手过顶的独立架势;吓跑即收刀(扇形熄灭);踉跄会晃;狼扑画 5.4×2.4 的走廊且与判定一致;举刀扎马能扎到疾驰的骑手
+  async foeAttacks(page) {
+    await boot(page);
+    await installArena(page);
+    const r = await page.evaluate(async () => {
+      const g = window.__gtm, A = window.__arena, P = g.player, out = {};
+      const ai = await import('/src/systems/ai.js');
+      const S = ai.FOE_MOVES.slash, R = S.reach + S.lunge;
+      // 1) 几何:起手最后一帧把人放到(角度, 距离),看挨不挨(锚点 = 起手站位,还没冲)
+      const probe = (angDeg, dist) => {
+        A.reset(); const [b] = A.foes(1); A.place(b, 0, 4, Math.PI);
+        ai.startFoeMove(b, 'slash'); b.windupT = 0.008;
+        const a = b.yaw + angDeg * Math.PI / 180;
+        P.pos.set(b.pos.x + Math.sin(a) * dist, 0, b.pos.z + Math.cos(a) * dist); P.invulnT = 0;
+        const hp0 = P.hp; g.step(1); return hp0 - P.hp > 0;
+      };
+      out.geo = { in: probe(0, R - 0.1), out: probe(0, R + 0.15), edgeIn: probe(57, 2.5), edgeOut: probe(63, 2.5) };
+      // 预警扇形的尺寸就是判定尺寸
+      A.reset(); const [t] = A.foes(1); A.place(t, 0, 4, Math.PI); ai.startFoeMove(t, 'slash');
+      const sec = g.dangerFX.find((f) => f.e === t);
+      out.sector = sec ? { range: sec.range, anchored: sec.anchored } : null;
+      // 2) 起手末段跟步突进:站在 R-0.2 处不动,敌人往前冲约 1 米、照样砍中
+      A.reset(); const [c] = A.foes(1); A.place(c, 0, R - 0.2, Math.PI);
+      const z0 = c.pos.z, hp0 = P.hp; ai.startFoeMove(c, 'slash');
+      for (let i = 0; i < 45; i++) { g.step(1); P.pos.set(0, 0, 180); }
+      out.lunge = +(z0 - c.pos.z).toFixed(2); out.lungeHit = hp0 - P.hp;
+      // 3) 起手后段霸体:前 60% 砍中 = 打断;后 40% 砍中 = 打不断(刀照样落下)
+      const interrupt = (waitF) => {
+        A.reset(); const [d] = A.foes(1); A.place(d, 0, 1.6, Math.PI);
+        ai.startFoeMove(d, 'slash'); g.step(waitF);
+        P.attackT = 0; g.tryAttack(); g.step(12);
+        return { interrupted: !(d.windupT > 0) && d.hitStunT > 0 };
+      };
+      out.early = interrupt(4); out.late = interrupt(15);
+      // 4) 紫圈:双手举过头顶(左臂也举起来);红圈只举右手
+      A.reset(); const [h] = A.foes(1); A.place(h, 0, 3, Math.PI); h.duel = true;
+      ai.startFoeMove(h, 'heavy'); g.step(20);
+      out.heavyArmL = h.parts.armL.rotation.x; out.heavyPurple = !!g.dangerFX.find((f) => f.e === h && f.zone.material.color.getHex() === 0xb040ff);
+      A.reset(); const [s] = A.foes(1); A.place(s, 0, 3, Math.PI);
+      ai.startFoeMove(s, 'slash'); g.step(20);
+      out.slashArmL = s.parts.armL.rotation.x;
+      // 5) 吓跑即收刀,扇形熄灭
+      A.reset(); const [f] = A.foes(1); A.place(f, 0, 2, Math.PI); f.hp = 1;
+      ai.startFoeMove(f, 'slash'); g.step(5); g.frightenBandits(14); g.step(1);
+      out.fleeWindup = f.windupT; out.fleeSector = g.dangerFX.filter((x) => x.e === f).length;
+      // 6) 踉跄会晃
+      A.reset(); const [w0] = A.foes(1); A.place(w0, 0, 2, Math.PI); w0.stunT = 1.5; w0.stunSrc = 'parry';
+      let wob = 0; for (let i = 0; i < 20; i++) { g.step(1); wob = Math.max(wob, Math.abs(w0.group.rotation.z)); }
+      out.wobble = wob;
+      // 7) 狼扑:走廊判定(侧偏 1.1 米咬中、1.3 米落空),自然起扑时画 5.4×2.4 的长条
+      A.reset();
+      const wolf = g.wolves.find((x) => !x._prol);
+      const revive = () => Object.assign(wolf, { dead: false, hp: 50, stunT: 0, hitStunT: 0, armorT: 0, biteT: 0, lunging: 0,
+        lungeHit: false, attackCd: 99, lungeCd: 99, raidTarget: null, arena: false, _hold: false, respawnT: 1e9 });
+      const lat = (dx) => {
+        A.reset(); revive(); wolf.group.visible = true;
+        wolf.pos.set(0, 0, 184); wolf.yaw = Math.PI; wolf.lunging = 0.78; wolf.lungeX = 0; wolf.lungeZ = -1;
+        const hp0 = P.hp;
+        for (let i = 0; i < 60; i++) { g.step(1); P.pos.set(dx, 0, 182); P.invulnT = Math.min(P.invulnT, 0); }
+        return hp0 - P.hp > 0;
+      };
+      out.wolf = { lat11: lat(1.1), lat13: lat(1.3) };
+      A.reset(); revive(); wolf.group.visible = true; wolf.pos.set(0, 0, 184.5); wolf.lungeCd = 0; wolf.attackCd = 9;
+      let rect = null;
+      for (let i = 0; i < 60 && !rect; i++) { g.step(1); rect = g.dangerFX.find((x) => x.e === wolf && x.rect); }
+      out.wolfRect = rect ? { len: rect.range, width: rect.width } : null;
+      wolf.dead = true; wolf.group.visible = false;
+      // 8) 举刀扎马:疾驰冲进正面 2.4 米就挨 2 下
+      A.reset(); const [m] = A.foes(1); A.place(m, 0, 14, Math.PI);
+      const horse = P.horse; horse.pos.set(0, 0, 180); P.mounted = horse;
+      m.braceT = 1.2; m._cavCd = 9;
+      g.keys['KeyW'] = true; g.keys['ShiftLeft'] = true;
+      const hpM = P.hp;
+      for (let i = 0; i < 50 && P.hp === hpM; i++) g.step(1);
+      g.keys['KeyW'] = false; g.keys['ShiftLeft'] = false;
+      out.braceDmg = hpM - P.hp;
+      if (P.mounted) P.mounted = null;
+      return out;
+    });
+    const R = 3.3;
+    if (!r.geo.in || r.geo.out) throw new Error(`判定半径应为刀长+突进 ${R}m:${JSON.stringify(r.geo)}`);
+    if (!r.geo.edgeIn || r.geo.edgeOut) throw new Error(`判定张角应为 ±60°:${JSON.stringify(r.geo)}`);
+    if (!r.sector || Math.abs(r.sector.range - R) > 1e-6 || !r.sector.anchored) throw new Error(`预警扇形与判定不一致:${JSON.stringify(r.sector)}`);
+    if (!(r.lunge > 0.8 && r.lunge < 1.1)) throw new Error(`起手末段应向前突进约 1m,实际 ${r.lunge}`);
+    if (!(r.lungeHit > 0)) throw new Error('站在突进后的刀长里却没挨刀');
+    if (!r.early.interrupted) throw new Error('起手前段轻击没有打断');
+    if (r.late.interrupted) throw new Error('起手后段(霸体)被轻击打断了');
+    if (!(r.heavyArmL < -2) || !r.heavyPurple) throw new Error(`紫圈重击应双手过顶、扇形发紫:左臂 ${r.heavyArmL}`);
+    if (r.slashArmL < -1) throw new Error('红圈劈砍不该双手举刀(和紫圈分不开)');
+    if (r.fleeWindup > 0 || r.fleeSector > 0) throw new Error(`吓跑后起手没收(windup ${r.fleeWindup},扇形 ${r.fleeSector})`);
+    if (!(r.wobble > 0.05)) throw new Error('踉跄时身子不晃');
+    if (!r.wolf.lat11 || r.wolf.lat13) throw new Error(`狼扑判定走廊应为两侧 1.2m:${JSON.stringify(r.wolf)}`);
+    if (!r.wolfRect || Math.abs(r.wolfRect.len - 5.4) > 1e-6 || Math.abs(r.wolfRect.width - 2.4) > 1e-6) throw new Error(`狼扑预警应为 5.4×2.4 的长条:${JSON.stringify(r.wolfRect)}`);
+    if (r.braceDmg !== 2) throw new Error(`疾驰冲进举刀扎马的盗贼应挨 2 下,实际 ${r.braceDmg}`);
+  },
   // 序章教学:锁定 → 翻滚 → 格挡 → 出刀 → 魔光弹 → 清场;做到才进下一步,结束回满血并送马
   async prologue(page) {
     await boot(page, { start: false });

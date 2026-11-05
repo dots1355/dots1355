@@ -5,6 +5,7 @@ import * as THREE from 'three';
 import { sfx } from '../audio.js';
 import { rand } from '../core/rng.js';
 import { colliders, player } from '../core/state.js';
+import { simNow } from '../core/timers.js';
 import { dist2, lambert } from '../entities.js';
 import { scene } from '../gfx/core.js';
 import { hitFX, showDamage } from '../ui/feedback.js';
@@ -35,12 +36,12 @@ function pointBlocked(x, z) {
   return false;
 }
 // 雨天湿弦:箭路发飘(暴雨更甚);提示节流,别刷屏
-let wetToastT = 0;
+let wetToastT = -1e9;
 export function wetSpread(mul = 1) {
   const wet = weather.state === 'storm' ? 0.11 : weather.state === 'rain' ? 0.055 : 0;
   if (!wet) return 0;
-  if (performance.now() - wetToastT > 12000) {
-    wetToastT = performance.now();
+  if (simNow() - wetToastT > 12000) {
+    wetToastT = simNow();
     toast('🌧️ 雨水打湿了弓弦,箭路发飘……', 2);
   }
   return (rand() - 0.5) * 2 * wet * mul;

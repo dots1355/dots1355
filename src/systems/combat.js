@@ -6,6 +6,7 @@
 // 主循环调 updateTrails/updateDanger/updateLock/updateCombatMusic;initCombat() 启动装配调用一次。
 import * as THREE from 'three';
 import { setCombatMusic, sfx } from '../audio.js';
+import { frame } from '../core/frame.js';
 import { rand } from '../core/rng.js';
 import { colliders, player, started, world } from '../core/state.js';
 import { hitStop, slowMo } from '../core/timefx.js';
@@ -53,6 +54,14 @@ function sectorGeo(arc) {
   }
   return g;
 }
+// 长条预警(狼扑的冲刺走廊、霜龙俯冲的航线):单位长方形,从原点沿 +Z 铺开(长、宽靠缩放)
+const _rectGeo = (() => {
+  const g = new THREE.PlaneGeometry(1, 1);
+  g.rotateX(-Math.PI / 2);
+  g.translate(0, 0, 0.5);
+  g.userData.shared = true;
+  return g;
+})();
 // 敌人出手的判定:range 内、且在它正前方 ±arc/2 以内
 const FOE_ARC = 2.1; // ≈120°
 export function inFrontArc(e, p, range, arc = FOE_ARC) {
@@ -62,6 +71,18 @@ export function inFrontArc(e, p, range, arc = FOE_ARC) {
   if (d < 0.6) return true; // 贴脸了躲不开
   return (Math.sin(e.yaw) * dx + Math.cos(e.yaw) * dz) / d > Math.cos(arc / 2);
 }
+// 走廊判定:从 (x0,z0) 沿 yaw 方向、长 len、半宽 halfW 的长条里(与 telegraphFlash 的 rect 预警同一几何)
+export function inCorridor(x0, z0, yaw, len, halfW, p) {
+  const dx = p.x - x0, dz = p.z - z0;
+  const along = dx * Math.sin(yaw) + dz * Math.cos(yaw);
+  const lat = Math.abs(dx * Math.cos(yaw) - dz * Math.sin(yaw));
+  return along >= -halfW * 0.5 && along <= len && lat <= halfW;
+}
+// 起手锚点:突进型的招从起手那一刻的站位算判定(扇形也画在那里)——敌人往前冲了几步,锚点 = 现位置减去已冲的距离
+export function windupAnchor(e) {
+  const k = e.lungeDone || 0;
+  return { x: e.pos.x - Math.sin(e.yaw) * k, z: e.pos.z - Math.cos(e.yaw) * k };
+}
 // 转向(角速度上限):起手中的敌人只能慢慢扭过来
 export function turnToward(cur, want, maxStep) {
   let d = (want - cur) % (Math.PI * 2);
@@ -70,16 +91,19 @@ export function turnToward(cur, want, maxStep) {
   return cur + Math.max(-maxStep, Math.min(maxStep, d));
 }
 let rearWarnT = -1e9;
-export function telegraphFlash(e, dur = 0.45, heavy = false, range = heavy ? 2.7 : 2.3, arc = FOE_ARC) {
-  sfx.warn();
+// opts.shape:'sector'(默认扇形)| 'rect'(长条走廊:range = 长度,opts.width = 宽,从实体脚下沿朝向铺开);
+// opts.anchored:画在起手锚点(windupAnchor)——突进型的招,扇形不跟着人往前冲;
+// opts.watch():返回 false 就熄灭(起手被打断/吓跑/作废);opts.quiet:不出声、不喊"身后"(霜龙等自带提示的大招)
+export function telegraphFlash(e, dur = 0.45, heavy = false, range = heavy ? 2.7 : 2.3, arc = FOE_ARC, opts = {}) {
+  if (!opts.quiet) sfx.warn();
   // 第一次见到紫色破盾重击:弹一张教学卡
   if (heavy && !stats.seenPurple && started && !prologue.on) {
     stats.seenPurple = true;
-    setTutor('C', '紫色扇形 = 破盾重击:盾挡不住!', '按 C 翻滚躲开,或者在亮区长满前退出扇形');
+    setTutor('C', '紫色扇形 = 破盾重击:盾挡不住、也弹不开!', '按 C 翻滚躲开,或者在亮区长满前退出扇形');
     later(4.5, () => { if (!prologue.on) setTutor(null); });
   }
   // 身后起手:镜头看不到的方向有人举刀,头顶先喊一声
-  if (e.pos && simNow() - rearWarnT > 1200) {
+  if (!opts.quiet && e.pos && simNow() - rearWarnT > 1200) {
     const dx = e.pos.x - player.pos.x, dz = e.pos.z - player.pos.z;
     const d = Math.hypot(dx, dz) || 1;
     if (d < range + 1.5 && (dx * -Math.sin(cam.yaw) + dz * -Math.cos(cam.yaw)) / d < -0.25) {
@@ -87,22 +111,26 @@ export function telegraphFlash(e, dur = 0.45, heavy = false, range = heavy ? 2.7
       callout('⚠ 身后!', 'red');
     }
   }
+  const rect = opts.shape === 'rect';
+  const geo = rect ? _rectGeo : sectorGeo(arc);
   const grp = new THREE.Group();
-  const zone = new THREE.Mesh(sectorGeo(arc), pooledMat(dangerMat));
-  const fill = new THREE.Mesh(sectorGeo(arc), pooledMat(dangerMat));
+  const zone = new THREE.Mesh(geo, pooledMat(dangerMat));
+  const fill = new THREE.Mesh(geo, pooledMat(dangerMat));
   for (const m of [zone, fill]) {
-    m.rotation.x = -Math.PI / 2;
+    if (!rect) m.rotation.x = -Math.PI / 2;
     if (heavy) m.material.color.setHex(0xb040ff); // 紫=破盾重击:别格挡,滚!
     grp.add(m);
   }
   zone.position.y = 0.1;
   fill.position.y = 0.12;
-  zone.scale.setScalar(range);
-  fill.scale.setScalar(0.05);
-  grp.position.set(e.pos.x, 0, e.pos.z);
+  if (rect) { zone.scale.set(opts.width, 1, range); fill.scale.set(opts.width, 1, 0.05); }
+  else { zone.scale.setScalar(range); fill.scale.setScalar(0.05); }
+  const at = opts.anchored ? windupAnchor(e) : e.pos;
+  grp.position.set(at.x, 0, at.z);
   grp.rotation.y = e.yaw || 0;
   scene.add(grp);
-  dangerFX.push({ grp, zone, fill, e, t: 0, dur, range, sector: true });
+  dangerFX.push({ grp, zone, fill, e, t: 0, dur, range, arc, sector: true, rect, width: opts.width || 0,
+    anchored: !!opts.anchored, watch: opts.watch || null });
 }
 function removeDanger(f) {
   if (f.sector) {
@@ -120,16 +148,18 @@ export function updateDanger(dt) {
     const f = dangerFX[i];
     f.t += dt;
     const k = f.t / f.dur;
-    // 出手完毕/被打断(死亡、倒地、踉跄)即熄灭
-    if (k >= 1 || f.e.dead || f.e.downT > 0 || (f.e.stunT || 0) > 0 || (f.e.hitStunT || 0) > 0) {
+    // 出手完毕/被打断(死亡、倒地、踉跄、起手作废)即熄灭
+    if (k >= 1 || f.e.dead || f.e.downT > 0 || (f.e.stunT || 0) > 0 || (f.e.hitStunT || 0) > 0 || (f.watch && !f.watch())) {
       removeDanger(f);
       dangerFX.splice(i, 1);
       continue;
     }
     if (f.sector) {
-      f.grp.position.set(f.e.pos.x, 0, f.e.pos.z);
+      const at = f.anchored ? windupAnchor(f.e) : f.e.pos;
+      f.grp.position.set(at.x, 0, at.z);
       f.grp.rotation.y = f.e.yaw || 0;
-      f.fill.scale.setScalar(Math.max(0.05, k) * f.range); // 亮区长满 = 刀落下
+      if (f.rect) f.fill.scale.set(f.width, 1, Math.max(0.05, k) * f.range); // 亮条铺满 = 扑出去
+      else f.fill.scale.setScalar(Math.max(0.05, k) * f.range); // 亮区长满 = 刀落下
       f.zone.material.opacity = 0.12 + 0.12 * k;
       f.fill.material.opacity = 0.28 + 0.42 * k;
       continue;
@@ -223,7 +253,7 @@ export function updateLock(dt) {
   lockMark.visible = true;
   const h = lockFoe.parts && lockFoe.parts.head ? 2.45 : 1.5; // 人形头顶/狼背上方
   lockMark.position.set(lockFoe.pos.x,
-    (lockFoe.pos.y || 0) + h + Math.sin(performance.now() * 0.006) * 0.07, lockFoe.pos.z);
+    (lockFoe.pos.y || 0) + h + Math.sin(frame.now * 0.006) * 0.07, lockFoe.pos.z);
   lockMark.rotation.y += dt * 3;
   lockFoe._maxHp = Math.max(lockFoe._maxHp || 0, lockFoe.hp); // 见过的最高血量当上限
   lockhpEl.style.display = 'block';
@@ -435,9 +465,10 @@ export function flinch(e, heavy) {
   if (!heavy && (isElite(e) || (e.armorT || 0) > 0 || windupArmored(e))) return;
   e.hitStunT = heavy ? 0.6 : 0.3;
   e.armorT = heavy ? 0.9 : 1.3;
-  if (e.windupT > 0 || e.biteT > 0) callout('打断!', 'blue', e.pos);
+  if (e.windupT > 0 || e.biteT > 0 || e.braceT > 0) callout('打断!', 'blue', e.pos);
   e.windupT = 0;
   e.biteT = 0;
+  e.braceT = 0; // 举刀等着扎马的架势也被砍散
   e.comboN = 0;
   e.heavyAtk = false;
 }

@@ -3,6 +3,7 @@
 // 状态全在 dragonRT;对空瞄准 dragonAim 在魔法模块里读它。
 import * as THREE from 'three';
 import { sfx } from '../audio.js';
+import { frame } from '../core/frame.js';
 import { rand } from '../core/rng.js';
 import { saveGame } from '../core/save.js';
 import { player } from '../core/state.js';
@@ -105,7 +106,7 @@ export function updateDragon(dt) {
   dragonRT.t -= dt;
   // 翼拍:飞行大摆,落地收拢
   const flap = dragonRT.phase === 'land' || dragonRT.phase === 'dead'
-    ? 0.95 : Math.sin(performance.now() * 0.006) * 0.55;
+    ? 0.95 : Math.sin(frame.now * 0.006) * 0.55;
   const W = dragonRT.ent.parts.wings;
   if (W.length === 2) {
     W[0].rotation.z = -0.15 + flap;
