@@ -6,19 +6,22 @@ import * as THREE from 'three';
 import { sfx } from '../audio.js';
 import { saveGame } from '../core/save.js';
 import { later } from '../core/timers.js';
-import { player, world } from '../core/state.js';
-import { angleLerp, dist2, lambert, makeHumanoid } from '../entities.js';
+import { colliders, player, world } from '../core/state.js';
+import { angleLerp, dist2, lambert, makeHorse, makeHumanoid, resolveCollisions } from '../entities.js';
 import { scene } from '../gfx/core.js';
 import { MISSIONS } from '../story.js';
-import { openDialog } from '../ui/dialog.js';
+import { VILLAGER_DESC_EN, openDialog } from '../ui/dialog.js';
+import { callout } from '../ui/feedback.js';
 import { dropQuestToasts, toast, toastNow, toastQuest } from '../ui/toast.js';
 import { stats } from './achievements.js';
 import { endTrial, inDungeon, trialRT } from './activities.js';
-import { addBandit, addHorse, animateLimbs, bandits, retireEntity } from './actors.js';
+import {
+  addBandit, addHorse, addWolf, animHorseLegs, animateLimbs, bandits, moveEntityHorse, retireEntity, villagers, wolves,
+} from './actors.js';
 import { dayPhase } from './calendar.js';
 import { bountyRT } from './events.js';
 import { remember } from './mind.js';
-import { navNext } from './nav.js';
+import { navNext, navPath } from './nav.js';
 import { steward } from './npcs.js';
 import { addPickup } from './pickups.js';
 import { prologue, setTutor } from './prologue.js';
@@ -28,8 +31,9 @@ export const missions = MISSIONS;
 export const quest = { idx: 0, active: false, progress: 0, timer: 0 };
 // 任务运行时对象
 // mcStriker / mcNextAt:护送时"谁正在砍商人、下一刀最早何时"(ai.js 的伏兵逻辑读写,保证同一时间只有一人下手)
+// riders:快递路上的黑石骑手;runner:内鬼的信使;alpha/pack:狼灾的头狼与随行的狼
 export const questRT = { rings: [], ringIdx: 0, merchant: null, specialHorse: null, boss: null, escortSpawned: 0,
-  ambush: false, mcStriker: null, mcNextAt: 0 };
+  ambush: false, mcStriker: null, mcNextAt: 0, riders: [], runner: null, alpha: null, pack: [] };
 const ESCORT_HP = 6; // 商人每波伏击前回满
 
 // 委托人(金色衣服的老者):人形模型就绪后才能建,启动装配时生成
@@ -60,12 +64,26 @@ function removeEscortBandits() {
     if (bandits[i].escort) retireEntity(bandits[i], bandits);
   }
 }
+// 委托专属的人和牲口(骑手的马、信使、头狼与狼群)随委托结束一并退场;倒下的狼留 3 秒尸体再收
+function clearMissionActors() {
+  for (const r of questRT.riders) retireEntity(r.h);
+  questRT.riders = [];
+  if (questRT.runner) { retireEntity(questRT.runner); questRT.runner = null; }
+  for (const w of questRT.pack) {
+    if (w.dead) later(3, () => retireEntity(w, wolves));
+    else retireEntity(w, wolves);
+  }
+  questRT.pack = [];
+  questRT.alpha = null;
+  pinMiller(false);
+}
 function failMission(msg) {
   quest.active = false;
   if (player.parcel) { player.group.remove(player.parcel); player.parcel = null; }
   clearRaceRings();
   if (questRT.merchant) { retireEntity(questRT.merchant); questRT.merchant = null; }
   removeEscortBandits(); // 伏兵随任务失败一并撤走,否则重接任务时旧伏兵会追杀新商人
+  clearMissionActors();
   dropQuestToasts(); // 还在排队的进度提示(金环、商人受袭……)都过时了
   toastNow(msg, 4); // 失败原因当场说清,不排在别的提示后面
 }
@@ -96,6 +114,8 @@ export function talkQuestGiver(remote = false) {
       parcel.position.set(0, 1.0, -0.24);
       player.group.add(parcel);
       player.parcel = parcel;
+      questRT.deliverAmbush = false;
+      pinMiller(true);
     } else if (m.type === 'bandits') {
       for (const [ox, oz] of [[-4, 2], [4, -2], [0, 6]]) addBandit(world.banditCamp.x + ox, world.banditCamp.z + oz).campFoe = true;
       // 营地头目:会二连击和紫色破盾重击(第一次见紫色会弹教学卡)
@@ -107,13 +127,15 @@ export function talkQuestGiver(remote = false) {
       if (trialRT.active) endTrial(false); // 接正赛前先收计时赛的环
       questRT.ringIdx = 0;
       clearRaceRings();
-      for (const [rx, rz] of world.raceRoute) {
+      const high = new Set(m.high || []);
+      world.raceRoute.forEach(([rx, rz], i) => {
         const ring = new THREE.Mesh(new THREE.TorusGeometry(2.4, 0.22, 8, 20),
           new THREE.MeshStandardMaterial({ color: 0xffd83d, emissive: 0x996600, emissiveIntensity: 0.6, metalness: 0.6, roughness: 0.3 }));
-        ring.position.set(rx, 2.4, rz);
+        ring.userData.high = high.has(i); // 高环:挂得高,要跃马(空格)穿过去
+        ring.position.set(rx, ring.userData.high ? 3.7 : 2.4, rz);
         scene.add(ring);
         questRT.rings.push(ring);
-      }
+      });
     } else if (m.type === 'losthorse') {
       if (!questRT.specialHorse) {
         questRT.specialHorse = addHorse(world.lostHorsePos.x, world.lostHorsePos.z, 0xf2efe6, false);
@@ -130,6 +152,17 @@ export function talkQuestGiver(remote = false) {
       questRT.ambush = false;
       questRT.mcStriker = null;
       questRT.mcNextAt = 0;
+    } else if (m.type === 'courier') {
+      questRT.runner = null; // 走近哨塔遗迹时信使才现身(见 updateCourier)
+    } else if (m.type === 'wolves') {
+      // 独眼头狼:大一圈、更扛揍,带两头狼守在林子里;狼杀够了它不死也不算完(见 completeMission)
+      const a = addWolf(-140, -40);
+      a.alpha = true;
+      a.hp = a.maxHp = 9;
+      a.speed += 0.8;
+      a.group.scale.setScalar(1.35);
+      questRT.alpha = a;
+      questRT.pack = [a, addWolf(-134, -47), addWolf(-147, -33)];
     } else if (m.type === 'boss') {
       questRT.boss = addBandit(world.fortPos.x, world.fortPos.z - 2,
         { boss: true, hp: 12, speed: 6.8, scale: 1.35, dmg: 2 });
@@ -162,6 +195,11 @@ function showReward(head, title, bonus, next) {
 }
 export function completeMission() {
   const m = missions[quest.idx];
+  if (m.type === 'wolves' && questRT.alpha && !questRT.alpha.dead) { // 狼杀够了,头狼还活着:不算完
+    quest.progress = Math.min(quest.progress, m.goal - 1);
+    toastQuest('🐺 狼是杀够了,可独眼头狼还在林子里嚎——光柱指着它', 3, 'wolves');
+    return;
+  }
   player.coins += m.reward;
   remember(`替领主府办结了委托「${m.title}」`, `m-${quest.idx}`);
   sfx.fanfare();
@@ -178,7 +216,12 @@ export function completeMission() {
   clearRaceRings();
   if (questRT.merchant) { retireEntity(questRT.merchant); questRT.merchant = null; }
   removeEscortBandits();
+  clearMissionActors();
   saveGame();
+  if (m.type === 'bandits') { // 剧情转折的引子:头目身上的信(下一单「内鬼的信使」由此而来)
+    openDialog(['(你在营地头目身上搜出一封信——火漆上竟是领主府的鹿纹印。)',
+      '(信里写着:「今日午后,哨塔遗迹,老地方交接。」……这得让埃隆看看。)']);
+  }
   if (quest.idx >= missions.length) {
     addPickup('star', 0, 13);
     toastQuest('全部委托完成!去喷泉广场领取 ★ 金狮勋章 ★,再去见领主领赏!', 6);
@@ -234,6 +277,11 @@ function updateQuestTarget(dt) {
     beacon.position.z = steward.pos.z;
   }
   if (quest.offerT > 0) quest.offerT -= dt;
+  if (questRT.millerHoldT > 0) { // 送完快递,卢卡斯在门口多站一会儿
+    questRT.millerHoldT -= dt;
+    keepMillerAtMill();
+    if (questRT.millerHoldT <= 0 && !(quest.active && missions[quest.idx].type === 'deliver')) pinMiller(false);
+  }
   if (!quest.active || player.dead) return;
   const m = missions[quest.idx];
   const setBeacon = (x, z) => { beacon.visible = true; beacon.position.x = x; beacon.position.z = z; };
@@ -245,25 +293,25 @@ function updateQuestTarget(dt) {
     if (!questRT.deliverAmbush && player.pos.x > 84 &&
         dist2(player.pos.x, player.pos.z, world.windmillPos.x, world.windmillPos.z) > 30 * 30) {
       questRT.deliverAmbush = true;
-      const dx = world.windmillPos.x - player.pos.x, dz = world.windmillPos.z - player.pos.z;
-      const dd = Math.hypot(dx, dz) || 1;
-      const ax = player.pos.x + (dx / dd) * 13, az = player.pos.z + (dz / dd) * 13;
-      for (const side of [-1, 1]) {
-        const b = addBandit(ax - (dz / dd) * 5 * side, az + (dx / dd) * 5 * side, { hp: 2, speed: 6.2, escort: true });
-        b.yaw = Math.atan2(-dx, -dz);
-      }
-      toastQuest('⚠️ 路边窜出两个黑石喽啰:「把包裹留下!」(甩开他们,或者砍翻)', 3.5);
+      spawnRiders();
+      toastQuest('⚠️ 两个黑石骑手从林边杀出:「把包裹留下!」(疾驰甩开他们,或者砍下马)', 3.5);
       sfx.wanted();
     }
+    updateRiders(dt);
+    keepMillerAtMill();
     if (dist2(player.pos.x, player.pos.z, world.windmillPos.x, world.windmillPos.z) < 49) {
       const ambushed = questRT.deliverAmbush;
       questRT.deliverAmbush = false;
+      const miller = millerVillager();
+      if (miller) miller.yaw = Math.atan2(player.pos.x - miller.pos.x, player.pos.z - miller.pos.z);
       completeMission();
       openDialog([
-        '磨坊主老汉斯:(接过包裹,掂了掂)总算到了!这是今年的麦价文书——落到黑石那帮人手里,他们能把全城的面包价抬上天。',
-        ambushed ? '老汉斯:路上碰到拦路的了?……嗯,他们最近盯磨坊盯得紧。替我谢谢埃隆,也谢谢你。'
-          : '老汉斯:一路太平?那是你跑得快。最近黑石的人常在东路上晃悠,往后走这条路多留个心眼。',
-      ]);
+        '磨坊主卢卡斯:(接过包裹,掂了掂)总算到了!这是今年的麦价文书——落到黑石那帮人手里,他们能把全城的面包价抬上天。',
+        ambushed ? '卢卡斯:路上碰到追你的骑手了?……嗯,他们最近盯磨坊盯得紧。替我谢谢埃隆,也谢谢你。'
+          : '卢卡斯:一路太平?那是你跑得快。最近黑石的人常在东路上晃悠,往后走这条路多留个心眼。',
+      ], null, miller ? { key: miller.dbKey, name: '磨坊主卢卡斯', desc: VILLAGER_DESC_EN[villagers.indexOf(miller)], ent: miller } : null);
+      pinMiller(true); // 说完话再回去干活(夜里也别当着你的面钻回屋)
+      questRT.millerHoldT = 25;
     } else if (quest.timer <= 0) {
       questRT.deliverAmbush = false;
       failMission('投递超时!回去找埃隆重新接取…');
@@ -286,12 +334,22 @@ function updateQuestTarget(dt) {
       ring.rotation.y += dt * (i === questRT.ringIdx ? 3 : 0.6);
       ring.material.emissiveIntensity = i < questRT.ringIdx ? 0.1 : i === questRT.ringIdx ? 1.2 : 0.4;
     });
-    if (dist2(player.pos.x, player.pos.z, rx, rz) < 9) {
+    const ring = questRT.rings[questRT.ringIdx];
+    const high = ring && ring.userData.high;
+    const near = dist2(player.pos.x, player.pos.z, rx, rz) < (high ? 16 : 9);
+    if (near && high && player.pos.y < 0.5) { // 高环从底下钻过去不算:提示一次,兜回来跃马再穿
+      if (!questRT.ringMiss) {
+        questRT.ringMiss = true;
+        callout('高环要跳!按空格', 'red');
+        toastQuest('没跳过高环——兜回来,快到环前按空格跃马穿过去', 2.5, 'ring');
+      }
+    } else if (near) {
       sfx.block();
       questRT.ringIdx++;
+      questRT.ringMiss = false;
       if (questRT.ringIdx >= world.raceRoute.length) completeMission();
-      else toastQuest(`金环 ${questRT.ringIdx}/${world.raceRoute.length}`, 1.2, 'ring');
-    }
+      else toastQuest(`金环 ${questRT.ringIdx}/${world.raceRoute.length}${questRT.rings[questRT.ringIdx].userData.high ? '(下一个是高环:跳!)' : ''}`, 1.2, 'ring');
+    } else questRT.ringMiss = false;
   } else if (m.type === 'losthorse') {
     const sh = questRT.specialHorse;
     if (!sh) return;
@@ -305,7 +363,10 @@ function updateQuestTarget(dt) {
       }
     } else {
       setBeacon(sh.pos.x, sh.pos.z);
+      updateSkittish(sh, dt);
     }
+  } else if (m.type === 'courier') {
+    updateCourier(dt, setBeacon);
   } else if (m.type === 'escort') {
     const mc = questRT.merchant;
     if (!mc) return;
@@ -313,13 +374,176 @@ function updateQuestTarget(dt) {
     if (mc.hp <= 0) { failMission('商人巴特倒下了……回去找埃隆重整旗鼓。'); return; }
     updateEscort(mc, dt);
   } else if (m.type === 'wolves') {
-    setBeacon(-140, -40);
+    const a = questRT.alpha;
+    if (a && !a.dead) setBeacon(a.pos.x, a.pos.z);
+    else setBeacon(-140, -40);
   } else if (m.type === 'boss') {
     if (questRT.boss) setBeacon(questRT.boss.pos.x, questRT.boss.pos.z);
     if (questRT.boss && questRT.boss.dead) {
       questRT.boss = null;
       completeMission();
       toastNow('⚔️ 血斧巴罗克倒下了!黑石兄弟会土崩瓦解!', 4); // 不管是刀、箭还是法术收的尾,倒下的这一刻就播
+    }
+  }
+}
+// ② 快递的追兵:两名黑石骑手从前方林边斜插过来,骑马追你。人是普通盗贼(会砍、能被砍),脚下垫一匹不进马厩名单的马;
+// 速度在小跑和疾驰之间——疾驰甩得掉,小跑会被追上砍。骑手落马,马受惊跑开,几秒后消失
+function spawnRiders() {
+  const dx = world.windmillPos.x - player.pos.x, dz = world.windmillPos.z - player.pos.z;
+  const dd = Math.hypot(dx, dz) || 1;
+  const fx = dx / dd, fz = dz / dd;
+  for (const side of [-1, 1]) {
+    const x = player.pos.x + fx * 14 - fz * 16 * side, z = player.pos.z + fz * 14 + fx * 16 * side;
+    const b = addBandit(x, z, { hp: 2, speed: 12.5, escort: true });
+    b.yaw = Math.atan2(player.pos.x - x, player.pos.z - z);
+    const h = { ...makeHorse(0x3a2a20), pos: b.pos.clone(), yaw: b.yaw, walkT: 0 };
+    h.group.position.copy(h.pos);
+    scene.add(h.group);
+    questRT.riders.push({ b, h, px: x, pz: z, fleeT: 3 });
+  }
+}
+function updateRiders(dt) {
+  for (let i = questRT.riders.length - 1; i >= 0; i--) {
+    const r = questRT.riders[i], { b, h } = r;
+    if (b.dead || !bandits.includes(b)) { // 落马:人摔在地上,马往远处跑
+      if (!r.dropped) { r.dropped = true; b.group.position.y = 0; }
+      r.fleeT -= dt;
+      const ax = h.pos.x - player.pos.x, az = h.pos.z - player.pos.z, al = Math.hypot(ax, az) || 1;
+      moveEntityHorse(h, h.pos.x + (ax / al) * 10, h.pos.z + (az / al) * 10, 10, dt);
+      h.group.position.copy(h.pos);
+      h.group.rotation.y = h.yaw;
+      animHorseLegs(h, 1.6);
+      if (r.fleeT <= 0) { retireEntity(h); questRT.riders.splice(i, 1); }
+      continue;
+    }
+    const v = Math.hypot(b.pos.x - r.px, b.pos.z - r.pz) / Math.max(dt, 1e-3);
+    r.px = b.pos.x; r.pz = b.pos.z;
+    h.pos.set(b.pos.x, 0, b.pos.z);
+    h.yaw = b.yaw;
+    h.walkT += dt * v * 1.6;
+    h.group.position.copy(h.pos);
+    h.group.rotation.y = h.yaw;
+    animHorseLegs(h, v > 7 ? 1.6 : v > 0.5 ? 1 : 0);
+    b.group.position.y = 1.35 + (h.visBob || 0); // 骑在鞍上(盗贼 AI 每帧把人摆回地面,这里再抬上去)
+    b.parts.legL.rotation.x = -1.1;
+    b.parts.legR.rotation.x = -1.1;
+  }
+}
+// 磨坊主卢卡斯(村民)在快递期间守在磨坊门口:收包裹的人得在场——日程三处都临时改成磨坊,夜里也不回家睡
+const MILL_DOOR = [136.5, 25];
+function millerVillager() { return villagers.find((v) => v.id && v.id.name === '磨坊主卢卡斯') || null; }
+function pinMiller(on) {
+  const v = millerVillager();
+  if (!v) return;
+  if (on && !v._id0) {
+    v._id0 = v.id;
+    v.id = { ...v.id, home: MILL_DOOR, work: MILL_DOOR, leisure: MILL_DOOR };
+  } else if (!on && v._id0) {
+    v.id = v._id0;
+    v._id0 = null;
+  }
+}
+function keepMillerAtMill() {
+  const v = millerVillager();
+  if (!v || dist2(player.pos.x, player.pos.z, MILL_DOOR[0], MILL_DOOR[1]) > 70 * 70) return;
+  if (dist2(v.pos.x, v.pos.z, MILL_DOOR[0], MILL_DOOR[1]) > 64 &&
+      dist2(v.pos.x, v.pos.z, player.pos.x, player.pos.z) > 50 * 50) { // 你还看不见他的时候,让他先到门口
+    v.pos.set(MILL_DOOR[0], 0, MILL_DOOR[1]);
+    v.group.position.copy(v.pos);
+  }
+  if (v.sleeping) { v.sleeping = false; v.group.visible = true; } // 夜里也等着收包裹
+}
+// ④ 内鬼的信使:走近哨塔遗迹,兜帽信使撒腿就跑——沿航点图逃回黑石要塞(北墙外 → 木桥 → 要塞);
+// 贴到 2.2 米内就按倒他。你离得远时他小跑,追近了才拼命跑(9 米/秒,比人疾跑快:骑马追,或抄近路堵桥头);
+// 让他逃进要塞,下一个信使会再回哨塔遗迹
+const COURIER_SPOT = { x: 80, z: -118 };
+function spawnRunner() {
+  const r = { ...makeHumanoid({ shirt: 0x2a2a30, pants: 0x1e1e24, hair: 0x2a2018, hood: true }),
+    pos: new THREE.Vector3(COURIER_SPOT.x, 0, COURIER_SPOT.z), yaw: 0, walkT: 0, leg: 0 };
+  r.route = navPath(r.pos.x, r.pos.z, world.fortPos.x, world.fortPos.z).slice(1);
+  r.group.position.copy(r.pos);
+  scene.add(r.group);
+  questRT.runner = r;
+  toastQuest('🏃 哨塔边的兜帽人瞧见了你,撒腿就往西跑——追上他!', 3, 'courier');
+  sfx.wanted();
+}
+function updateCourier(dt, setBeacon) {
+  const r = questRT.runner;
+  if (!r) {
+    setBeacon(COURIER_SPOT.x, COURIER_SPOT.z);
+    if (dist2(player.pos.x, player.pos.z, COURIER_SPOT.x, COURIER_SPOT.z) < 45 * 45) spawnRunner();
+    return;
+  }
+  setBeacon(r.pos.x, r.pos.z);
+  const pd = Math.hypot(player.pos.x - r.pos.x, player.pos.z - r.pos.z);
+  if (pd < 2.2) {
+    remember('截住了内鬼的信使:府里的税吏霍布投了黑石', 'courier');
+    completeMission();
+    openDialog([
+      '黑石信使:(被你按在地上)别、别动手!我只是跑腿的——信是府里的税吏霍布给的,他收了巴罗克的金子!',
+      '黑石信使:商队几时走、领主的白马拴在哪、卫兵几时换岗……全是霍布递出去的。他昨夜已经过河,投奔要塞了!',
+      '(你从他怀里搜出第二封信:「白马已解缰,赶进幽暗森林。商人巴特的车队,不日走东路。——H」)',
+    ]);
+    return;
+  }
+  const tgt = r.route[r.leg];
+  if (!tgt || dist2(r.pos.x, r.pos.z, world.fortPos.x, world.fortPos.z) < 14 * 14) { // 逃到要塞了
+    retireEntity(r);
+    questRT.runner = null;
+    toastQuest('信使钻进要塞外的林子不见了……回哨塔遗迹,等下一个信使。', 3.5, 'courier');
+    return;
+  }
+  const dx = tgt.x - r.pos.x, dz = tgt.z - r.pos.z, d = Math.hypot(dx, dz);
+  if (d < 1.5) r.leg++;
+  const sp = pd < 40 ? 9 : 5.5;
+  if (d > 0.01) {
+    r.pos.x += (dx / d) * Math.min(d, sp * dt);
+    r.pos.z += (dz / d) * Math.min(d, sp * dt);
+    resolveCollisions(r.pos, 0.4, colliders);
+    r.yaw = angleLerp(r.yaw, Math.atan2(dx, dz), dt * 10);
+  }
+  r.walkT += dt * sp * 2.2;
+  r.group.position.copy(r.pos);
+  r.group.rotation.y = r.yaw;
+  animateLimbs(r.parts, r.walkT, true, r.group, sp > 6 ? 1 : 0.6);
+}
+// ⑥ 受惊的白马:你骑着马、或疾跑着冲到 15 米内,它就撒蹄跑开 3.5 秒(不出幽暗森林那一片);
+// 下马慢慢走到 4 米内,它认出你、不再躲,E 骑上它。你的速度取平滑后的实测值(不认按键,庇佑加速的步行不算疾跑)
+function updateSkittish(sh, dt) {
+  const v = Math.hypot(player.pos.x - (questRT.lastPX ?? player.pos.x), player.pos.z - (questRT.lastPZ ?? player.pos.z)) / Math.max(dt, 1e-3);
+  questRT.lastPX = player.pos.x; questRT.lastPZ = player.pos.z;
+  questRT.pSpeed = Math.min(30, (questRT.pSpeed || 0) * 0.85 + v * 0.15);
+  if (sh.calm) return;
+  const d = Math.hypot(sh.pos.x - player.pos.x, sh.pos.z - player.pos.z);
+  if (sh.fleeT > 0) {
+    sh.fleeT -= dt;
+    let ax = sh.pos.x - player.pos.x, az = sh.pos.z - player.pos.z;
+    const al = Math.hypot(ax, az) || 1;
+    ax /= al; az /= al;
+    const hx = world.lostHorsePos.x - sh.pos.x, hz = world.lostHorsePos.z - sh.pos.z, hd = Math.hypot(hx, hz);
+    if (hd > 35) { // 别跑出这片林子:越远越往回拐
+      const k = Math.min(1.5, (hd - 35) / 10);
+      ax += (hx / hd) * k; az += (hz / hd) * k;
+      const l2 = Math.hypot(ax, az) || 1;
+      ax /= l2; az /= l2;
+    }
+    moveEntityHorse(sh, sh.pos.x + ax * 10, sh.pos.z + az * 10, 9.5, dt);
+    sh.group.position.copy(sh.pos);
+    sh.group.rotation.y = sh.yaw;
+    animHorseLegs(sh, 1.6);
+    return;
+  }
+  const loud = player.mounted || questRT.pSpeed > 6.5;
+  if (d < 4 && !loud) {
+    sh.calm = true;
+    callout('雪影认出了你,打了个响鼻', 'gold', sh.pos);
+    toastQuest('雪影不躲了——按 E 骑上它', 3, 'horse');
+  } else if (d < 15 && loud) {
+    sh.fleeT = 3.5;
+    callout('雪影受惊跑开了!', 'red', sh.pos);
+    if (!questRT.horseHint) {
+      questRT.horseHint = true;
+      toastQuest('🐴 雪影被马蹄声和奔跑吓到了——下马,慢慢走过去(别按 Shift 疾跑;Z 潜行更稳)', 4.5, 'horse');
     }
   }
 }

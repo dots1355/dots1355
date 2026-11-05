@@ -144,6 +144,8 @@ export function updateHUD() {
     let prog = '';
     if (m.type === 'coins') prog = ` (${Math.min(quest.progress, m.goal)}/${m.goal})` + (quest.progress >= m.goal ? ' — 回去交任务!' : '');
     if (m.type === 'bandits' || m.type === 'wolves') prog = ` (${quest.progress}/${m.goal})`;
+    if (m.type === 'wolves' && questRT.alpha && !questRT.alpha.dead) prog += ' · 独眼头狼还活着';
+    if (m.type === 'courier' && questRT.runner) prog = ' —— 信使在逃:追上去,贴近就能按倒他!';
     if (m.type === 'race') prog = ` (金环 ${questRT.ringIdx}/${world.raceRoute.length})`;
     if (m.type === 'escort' && questRT.merchant) {
       prog = questRT.ambush ? ' —— 伏击!贴上去把伏兵引到自己身上' : ` (商人 ❤ ${Math.max(0, questRT.merchant.hp)}/${questRT.merchant.maxHp})`;

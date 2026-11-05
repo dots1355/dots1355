@@ -677,6 +677,100 @@ const TESTS = {
     if (r.minGateD > 10) throw new Error(`北面来的战团 150 秒内没走到东门:${JSON.stringify(r)}`);
     if (r.active && !/距你/.test(r.banner)) throw new Error(`人在 300 米外,战团横幅没报距离:${r.banner}`);
   },
+  // 委托难度与剧情:④信使会逃(贴近才按倒)、⑤高环要跳、⑥白马见了奔马会跑(慢慢走近才认你)、⑧头狼不死不算完、
+  // ②路上有骑马的追兵、磨坊主在磨坊门口;旧档(v3)过了竞速的顺延一位
+  async missions(page) {
+    await boot(page);
+    const r = await page.evaluate(() => {
+      const g = window.__gtm, out = {};
+      g.player.hp = g.player.maxHp = 999;
+      const take = (type) => {
+        g.quest.idx = g.missions.findIndex((m) => m.type === type);
+        g.quest.active = false;
+        g.talkQuestGiver();
+        while (g.dialogOpen()) g.advanceDialog();
+      };
+      // ④ 内鬼的信使
+      take('courier');
+      const idx4 = g.quest.idx;
+      g.player.pos.set(80, 0, -80); g.step(2);
+      out.runner = !!g.questRT.runner;
+      const r0 = g.questRT.runner && { x: g.questRT.runner.pos.x, z: g.questRT.runner.pos.z };
+      g.step(60);
+      out.fled = r0 && Math.hypot(g.questRT.runner.pos.x - r0.x, g.questRT.runner.pos.z - r0.z) > 4;
+      g.player.pos.set(g.questRT.runner.pos.x + 1, 0, g.questRT.runner.pos.z); g.step(1);
+      out.caught = g.quest.idx === idx4 + 1 && /霍布/.test((g.getDialog().page || ''));
+      while (g.dialogOpen()) g.advanceDialog();
+      // ⑤ 高环
+      take('race');
+      const hi = g.missions[g.quest.idx].high[0];
+      g.questRT.ringIdx = hi;
+      const [hx, hz] = g.world.raceRoute[hi];
+      g.player.pos.set(hx, 0, hz); g.step(1);
+      out.lowPass = g.questRT.ringIdx;
+      g.player.pos.set(hx, 1, hz); g.player.vy = 0; g.step(1);
+      out.jumpPass = g.questRT.ringIdx;
+      g.quest.active = false;
+      // ⑥ 白马
+      take('losthorse');
+      const sh = g.questRT.specialHorse;
+      g.player.mounted = g.player.horse;
+      g.player.pos.set(sh.pos.x + 10, 0, sh.pos.z); g.player.horse.pos.copy(g.player.pos);
+      g.step(3);
+      out.spooked = sh.fleeT > 0;
+      g.player.mounted = null;
+      sh.fleeT = 0;
+      g.player.pos.set(sh.pos.x + 3.5, 0, sh.pos.z);
+      g.questRT.lastPX = g.player.pos.x; g.questRT.lastPZ = g.player.pos.z; g.questRT.pSpeed = 0;
+      g.step(2);
+      out.calm = !!sh.calm;
+      g.quest.active = false;
+      // ⑧ 头狼
+      take('wolves');
+      const alpha = g.questRT.alpha;
+      const idx8 = g.quest.idx;
+      for (const w of g.wolves.filter((x) => !x.dead && x !== alpha).slice(0, 4)) g.killWolf(w);
+      out.wolvesDoneEarly = g.quest.idx !== idx8;
+      out.progressCap = g.quest.progress;
+      g.killWolf(alpha);
+      out.alphaDone = g.quest.idx === idx8 + 1;
+      // ② 骑马的追兵 + 磨坊主
+      take('deliver');
+      g.quest.timer = 99;
+      g.player.pos.set(92, 0, 2); g.step(2);
+      out.riders = g.questRT.riders.length;
+      out.riderSpeed = g.questRT.riders[0] && g.questRT.riders[0].b.speed;
+      g.player.pos.set(g.world.windmillPos.x - 5, 0, g.world.windmillPos.z); g.step(2);
+      out.ridersCleared = g.questRT.riders.length === 0;
+      const miller = g.villagers.find((v) => v.id.name === '磨坊主卢卡斯');
+      out.millerAtMill = miller && Math.hypot(miller.pos.x - 136.5, miller.pos.z - 25) < 10 && miller.group.visible;
+      out.millerLine = g.getDialog().page || '';
+      while (g.dialogOpen()) g.advanceDialog();
+      g.saveNow();
+      return out;
+    });
+    if (!r.runner || !r.fled) throw new Error(`走近哨塔遗迹,信使没现身或没逃:${JSON.stringify(r)}`);
+    if (!r.caught) throw new Error('贴近信使没按倒他(或没招出霍布)');
+    if (r.lowPass !== r.jumpPass - 1) throw new Error(`高环:不跳 ${r.lowPass},跳 ${r.jumpPass}(应只有跳过去才算)`);
+    if (!r.spooked) throw new Error('骑马冲到白马跟前,它没受惊');
+    if (!r.calm) throw new Error('下马慢慢走近,白马没认你');
+    if (r.wolvesDoneEarly || r.progressCap !== 3) throw new Error(`头狼还活着,狼灾就算完了:${JSON.stringify(r)}`);
+    if (!r.alphaDone) throw new Error('杀了头狼,狼灾没完成');
+    if (r.riders !== 2 || !(r.riderSpeed > 11)) throw new Error(`快递路上没有骑马的追兵:${JSON.stringify(r)}`);
+    if (!r.ridersCleared) throw new Error('快递完成后追兵(和马)没撤');
+    if (!r.millerAtMill || !/卢卡斯/.test(r.millerLine)) throw new Error(`磨坊主没在磨坊门口收包裹:${JSON.stringify(r)}`);
+    // 旧档迁移:v3 存的 idx 4(旧序做完了竞速、下一单白马),新序里白马是 idx 5
+    await page.evaluate(() => {
+      const s = JSON.parse(localStorage.getItem('gth-save-v1'));
+      s.v = 3; s.questIdx = 4;
+      localStorage.setItem('gth-save-v1', JSON.stringify(s));
+    });
+    await page.reload();
+    await page.waitForFunction(() => window.__gtm, null, { timeout: 240000 });
+    const m = await page.evaluate(() => ({ idx: window.__gtm.quest.idx, type: window.__gtm.missions[window.__gtm.quest.idx].type,
+      blocked: window.__gtm.getSaveBlocked() }));
+    if (m.blocked || m.type !== 'losthorse') throw new Error(`v3 旧档(下一单白马)迁移后应仍是白马,实际 ${JSON.stringify(m)}`);
+  },
   // 提示分级:同 key 的进度只留最新一条;同一句不排两遍;委托完成/失败/重接时排队的委托提示作废;插队的排最前
   async toasts(page) {
     await boot(page);
