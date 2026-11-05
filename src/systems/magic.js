@@ -272,7 +272,6 @@ export function castSpell() {
 }
 export function updateMagic(dt) {
   if (player.castT > 0) player.castT -= dt;
-  if (player.riposteT > 0) player.riposteT -= dt;
   const regen = 0.32 * (player.homeDay === calendar.day ? 1.5 : 1) * (player.blessT > 0 ? 1.4 : 1);
   player.mp = Math.min(player.maxMp, player.mp + regen * dt);
   if (shout.cd > 0) shout.cd -= dt;
@@ -297,10 +296,11 @@ export function updateMagic(dt) {
       }
     }
   }
-  // 体力(骑砍规则):格挡/疾跑/出手/喘气中不回,其余时刻 16/s 回满
+  // 体力(骑砍规则):格挡/疾跑/出手/喘气/跳劈落地硬直中不回,其余时刻 16/s 回满
   if (player.gaspT > 0) player.gaspT -= dt;
   if (player.staggerT > 0) player.staggerT -= dt;
-  const busy = player.blocking || player.attackT > 0 || player.charging || player.gaspT > 0 || cam.moveState >= 2;
+  const busy = player.blocking || player.attackT > 0 || player.charging || player.gaspT > 0 || player.landLagT > 0 ||
+    cam.moveState >= 2;
   if (!busy) player.sta = Math.min(player.maxSta, player.sta + 16 * dt);
   updateSneakXp(dt);
 }

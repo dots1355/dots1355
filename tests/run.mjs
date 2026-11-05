@@ -46,6 +46,48 @@ async function boot(page, { clear = true, start = true } = {}) {
   }
 }
 
+// 战斗用例的空场地:清走野外的狼和盗贼,玩家站在 (0,180) 面朝 +Z、镜头在身后;A.foes(n) 复用开局的盗贼当靶子
+// (50 血、不出手,摆在玩家周围),A.reset() 把玩家和靶子都复位;学来的格挡/闪箭关掉,结果才可复现
+async function installArena(page) {
+  await page.evaluate(() => {
+    const g = window.__gtm, P = g.player, X = 0, Z = 180;
+    g.seedRng(7);
+    g.EVO.tactics.block = 0; g.EVO.tactics.dodge = 0;
+    g.director.cd = 1e9; g.warband.cd = 1e9; if (g.streetEvent) g.streetEvent.cd = 1e9;
+    const roster = g.bandits.filter((b) => !b.boss && !b.robber && !b.convict && !b.escort).slice(0, 4);
+    const hide = (e) => { e.dead = true; e.respawnT = 1e9; e.group.visible = false; e.windupT = 0; e.biteT = 0; e.lunging = 0; };
+    for (const e of [...g.bandits, ...g.wolves]) hide(e);
+    const A = (window.__arena = {
+      roster,
+      foes: (n) => roster.slice(0, n).map((b) => {
+        Object.assign(b, { dead: false, respawnT: 1e9, hp: 50, maxHp: 50, stunT: 0, stunSrc: '', hitStunT: 0, armorT: 0,
+          windupT: 0, swingT: 0, heavyAtk: false, comboN: 0, fleeT: 0, attackCd: 99, kbT: 0, downT: 0, _trampleCd: 0, speed: 0,
+          elite: false, duel: false, boss: false, warlord: false, bountyHead: false, warband: false, _truce: false });
+        b.group.visible = true; b.group.rotation.set(0, 0, 0);
+        return b;
+      }),
+      place: (b, dx, dz, yaw) => {
+        b.pos.set(X + dx, 0, Z + dz);
+        b.yaw = yaw ?? Math.atan2(P.pos.x - b.pos.x, P.pos.z - b.pos.z);
+        b.group.position.copy(b.pos); b.group.rotation.y = b.yaw;
+      },
+      reset: () => {
+        for (const b of roster) hide(b);
+        if (g.getLock()) g.toggleLock();
+        Object.assign(P, { dead: false, hp: P.maxHp, sta: P.maxSta, vy: 0, onGround: true, yaw: 0, attackT: 0, strike: null,
+          atkBufT: 0, atkHeld: false, charging: false, chargeT: 0, rollT: 0, rollCd: 0, rollBufT: 0, staggerT: 0, gaspT: 0,
+          invulnT: 0, blocking: false, blockHeld: false, parryReadyAt: 0, parryUntil: -1, lungeT: 0, landLagT: 0, plunging: false,
+          chainN: 0, chainT: -1e9, sneaking: false, mounted: null, jumps: 0, airT: 0, hurtT: 0 });
+        P.pos.set(X, 0, Z);
+        for (const k of ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ShiftLeft', 'Space']) g.keys[k] = false;
+        g.setCamView(Math.PI, 0.35);
+        g.step(1);
+      },
+    });
+    A.reset();
+  });
+}
+
 const TESTS = {
   // 启动无报错,核心地标与地形就位
   async boot(page, errors) {
@@ -317,6 +359,145 @@ const TESTS = {
     if (r.strikeAfterHit) throw new Error('挨打后自己的刀还会落下');
     if (!(r.stagger > 0)) throw new Error('挨打没有硬直');
     if (!r.parried) throw new Error('举盾当刻挨刀没有判成弹反');
+  },
+  // 招式规则:跳劈要跳够高(早按进缓冲)、落地 0.6 秒硬直(跳不起滚不了)、正面 2 伤背后 1 伤最多两人、起跳 8 + 跳劈 22 体力;
+  // 不锁定时 S/A/D+F 砍向正前方的目标(出刀后不再跟着脚步转身);判定帧前按翻滚进缓冲(刀照样落下),无敌帧 0.25 秒、翻滚 20 体力
+  async moveset(page) {
+    await boot(page);
+    await installArena(page);
+    const r = await page.evaluate(() => {
+      const g = window.__gtm, A = window.__arena, P = g.player, out = {};
+      // 1) 跳劈:起跳后下一帧就按 F → 先进缓冲,跳够高才砸
+      A.reset(1);
+      const [front, back, side] = A.foes(3);
+      A.place(front, 0, 1.6); A.place(back, 0, -1.6); A.place(side, 1.4, 0.9);
+      P.sta = 100;
+      g.keys['Space'] = true; g.step(1);
+      out.jumpSta = 100 - P.sta; // 8,减去这一帧的自然回复
+      g.attackDown(); g.attackUp();
+      out.plungeEarly = !!P.plunging;
+      let n = 1, sta0 = P.sta;
+      while (!P.plunging && n < 60) { sta0 = P.sta; g.step(1); n++; }
+      out.plungeAt = n / 60; out.plungeH = P.pos.y; out.plungeSta = sta0 - P.sta;
+      while (!P.onGround && n < 120) { g.step(1); n++; }
+      out.landLag = P.landLagT;
+      out.frontDmg = 50 - front.hp; out.backDmg = 50 - back.hp; out.sideDmg = 50 - side.hp;
+      out.hitCount = [front, back, side].filter((b) => b.hp < 50).length;
+      // 硬直中:跳不起、滚不了(快缓过来时按的翻滚进缓冲,缓过来就滚)
+      const staLag = P.sta;
+      g.keys['Space'] = true; g.step(1);
+      out.jumpInLag = !P.onGround;
+      g.step(14);
+      out.staRegenInLag = P.sta - staLag;
+      g.doRoll();
+      out.rollInLag = P.rollT > 0;
+      g.step(40);
+      out.rollAfterLag = P.rollT > 0 || P.rollCd > 0;
+      // 2) 不锁定:按住 S/A/D 再按 F,砍正前方 1.8m 的目标
+      out.facing = {};
+      for (const key of ['KeyS', 'KeyA', 'KeyD']) {
+        A.reset(1);
+        const [b] = A.foes(1);
+        A.place(b, 0, 1.8);
+        g.keys[key] = true; g.step(1);
+        g.attackDown(); g.attackUp();
+        let off = null;
+        for (let i = 0; i < 40; i++) {
+          const pend = P.strike && !P.strike.done;
+          g.step(1);
+          if (pend && !(P.strike && !P.strike.done) && off === null) {
+            const want = Math.atan2(b.pos.x - P.pos.x, b.pos.z - P.pos.z);
+            off = Math.abs(((P.yaw - want + Math.PI * 3) % (Math.PI * 2)) - Math.PI) * 180 / Math.PI;
+          }
+        }
+        g.keys[key] = false;
+        out.facing[key] = { hit: b.hp < 50, off: off === null ? null : Math.round(off) };
+      }
+      // 3) 翻滚缓冲:出刀后立刻按翻滚 → 刀照样落下,落下后才滚;无敌帧 0.25 秒;20 体力
+      A.reset(1);
+      const [t] = A.foes(1);
+      A.place(t, 0, 1.6);
+      P.sta = 100;
+      g.tryAttack(); g.step(1);
+      g.doRoll();
+      out.rollCancels = P.rollT > 0;
+      let m = 0;
+      while (!(P.rollT > 0) && m < 40) { g.step(1); m++; }
+      out.bufferedHit = t.hp < 50;
+      out.rolled = P.rollT > 0;
+      out.iframes = P.invulnT;
+      out.rollSta = 100 - 12 - P.sta; // 轻斩 12 + 翻滚
+      return out;
+    });
+    if (r.plungeEarly) throw new Error('起跳下一帧就出了跳劈(应等跳够高)');
+    if (!(r.plungeAt >= 0.14 && r.plungeAt <= 0.3)) throw new Error(`跳劈起手时刻不对:${r.plungeAt.toFixed(2)}s(缓冲应在够高时自动出手)`);
+    if (!(r.plungeH >= 0.99)) throw new Error(`跳劈起手高度不够:${r.plungeH.toFixed(2)}m`);
+    if (!(r.landLag > 0.5)) throw new Error(`跳劈落地没有硬直:${r.landLag}`);
+    if (Math.abs(r.jumpSta - 8) > 0.5 || r.plungeSta !== 22) throw new Error(`起跳/跳劈体力应为 8/22,实际 ${r.jumpSta}/${r.plungeSta}`);
+    if (r.staRegenInLag > 0) throw new Error('跳劈落地硬直中体力还在回');
+    if (r.frontDmg !== 2 || r.backDmg !== 1) throw new Error(`跳劈伤害:正面应 2、背后应 1,实际 ${r.frontDmg}/${r.backDmg}`);
+    if (r.hitCount !== 2) throw new Error(`跳劈最多砸中两人,实际 ${r.hitCount}`);
+    if (r.jumpInLag) throw new Error('跳劈落地硬直中还能起跳');
+    if (r.rollInLag) throw new Error('跳劈落地硬直中还能翻滚');
+    if (!r.rollAfterLag) throw new Error('硬直中按的翻滚没有进缓冲');
+    for (const [k, f] of Object.entries(r.facing)) {
+      if (!f.hit || f.off === null || f.off > 15) throw new Error(`不锁定 ${k}+F 没砍中正前方目标:${JSON.stringify(f)}`);
+    }
+    if (r.rollCancels) throw new Error('判定帧前按翻滚直接取消了出招(应进缓冲)');
+    if (!r.bufferedHit || !r.rolled) throw new Error(`缓冲翻滚不对:刀${r.bufferedHit ? '' : '没'}落下,${r.rolled ? '' : '没'}滚出去`);
+    if (Math.abs(r.iframes - 0.25) > 0.02) throw new Error(`翻滚无敌帧应为 0.25 秒,实际 ${r.iframes}`);
+    if (r.rollSta !== 20) throw new Error(`翻滚体力应为 20,实际 ${r.rollSta}`);
+  },
+  // 防御规则:弹反窗 150ms;松盾 0.4 秒内再举不重开弹反窗、举了 0.3 秒没等到刀 = 落空冷却 0.6 秒(连点右键换不来弹反);
+  // 一次弹反只换一次处决;精英处决封顶最大血量 35%;紫圈(破盾)弹不开、挡下也吃满伤害 + 0.6 秒硬直
+  async defense(page) {
+    await boot(page);
+    await installArena(page);
+    const r = await page.evaluate(() => {
+      const g = window.__gtm, A = window.__arena, P = g.player, out = {};
+      let b = null;
+      const fresh = () => { A.reset(); [b] = A.foes(1); A.place(b, 0, 1.5, Math.PI); P.yaw = 0; g.step(40); };
+      const raise = () => { P.blockHeld = true; g.step(1); };
+      const lower = () => { P.blockHeld = false; g.step(1); };
+      const parried = () => { const ok = b.stunSrc === 'parry'; b.stunT = 0; b.stunSrc = ''; return ok; };
+      // 1) 窗口:举盾后 7 帧(117ms)挨刀 = 弹反;10 帧(167ms)= 普通格挡(扣体力)
+      fresh(); raise(); g.step(7); g.damagePlayer(1, b); out.win133 = parried();
+      fresh(); raise(); g.step(10); P.sta = 100; g.damagePlayer(1, b); out.win167 = parried(); out.blockSta = 100 - P.sta;
+      // 2) 连点:松盾 0.1 秒就再举 → 不重开弹反窗
+      fresh(); raise(); g.step(5); lower(); g.step(5); raise(); g.damagePlayer(1, b); out.mash = parried();
+      // 3) 落空冷却:举 0.35 秒没等到刀 → 松开等 0.45 秒再举(还在冷却里)→ 弹不了;再等够了 → 能弹
+      fresh(); raise(); g.step(21); lower(); g.step(27); raise(); g.damagePlayer(1, b); out.afterFail = parried();
+      lower(); g.step(60); raise(); g.damagePlayer(1, b); out.cleanRaise = parried();
+      // 4) 一次弹反只换一次处决:弹反后连砍三刀,只有第一刀是 ×5
+      fresh(); b.hp = 50; b.maxHp = 50; raise(); g.damagePlayer(1, b); lower();
+      const hits = [];
+      for (let i = 0; i < 3; i++) {
+        const hp0 = b.hp; P.attackT = 0; P.strike = null; g.tryAttack(); g.step(40); hits.push(hp0 - b.hp);
+        b.hitStunT = 0; b.armorT = 0; b.fleeT = 0; A.place(b, 0, 1.5, Math.PI);
+      }
+      out.execHits = hits;
+      // 5) 精英处决封顶:16 血的精英,高基础伤害的处决也只掉 35%(6)
+      fresh(); b.hp = 16; b.maxHp = 16; b.duel = true; P.relic = true; P.swordLv = 2;
+      raise(); g.damagePlayer(1, b); lower();
+      P.attackT = 0; P.strike = null; g.tryAttack(); g.step(40);
+      out.eliteExec = 16 - b.hp;
+      b.duel = false; P.relic = false; P.swordLv = 1;
+      // 6) 紫圈:正面举盾(弹反窗内)也弹不开,吃满 3 伤 + 0.6 秒硬直
+      fresh(); raise(); const hp0 = P.hp; g.damagePlayer(3, b, true);
+      out.pierceParried = b.stunSrc === 'parry'; out.pierceDmg = hp0 - P.hp; out.pierceStagger = P.staggerT;
+      return out;
+    });
+    if (!r.win133) throw new Error('举盾 133ms 内挨刀没判成弹反');
+    if (r.win167) throw new Error('举盾 167ms 后挨刀还判成弹反(窗口应为 150ms)');
+    if (r.blockSta !== 14) throw new Error(`普通格挡应扣 14 体力,实际 ${r.blockSta}`);
+    if (r.mash) throw new Error('松盾 0.1 秒再举仍能弹反(连点右键不该重开弹反窗)');
+    if (r.afterFail) throw new Error('弹反落空后的冷却里仍能弹反');
+    if (!r.cleanRaise) throw new Error('冷却过后干净地举盾却弹不了');
+    if (r.execHits[0] !== 5 || r.execHits[1] >= 5 || r.execHits[2] >= 5) throw new Error(`一次弹反应只换一次处决:${r.execHits}`);
+    if (r.eliteExec !== 6) throw new Error(`16 血精英的处决应封顶 6(35%),实际 ${r.eliteExec}`);
+    if (r.pierceParried) throw new Error('紫圈破盾重击被弹反了');
+    if (r.pierceDmg !== 3) throw new Error(`举盾挡紫圈应吃满 3 伤,实际 ${r.pierceDmg}`);
+    if (!(r.pierceStagger > 0.55)) throw new Error(`挡紫圈应有 0.6 秒硬直,实际 ${r.pierceStagger}`);
   },
   // 序章教学:锁定 → 翻滚 → 格挡 → 出刀 → 魔光弹 → 清场;做到才进下一步,结束回满血并送马
   async prologue(page) {

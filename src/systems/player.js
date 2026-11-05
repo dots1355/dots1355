@@ -8,7 +8,7 @@ import { sfx } from '../audio.js';
 import { rand } from '../core/rng.js';
 import { colliders, player, started, world } from '../core/state.js';
 import { hitStop } from '../core/timefx.js';
-import { simNow } from '../core/timers.js';
+import { later, simNow } from '../core/timers.js';
 import { angleLerp, dist2, makeHumanoid, resolveCollisions } from '../entities.js';
 import { scene } from '../gfx/core.js';
 import { groundH } from '../terrain.js';
@@ -21,7 +21,7 @@ import { endTrial, fishing, inDungeon, lakeBlessed, trialRT } from './activities
 import {
   animHorseLegs, animateLimbs, bandits, guards, horses, meleeSwing, villagers, wolves,
 } from './actors.js';
-import { cancelCharge, endAttack, playerShield, strikePending } from './attack.js';
+import { cancelCharge, consumeParry, endAttack, inParryWindow, playerShield, strikePending } from './attack.js';
 import { calendar } from './calendar.js';
 import { cam } from './camera.js';
 import { combatCalmT, lockFoe, meleeSweep, swingTrail } from './combat.js';
@@ -45,9 +45,18 @@ const flashEl = document.getElementById('flash'),
 const _moveFwd = new THREE.Vector2();
 const _moveRight = new THREE.Vector2();
 const _moveVec = new THREE.Vector2();
+// 跳劈落地硬直(秒)、起跳体力;翻滚:无敌帧只覆盖前段(滚到后半程照样挨打),判定帧前按的翻滚进缓冲
+const PLUNGE_LAG = 0.6, JUMP_STA = 8;
+const ROLL_T = 0.38, ROLL_IFRAMES = 0.25, ROLL_STA = 20, ROLL_BUFFER = 0.4;
 export function updatePlayer(dt) {
   if (player.dead) return;
   player.invulnT = Math.max(0, player.invulnT - dt);
+  if (player.landLagT > 0) player.landLagT = Math.max(0, player.landLagT - dt);
+  // 缓冲的翻滚:刀落下 / 硬直一过就滚
+  if (player.rollBufT > 0) {
+    player.rollBufT -= dt;
+    if (!strikePending() && !(player.landLagT > 0) && !(player.staggerT > 0)) { player.rollBufT = 0; doRoll(); }
+  }
 
   // 醉酒:打嗝 + 清醒判定
   if (player.drunkT > 0) {
@@ -83,7 +92,7 @@ export function updatePlayer(dt) {
   if (moving) mv.normalize();
   // 醉酒:走路画龙
   if (moving && player.drunkT > 0) {
-    const wob = Math.sin(performance.now() * 0.0012) * 0.7;
+    const wob = Math.sin(simNow() * 0.0012) * 0.7;
     const cw = Math.cos(wob), sw = Math.sin(wob);
     mv.set(mv.x * cw - mv.y * sw, mv.x * sw + mv.y * cw);
   }
@@ -184,13 +193,15 @@ export function updatePlayer(dt) {
     resolveCollisions(player.pos, 0.45, colliders);
     player.group.position.copy(player.pos);
     player.group.rotation.y = player.yaw;
-    player.group.rotation.x = -(1 - Math.max(0, player.rollT) / 0.38) * Math.PI * 2;
+    player.group.rotation.x = -(1 - Math.max(0, player.rollT) / ROLL_T) * Math.PI * 2;
     if (player.rollT <= 0) player.group.rotation.x = 0;
     cam.moveState = 2;
     return;
   }
   // 疾跑吃体力:跑干了就只能小步喘(骑砍的腿);出招与蓄力时不能疾跑
-  const committed = player.attackT > 0 && !(player.lungeT > 0); // 出招有承诺:脚下收住
+  // 出招有承诺:刀一出手(含磁吸垫步)就不再跟着脚步转身——不锁定时 S/A/D+F 也砍向磁吸咬住的目标;
+  // 脚下收住(垫步/冲刺突斩的位移由 attack.lunge 单独推,不叠加走路速度);跳劈落地硬直同理
+  const committed = player.attackT > 0 || player.landLagT > 0;
   const canSprint = (keys['ShiftLeft'] || keys['ShiftRight']) && player.sta > 0.5 && player.gaspT <= 0 &&
     !committed && !player.charging;
   const speed = (canSprint ? 8.4 : 5.0) * (player.blocking ? 0.45 : 1) *
@@ -237,15 +248,18 @@ export function updatePlayer(dt) {
   if (dyaw < -Math.PI) dyaw += Math.PI * 2;
   player.lean = (player.lean || 0) * 0.86 + Math.max(-0.16, Math.min(0.16, -dyaw * 1.6)) * 0.14;
 
-  // 跳跃(二段跳)
+  // 跳跃(二段跳):每跳耗 8 体力;跳劈落地硬直中跳不起来
   if (keys['Space']) {
     if (player.onGround) {
-      player.vy = 8.2; player.onGround = false; player.jumps = 1; sfx.jump();
-    } else if (player.jumps === 1) {
+      if (!(player.landLagT > 0) && spendSta(JUMP_STA)) {
+        player.vy = 8.2; player.onGround = false; player.jumps = 1; sfx.jump();
+      }
+    } else if (player.jumps === 1 && spendSta(JUMP_STA)) {
       player.vy = 7.4; player.jumps = 2; sfx.jump();
     }
     keys['Space'] = false;
   }
+  player.airT = player.onGround ? 0 : (player.airT || 0) + dt; // 滞空计时(跳劈要跳够高/够久)
   const wasAirborne = !player.onGround;
   const fallSpeed = player.vy;
   player.vy -= 22 * dt;
@@ -259,18 +273,19 @@ export function updatePlayer(dt) {
     player.onGround = true;
     player.jumps = 0;
     if (player.plunging) {
-      // 跳劈落地:全方位冲击波
+      // 跳劈落地:一圈冲击波——正前 180° 内吃满(+1),身后只溅到 1 点;最多砸中两人;落地 0.6 秒硬直
       player.plunging = false;
+      player.landLagT = PLUNGE_LAG;
       const def = WEAPONS[player.weapon];
+      const base = def.dmg + (player.swordLv >= 2 ? 1 : 0) + (player.relic ? 1 : 0);
       sfx.stomp();
       cam.shake = Math.max(cam.shake, 0.4);
       hitStop(0.05);
       spawnDust(player.pos.x, 0.1, player.pos.z, 14, 2.4, 2);
       swingTrail(3.4, Math.PI * 2);
-      meleeSweep(def.dmg + (player.swordLv >= 2 ? 1 : 0) + (player.relic ? 1 : 0) + 1, 3.4, -1.01, def.knock * 1.6);
+      meleeSweep(base + 1, 3.4, -1.01, def.knock * 1.6, { maxHits: 2, rearDmg: Math.max(1, base) });
       stats.plunges = (stats.plunges || 0) + 1;
-    }
-    if (wasAirborne && fallSpeed < -3) checkStomp();
+    } else if (wasAirborne && fallSpeed < -3) checkStomp(); // 跳劈自带冲击,不再叠一次踩踏
     if (wasAirborne && fallSpeed < -4) player.squashT = 0.16; // 落地挤压
     if (wasAirborne && fallSpeed < -10) cam.shake = 0.22;
     if (wasAirborne && fallSpeed < -6) spawnDust(player.pos.x, 0.06, player.pos.z, 6, 0.9, 1.5);
@@ -312,6 +327,11 @@ export function updatePlayer(dt) {
   if (player.hurtT > 0) {
     player.hurtT -= dt;
     player.parts.body.rotation.x = -0.3 * Math.min(1, player.hurtT / 0.15);
+  } else if (player.landLagT > 0) {
+    // 跳劈落地硬直:剑尖戳在地上、身子压低缓一口气,最后 0.15 秒直起身——看得出"这会儿是破绽"
+    const k = Math.min(1, player.landLagT / 0.15);
+    player.parts.body.rotation.x = 0.45 * k;
+    if (!player.parts._attackAnim) { player.parts.armR.rotation.x = 0.9 * k; player.parts.armL.rotation.x = 0.5 * k; }
   }
   // 抱鸡:高举过头,鸡随身,空中扑腾
   if (player.carrying) {
@@ -328,6 +348,7 @@ export function updatePlayer(dt) {
   }
 }
 
+let lastStompAt = -1e9; // 连环踩踏成就的计时(游戏时钟,不进存档)
 function checkStomp() {
   const tryStomp = (list, isGuard) => {
     for (const e of list) {
@@ -338,9 +359,8 @@ function checkStomp() {
         player.onGround = false;
         player.jumps = 1;
         sfx.stomp();
-        const nowS = performance.now() / 1000;
-        if (nowS - stats.lastStomp < 2) unlockAch('bouncer');
-        stats.lastStomp = nowS;
+        if (simNow() - lastStompAt < 2000) unlockAch('bouncer');
+        lastStompAt = simNow();
         spawnDust(e.pos.x, 0.3, e.pos.z, 6, 0.8, 1.6);
         toast(isGuard ? '踩晕了卫兵!' : '踩晕了敌人!', 1.5);
         if (isGuard) crime(1);
@@ -365,9 +385,12 @@ function checkStomp() {
 }
 
 export function doRoll() {
-  if (!started || player.dead || player.mounted || player.carrying ||
-      player.rollCd > 0 || player.rollT > 0 || !player.onGround || player.staggerT > 0) return;
-  if (!spendSta(15)) return;
+  if (!started || player.dead || player.mounted || player.carrying || !player.onGround) return;
+  // 出招判定帧之前、跳劈落地硬直、挨打硬直中按翻滚:进缓冲,刀落下/缓过来再滚(翻滚不再能取消出招)
+  if (strikePending() || player.landLagT > 0 || player.staggerT > 0) { player.rollBufT = ROLL_BUFFER; return; }
+  if (player.rollCd > 0 || player.rollT > 0) return;
+  if (!spendSta(ROLL_STA)) return;
+  if (player.attackT > 0) endAttack(); // 刀已落下:翻滚取消收势
   player.lastRollAt = simNow(); // 序章"真的躲开了"的判定要用
   const fx = -Math.sin(cam.yaw), fz = -Math.cos(cam.yaw);
   const rx = -fz, rz = fx;
@@ -381,9 +404,9 @@ export function doRoll() {
   const d = Math.hypot(dx, dz);
   player.rollDir.set(dx / d, dz / d);
   player.yaw = Math.atan2(dx, dz);
-  player.rollT = 0.38;
+  player.rollT = ROLL_T;
   player.rollCd = 0.95;
-  player.invulnT = Math.max(player.invulnT, 0.45); // 无敌帧
+  player.invulnT = Math.max(player.invulnT, ROLL_IFRAMES); // 无敌帧只覆盖前 0.25 秒:滚早了照样挨打
   sfx.roll();
   spawnDust(player.pos.x, 0.05, player.pos.z, 4, 0.5, 1);
 }
@@ -567,34 +590,35 @@ export function damagePlayer(n, attacker = null, pierce = false) {
     }
   }
   if (blockOk) {
-    // 完美弹反:出手前 0.25 秒内举盾 → 攻击者踉跄 2 秒 + 时停
-    if (attacker && attacker.stunT !== undefined &&
-        simNow() - (player.blockStart ?? -1e9) < 250) {
+    // 紫圈重击(破盾):盾挡不住、也弹不开——砸穿格挡吃满伤害,外加 0.6 秒硬直。教学卡说的就是这条:别举盾,滚!
+    if (pierce) {
+      sfx.clank();
+      sfx.hurt();
+      cam.shake = Math.max(cam.shake, 0.45);
+      callout('格挡被砸碎!紫圈要翻滚', 'red');
+      player.blocking = false;
+      player.hp -= n;
+      player.invulnT = 0.7;
+      playerHitStagger(0.6);
+      flashEl.style.opacity = 0.45;
+      later(0.12, () => (flashEl.style.opacity = 0));
+      if (player.hp <= 0) gameOver();
+      return;
+    }
+    // 完美弹反:这次举盾的弹反窗(举盾后 150ms)里挨刀 → 攻击者踉跄 2.2 秒(下一刀砍它 = 处决)+ 时停
+    if (attacker && attacker.stunT !== undefined && inParryWindow()) {
+      consumeParry();
       attacker.stunT = Math.max(attacker.stunT || 0, 2.2); attacker.stunSrc = 'parry';
       hitStop(0.14);
       cam.shake = Math.max(cam.shake, 0.25);
       sfx.clank();
       sfx.clear();
-      callout('完美弹反!快还击', 'gold');
+      callout('完美弹反!下一刀处决', 'gold');
       if (prologue.on) { prologue.flags.blocked = true; prologue.flags.parried = true; }
       stats.parries = (stats.parries || 0) + 1;
       if (stats.parries >= 5) unlockAch('parry');
       player.invulnT = 0.5;
-      player.riposteT = 1.5; // 还击窗口
       player.sta = Math.min(player.maxSta, player.sta + 10); // 完美弹反回气:精准的奖赏
-      return;
-    }
-    if (pierce) { // 紫圈重击:格挡被砸碎,硬吃一记减伤——早该翻滚的
-      sfx.clank();
-      sfx.hurt();
-      cam.shake = Math.max(cam.shake, 0.4);
-      callout('格挡被砸碎!紫圈要翻滚', 'red');
-      player.hp -= 1;
-      player.invulnT = 0.7;
-      playerHitStagger(0.4);
-      flashEl.style.opacity = 0.45;
-      setTimeout(() => (flashEl.style.opacity = 0), 120);
-      if (player.hp <= 0) gameOver();
       return;
     }
     // 格挡也要花力气:每挡一下 -14 体力(一直举盾不是万能的),挡空了盾会被砸开
@@ -622,7 +646,7 @@ export function damagePlayer(n, attacker = null, pierce = false) {
   fishing.active = false;
   sfx.hurt();
   flashEl.style.opacity = 0.45;
-  setTimeout(() => (flashEl.style.opacity = 0), 120);
+  later(0.12, () => (flashEl.style.opacity = 0));
   if (player.hp <= 0) gameOver();
 }
 function gameOver() {
@@ -661,7 +685,8 @@ function gameOver() {
     gameoverEl.style.backgroundPosition = 'center';
   }
   gameoverEl.style.display = 'flex';
-  setTimeout(() => {
+  // 2.6 秒后在喷泉旁(或地牢)醒来:走游戏时钟——暂停/看地图时不会偷偷复活,固定步长测试也推得动
+  later(2.6, () => {
     if (player.jailed) player.pos.set(13, 0, -28);
     else player.pos.copy(world.playerSpawn);
     player.hp = player.maxHp;
@@ -681,5 +706,5 @@ function gameOver() {
       : stats.deaths >= 3
         ? `你第 ${stats.deaths} 次在喷泉旁醒来(${lostHow})。水声轻得……像是有谁悄悄调小了。`
         : `你在喷泉旁醒来——${lostHow}。`, 4);
-  }, 2600);
+  });
 }

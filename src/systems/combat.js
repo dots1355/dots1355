@@ -137,10 +137,12 @@ export function updateDanger(dt) {
     f.ring.material.opacity = 0.25 + 0.55 * k;    // 越接近出手越亮
   }
 }
-// 攻击磁吸:出手瞬间吸附朝向前方最近的敌人,差一步自动垫步,人跟着刀走
-// 攻击磁吸:转身咬住前方最近的敌人;noStep=true 时只转向不垫步(冲刺突斩自己算扑出距离)。返回目标 { d, dx, dz } 或 null
+// 攻击磁吸:出手瞬间转身咬住前方的敌人,差一步自动垫步,人跟着刀走。
+// "前方" = 人面朝的方向或镜头正前方(±87°)二者取其一:横移/后撤中出刀,镜头前的敌人照样咬得住;
+// 近的、正的优先。没通缉时不吸卫兵(免得砍盗贼时一刀误伤卫兵)。
+// noStep=true 时只转向不垫步(冲刺突斩自己算扑出距离)。返回目标 { d, dx, dz } 或 null
 export function faceNearestFoe(range, noStep = false) {
-  let best = null, bd = (range + 2.4) * (range + 2.4);
+  let best = null;
   // 锁定中:刀只认锁定的目标,免得磁吸把人拽向别的敌人
   if (lockFoe && !lockFoe.dead && !(lockFoe.downT > 0)) {
     const dx = lockFoe.pos.x - player.pos.x, dz = lockFoe.pos.z - player.pos.z;
@@ -148,16 +150,21 @@ export function faceNearestFoe(range, noStep = false) {
     if (d2v < (range + 3.5) * (range + 3.5)) best = { d: Math.sqrt(d2v) || 1, dx, dz };
   }
   const fx = Math.sin(player.yaw), fz = Math.cos(player.yaw);
+  const cx = -Math.sin(cam.yaw), cz = -Math.cos(cam.yaw);
+  const r2 = (range + 2.4) * (range + 2.4);
+  let bs = Infinity;
   if (!best) for (const list of [bandits, wolves, guards]) {
+    if (list === guards && wanted === 0) continue;
     for (const e of list) {
       if (e.dead || e.downT > 0) continue;
       const dx = e.pos.x - player.pos.x, dz = e.pos.z - player.pos.z;
       const d2v = dx * dx + dz * dz;
-      if (d2v > bd) continue;
+      if (d2v > r2) continue;
       const d = Math.sqrt(d2v) || 1;
-      if ((dx * fx + dz * fz) / d < 0.05) continue; // 只吸前方 ~±87°
-      bd = d2v;
-      best = { d, dx, dz };
+      const ca = Math.max((dx * fx + dz * fz) / d, (dx * cx + dz * cz) / d);
+      if (ca < 0.05) continue; // 只吸前方 ~±87°
+      const score = d + (1 - ca) * 2.5;
+      if (score < bs) { bs = score; best = { d, dx, dz }; }
     }
   }
   if (!best) return null;
@@ -248,13 +255,15 @@ export function updateCombatMusic(dt) {
 }
 // ================= 士气(骑砍式):血腥震慑,残兵溃逃 =================
 let streakN = 0, streakT = 0;
-export function frightenBandits(radius = 14) {
+export function frightenBandits(radius = 14, except = null) {
   let fled = 0;
   for (const o of bandits) {
-    if (o.dead || o.downT > 0 || o.boss) continue; // 头目不吃这套
+    if (o.dead || o.downT > 0 || o.boss || o === except) continue; // 头目不吃这套;挨处决的那个自己正晃着,轮不到它跑
     if (dist2(player.pos.x, player.pos.z, o.pos.x, o.pos.z) > radius * radius) continue;
     if (o.hp <= Math.max(2, (o.maxHp || 5) * 0.35) || rand() < 0.45) { // 残血必逃,满血看胆量
       o.fleeT = Math.max(o.fleeT || 0, 5 + rand() * 3);
+      // 吓跑了就收刀:举到一半的这一刀作废(扇形随之熄灭),免得逃完回头凭空补一刀
+      o.windupT = 0; o.comboN = 0; o.heavyAtk = false;
       fled++;
     }
   }
@@ -415,12 +424,15 @@ export function updateTrails(dt) {
   }
 }
 
+// 精英:头目/悬赏/决斗/战团枭首/营地头目——只吃重击的打断,处决伤害封顶(见 EXEC_ELITE_CAP),出招库更全
+export const isElite = (e) => !!(e.boss || e.bountyHead || e.duel || e.warlord || e.elite);
+// 起手后段霸体:起手进入最后 40% 时轻击打不断(刀已经抡起来了),只有重击/下劈截击能拦
+export const windupArmored = (e) => e.windupT > 0 && e.windupT <= (e.windupDur || 0.62) * 0.4;
 // 受击硬直:打断对方的起手。杂兵挨一刀就收招;被打断后有一段霸体(连砍砍不断,不能无限控);
-// 精英(头目/悬赏/决斗/将领)只吃重击的打断
+// 精英只吃重击的打断;起手后段霸体时轻击也打不断
 export function flinch(e, heavy) {
   if (e.dead || e.downT > 0) return;
-  const elite = e.boss || e.bountyHead || e.duel || e.warlord || e.elite;
-  if (!heavy && (elite || (e.armorT || 0) > 0)) return;
+  if (!heavy && (isElite(e) || (e.armorT || 0) > 0 || windupArmored(e))) return;
   e.hitStunT = heavy ? 0.6 : 0.3;
   e.armorT = heavy ? 0.9 : 1.3;
   if (e.windupT > 0 || e.biteT > 0) callout('打断!', 'blue', e.pos);
@@ -449,17 +461,22 @@ function strikeRuneStones(range, arcDot) {
   }
   callout('符文碎光 +5 金币', 'blue', { x: b.x, y: b.y + 1.2, z: b.z });
 }
-// 近战横扫判定:普通挥击与蓄力重击共用(dmg/范围/角度/击退可调),在出招的判定帧调用
+// 处决封顶:精英/首领一次处决最多掉最大血量的 35%——Boss 战至少要两三次弹反或破防
+const EXEC_ELITE_CAP = 0.35;
+// 近战横扫判定:普通挥击与蓄力重击共用(dmg/范围/角度/击退可调),在出招的判定帧调用。
+// opts.rearDmg:身后半圈的目标只吃这么多(跳劈的冲击波:正面吃满、背后溅到)
 export function meleeSweep(dmg, range, arcDot, knock, opts = {}) {
   if (dmg > 0) strikeRuneStones(range, arcDot);
   const fx = Math.sin(player.yaw), fz = Math.cos(player.yaw);
   const maxHits = opts.maxHits ?? 3;
   const heavy = !!opts.heavy;
   const gb = opts.guardBreak || null; // 'full' 满蓄重击:必破防(可处决);'counter' 下劈/半蓄:砸在起手中或举盾的人身上才破架
-  // 处决:只对"弹反"或"满蓄重击破防"造成的踉跄出手 = ×5 终结,一刀只处决一人
-  // (盾击/冰霜/战吼/下劈破架的踉跄只是空档,不开处决)
+  // 处决:只对"弹反"或"满蓄重击破防"造成的踉跄出手 = ×5 终结,一刀只处决一人;处决用掉这次踉跄
+  // (一次弹反只换一次处决)。盾击/冰霜/战吼/下劈破架的踉跄只是空档,不开处决
   let executed = false, execTarget = null;
-  const execBase = opts.execBase || dmg; // 处决基准:出招方带入的无乘区伤害(不含弹反/偷袭乘区)
+  const execBase = opts.execBase || dmg; // 处决基准:出招方带入的无乘区伤害(不含偷袭乘区)
+  const rearOf = (e) => opts.rearDmg !== undefined &&
+    ((e.pos.x - player.pos.x) * fx + (e.pos.z - player.pos.z) * fz) < 0;
   // 先收集刀锋范围内的目标,按远近只取前 maxHits 个:一刀不再横扫半条街
   const cand = [];
   for (const list of [guards, bandits, wolves]) {
@@ -476,17 +493,30 @@ export function meleeSweep(dmg, range, arcDot, knock, opts = {}) {
     if (dmg > 0 && !executed && e.stunT > 0.3 && (e.stunSrc === 'parry' || e.stunSrc === 'break')) {
       executed = true;
       execTarget = e;
-      // 处决按基础伤害 ×5 结算,弹反 ×2.5/偷袭 ×3 不再叠上去
-      return execBase * 5;
+      e.stunT = 0; // 踉跄就此用掉:再砍就是普通的一刀
+      e.stunSrc = '';
+      // 处决按基础伤害 ×5 结算(偷袭 ×3 不叠上去);精英/首领封顶最大血量的 35%
+      const n = execBase * 5;
+      return isElite(e) ? Math.min(n, Math.max(1, Math.round((e.maxHp || e.hp) * EXEC_ELITE_CAP))) : n;
     }
-    const bs = dmg > 0 ? backstabMul(e) : 1;
+    const base = rearOf(e) ? Math.min(dmg, opts.rearDmg) : dmg;
+    const bs = base > 0 ? backstabMul(e) : 1;
     if (bs > 1) callout('背刺 ×1.5', 'gold', e.pos);
-    return Math.round(dmg * bs);
+    return Math.round(base * bs);
+  };
+  // 处决后没死:晃一下缓过神(0.5 秒),之后一段霸体——别想趁势轻刀连控
+  const recoverFromExec = (e) => {
+    if (e !== execTarget || e.dead || e.downT > 0) return false;
+    e.hitStunT = Math.max(e.hitStunT || 0, 0.5);
+    e.armorT = Math.max(e.armorT || 0, 1.2);
+    e.windupT = 0;
+    return true;
   };
   const hitOne = (list, onHit) => {
     for (const e of list) {
       if (!hitSet.has(e) || e.downT > 0 || e.dead) continue;
       onHit(e);
+      if (recoverFromExec(e)) continue;
       if (!e.dead && !(e.downT > 0) && dmg > 0) flinch(e, heavy);
     }
   };
@@ -515,7 +545,7 @@ export function meleeSweep(dmg, range, arcDot, knock, opts = {}) {
       if (player.hp <= player.maxHp * 0.3 || rand() < 0.2) addPickup('heart', b.pos.x, b.pos.z + 1, 30);
       return;
     }
-    if (b.stunT > 0) return;
+    if (b.stunT > 0 || b === execTarget) return; // 刚被处决的这一刀不再顺手破防
     if (gb === 'full') { // 满蓄重击:盾开人晃,处决窗口大开
       b.stunT = 1.2;
       b.stunSrc = 'break';
@@ -533,7 +563,6 @@ export function meleeSweep(dmg, range, arcDot, knock, opts = {}) {
     sfx.hitFlesh(); // 砍进皮肉闷声
     applyDamage(w, dmg3, { knock });
   });
-  if (opts.riposte && !executed && hitSet.size) callout('还击 ×2.5', 'gold');
   if (executed) { // 处决演出:时停 + 震屏 + 镜头急推;目击者胆寒;按武器各有终结技
     hitStop(0.22);
     cam.shake = Math.max(cam.shake, 0.45);
@@ -563,7 +592,7 @@ export function meleeSweep(dmg, range, arcDot, knock, opts = {}) {
       }
     }
     callout('处决 ×5', 'gold', execTarget ? execTarget.pos : null);
-    if (frightenBandits(11) > 0) callout('目睹处决,盗贼胆寒溃逃!', 'dim');
+    if (frightenBandits(11, execTarget) > 0) callout('目睹处决,盗贼胆寒溃逃!', 'dim');
     sfx.kill();
     stats.executions = (stats.executions || 0) + 1;
     if (stats.executions >= 10) unlockAch('executioner');

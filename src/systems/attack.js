@@ -31,6 +31,14 @@ import { spawnDust } from './weather.js';
 // 出招中按下的键进缓冲(0.35 秒内有效),收刀前一刻自动接上,连按不吞键。
 // 伤害在"判定帧"(刀真正劈到的那一刻)结算,刀光与命中同帧;被打断则这刀作废。
 const CHARGE_START = 0.2, CHARGE_FULL = 1.0, ATK_BUFFER = 0.35;
+// 跳劈:离地 ≥1m 或滞空 ≥0.25 秒才砸得下去(早按的进缓冲,够高了自动出手);体力 22(起跳另耗 8)。
+// 落地后 0.6 秒硬直(跳不起、滚不了、举不起盾);正前 180° 内 2 伤、身后 1 伤,最多砸中两人(player.js 落地结算)
+const PLUNGE_MIN_H = 1.0, PLUNGE_MIN_AIR = 0.25, PLUNGE_STA = 22;
+export const plungeReady = () => player.pos.y >= PLUNGE_MIN_H || (player.airT || 0) >= PLUNGE_MIN_AIR;
+const plungeWait = () => !player.onGround && !player.mounted && player.weapon !== 'bow' && !player.plunging && !plungeReady();
+// 弹反:举盾那一刻起 150ms 内挨刀 = 完美弹反。松盾后 0.4 秒内再举不重开弹反窗;
+// 举盾 0.3 秒没等到刀 = 弹反落空,之后 0.6 秒内举盾只算普通格挡(连点右键换不来弹反)
+const PARRY_WIN = 150, PARRY_REARM = 400, PARRY_FAIL_AT = 300, PARRY_FAIL_CD = 600;
 const chargeGlow = new THREE.Mesh(new THREE.SphereGeometry(0.3, 12, 8),
   new THREE.MeshBasicMaterial({ color: 0xbfe0ff, transparent: true, opacity: 0, depthWrite: false,
     blending: THREE.AdditiveBlending }));
@@ -62,9 +70,10 @@ function setChargeGlow(k) {
 export const strikePending = () => !!(player.strike && !player.strike.done);
 export function attackDown() {
   if (!started || player.dead || dialog.open || paused) return;
-  // 马上、空中下劈、举盾(盾击):即按即出;正在出招就进缓冲
+  if (player.landLagT > 0) { player.atkBufT = ATK_BUFFER; return; } // 跳劈落地硬直中:记下,缓过来再出
+  // 马上、空中下劈、举盾(盾击):即按即出;正在出招、或还没跳到能下劈的高度,就进缓冲
   if (player.mounted || player.blocking || !player.onGround) {
-    if (player.attackT > 0 || strikePending()) player.atkBufT = ATK_BUFFER;
+    if (player.attackT > 0 || strikePending() || plungeWait()) player.atkBufT = ATK_BUFFER;
     else tryAttack();
     return;
   }
@@ -115,13 +124,32 @@ export function endAttack() {
   player.parts.body.rotation.y = 0;
   player._animFrom = 0;
 }
-// 举盾:按住右键。刀没落下、蓄力、翻滚、踉跄、骑马、拿弓时举不起来;条件一满足自动举起(重新计弹反窗)
+// 举盾:按住右键。刀没落下、蓄力、翻滚、踉跄、跳劈落地硬直、骑马、拿弓时举不起来;条件一满足自动举起。
+// 弹反窗只在"真正重新举盾"时打开(见 PARRY_*):player.parryUntil 是本次举盾的弹反截止时刻(游戏时钟)
+let wasBlocking = false;
 function updateBlock() {
   const able = started && !player.dead && !player.mounted && player.weapon !== 'bow' && !dialog.open &&
-    !(player.staggerT > 0) && !(player.rollT > 0) && !player.charging && !strikePending() && !player.carrying;
-  if (!player.blockHeld || !able) { player.blocking = false; return; }
-  if (!player.blocking) { player.blocking = true; player.blockStart = simNow(); } // 完美弹反判定窗从举盾那一刻算
+    !(player.staggerT > 0) && !(player.rollT > 0) && !player.charging && !strikePending() && !player.carrying &&
+    !(player.landLagT > 0);
+  const now = simNow();
+  if (!player.blockHeld || !able) player.blocking = false;
+  else if (!player.blocking) {
+    player.blocking = true;
+    player.blockStart = now;
+    player.parryArmed = now >= (player.parryReadyAt || 0);
+    player.parryUntil = player.parryArmed ? now + PARRY_WIN : -1;
+  } else if (player.parryArmed && now - player.blockStart >= PARRY_FAIL_AT) {
+    player.parryArmed = false; // 举了 0.3 秒没等到刀:这次弹反落空
+    player.parryReadyAt = Math.max(player.parryReadyAt || 0, now + PARRY_FAIL_CD);
+  }
+  // 松盾(不论是松键、被砸开还是被别的动作打断):0.4 秒内再举不重开弹反窗
+  if (wasBlocking && !player.blocking) player.parryReadyAt = Math.max(player.parryReadyAt || 0, now + PARRY_REARM);
+  wasBlocking = player.blocking;
 }
+// 完美弹反判定(player.damagePlayer 调用):本次举盾的弹反窗还开着
+export const inParryWindow = () => player.blocking && simNow() <= (player.parryUntil ?? -1);
+// 弹反成功:窗口用掉,冷却清零(下一次干净的举盾照样能弹)
+export function consumeParry() { player.parryUntil = -1; player.parryArmed = false; player.parryReadyAt = 0; }
 export function updateAttackInput(dt) {
   updateBlock();
   if (player.dead) { player.atkHeld = false; cancelCharge(); player.strike = null; player.atkBufT = 0; return; }
@@ -131,6 +159,7 @@ export function updateAttackInput(dt) {
     // 按住不放:这一刀落下之后收住余势,转入蓄力
     if (!player.charging && !player.mounted && player.atkHoldT >= CHARGE_START && !strikePending() &&
         player.rollT <= 0 && !(player.staggerT > 0) && !player.blocking && !player.carrying && player.onGround &&
+        !(player.landLagT > 0) &&
         (player.weapon === 'bow' ? player.attackT <= 0 : true)) {
       if (player.attackT > 0) endAttack();
       player.charging = true;
@@ -151,11 +180,11 @@ export function updateAttackInput(dt) {
       meleeSwing(player.parts, 0.3 * Math.min(1, player.chargeT * 4), 'overhead');
     }
   }
-  // 输入缓冲:收刀前 0.06 秒(且这一刀已落下)就接出下一刀
+  // 输入缓冲:收刀前 0.06 秒(且这一刀已落下)就接出下一刀;空中早按的跳劈等跳到够高再出
   if (player.atkBufT > 0) {
     player.atkBufT -= dt;
     if (!player.charging && !strikePending() && player.attackT <= 0.06 &&
-        !(player.rollT > 0) && !(player.staggerT > 0)) {
+        !(player.rollT > 0) && !(player.staggerT > 0) && !(player.landLagT > 0) && !plungeWait()) {
       player.atkBufT = 0;
       if (player.attackT > 0) endAttack();
       tryAttack();
@@ -205,7 +234,7 @@ export function tryAttack() {
     return true;
   }
   if (!started || player.dead || player.attackT > 0 || player.carrying ||
-      player.blocking || player.rollT > 0 || strikePending()) return false;
+      player.blocking || player.rollT > 0 || player.landLagT > 0 || strikePending()) return false;
   // 骑砍:马背上挥剑(伤害 +1、范围加长),判定帧在挥到一半——刀光与扣血同帧
   if (player.mounted && player.weapon !== 'bow' && !player.mounted.sheep) {
     if (player.staggerT > 0 || !spendSta(10)) return false; // 马上挥刀一样费力气
@@ -230,10 +259,11 @@ export function tryAttack() {
     if (player.weapon !== 'bow') return false; // 羊背上还是算了
   }
   const def = WEAPONS[player.weapon];
-  // 跳劈:空中出手——砸向地面,落点四方溅开一圈冲击
+  // 跳劈:空中出手——砸向地面,落点溅开一圈冲击(跳得够高才行,见 PLUNGE_*)
   if (player.staggerT > 0) return false; // 踉跄中出不了手
   if (!player.onGround && !player.mounted && player.weapon !== 'bow' && !player.plunging) {
-    if (!spendSta(14)) return false;
+    if (!plungeReady()) return false;
+    if (!spendSta(Math.round(PLUNGE_STA * (def.staMul || 1)))) return false;
     player._stance = 'overhead'; // 跳劈就是从天而降的下劈
     player.plunging = true;
     player.vy = -16;
@@ -298,27 +328,19 @@ export function tryAttack() {
   const bonus = (third ? 1 : 0) + (sprinting ? 1 : 0) + (stance === 'overhead' ? 1 : 0);
   const sneaking = player.sneaking;
   scheduleStrike(player.attackT * hitAt, () => {
-    // 弹反还击:完美弹反后 1.5 秒内的这一击 ×2.5(判定帧才兑现,打空不浪费);
-    // 对方还在踉跄就直接是处决(×5)——浮字由横扫按实际结果给
-    let riposteMul = 1;
-    if (player.riposteT > 0) {
-      riposteMul = 2.5;
-      player.riposteT = 0;
-      sfx.combo(5);
-      hitStop(0.1);
-    }
+    // 弹反/满蓄破防后对方踉跄:这一刀砍在它身上就是处决(×5,由横扫按实际结果结算并给浮字)
     if (sneaking) callout(`偷袭 ×${sneakMul}`, 'gold');
     if (third) { sfx.combo(3); cam.shake = Math.max(cam.shake, 0.22); }
     sfx.whoosh(stance === 'overhead' ? 0.72 : stance === 'thrust' ? 1.3 : third ? 0.82 : dir === 1 ? 1 : 1.14);
     if (stance === 'overhead') swingTrailV(reach);
     else swingTrail(reach, whirl ? Math.PI * 2 : stance === 'thrust' ? 0.55 : third ? 2.6 : 2.1, dir);
-    meleeSweep(Math.round(meleeBonus(base + bonus) * sneakMul * riposteMul),
+    meleeSweep(Math.round(meleeBonus(base + bonus) * sneakMul),
       reach,
       whirl ? -1.01 : stance === 'thrust' ? 0.86 : stance === 'overhead' ? 0.5 : 0.35,
       def.knock * (third ? 1.8 : 1) * (sprinting ? 1.3 : 1) *
         (stance === 'overhead' ? 1.5 : stance === 'thrust' ? 0.6 : 1),
       { maxHits: whirl ? 4 : stance === 'thrust' ? 1 : stance === 'overhead' ? 2 : 3,
-        guardBreak: stance === 'overhead' ? 'counter' : null, riposte: riposteMul > 1,
+        guardBreak: stance === 'overhead' ? 'counter' : null,
         execBase: Math.round(meleeBonus(base + bonus)) });
     if (stance === 'overhead') cam.shake = Math.max(cam.shake, 0.14); // 下劈坠着劲
     if (whirl) { cam.shake = Math.max(cam.shake, 0.2); spawnDust(player.pos.x, 0.5, player.pos.z, 10, 2, 1.6); }
