@@ -29,7 +29,7 @@ const $hud = (id) => document.getElementById(id);
 const heartsEl = $hud('hearts'), coinsEl = $hud('coins'), wantedEl = $hud('wanted'),
   missionEl = $hud('mission'), promptEl = $hud('prompt'),
   weatherEl = $hud('weather'), equipEl = $hud('equip'),
-  bosshpEl = $hud('bosshp'), bosshpFillEl = $hud('bosshp-fill'),
+  bosshpEl = $hud('bosshp'), bosshpFillEl = $hud('bosshp-fill'), bosshpLabelEl = bosshpEl.querySelector('.label'),
   staminaEl = $hud('stamina'), staminaFillEl = $hud('stamina-fill');
 
 // ================= 操作说明:按 H 弹出的分组面板(不再常驻字墙) =================
@@ -145,7 +145,9 @@ export function updateHUD() {
     if (m.type === 'coins') prog = ` (${Math.min(quest.progress, m.goal)}/${m.goal})` + (quest.progress >= m.goal ? ' — 回去交任务!' : '');
     if (m.type === 'bandits' || m.type === 'wolves') prog = ` (${quest.progress}/${m.goal})`;
     if (m.type === 'race') prog = ` (金环 ${questRT.ringIdx}/${world.raceRoute.length})`;
-    if (m.type === 'escort' && questRT.merchant) prog = ` (商人 ❤×${Math.max(0, questRT.merchant.hp)})`;
+    if (m.type === 'escort' && questRT.merchant) {
+      prog = questRT.ambush ? ' —— 伏击!贴上去把伏兵引到自己身上' : ` (商人 ❤ ${Math.max(0, questRT.merchant.hp)}/${questRT.merchant.maxHp})`;
+    }
     missionText = `📜 ${m.title}:${m.desc}${prog}`;
   }
   if (arenaRT.active) missionText = `🏟️ 竞技场:第 ${arenaRT.wave} 波(走出沙圈=认输)\n${missionText}`;
@@ -166,7 +168,8 @@ export function updateHUD() {
   const sp = todaySpecial();
   const calText = `${SEASON_ICON[seasonIdx()]}${SEASONS[seasonIdx()]}·${seasonDay()}日${sp ? '·' + sp.name : ''}`;
   const bossHp = questRT.boss && !questRT.boss.dead && quest.active ? questRT.boss.hp : -1;
-  const key = hearts + '|' + player.coins + '|' + player.weapon + player.armor + (player.relic ? 'R' : '') + '|' + stars + '|' + missionText + '|' + timer + '|' + promptText + '|' + wIcon + phaseIcon + calText + '|' + bossHp + '|' + Math.floor(player.mp) + player.spellIdx + player.spells.length;
+  const mcHp = questRT.merchant && quest.active ? questRT.merchant.hp : -1;
+  const key = hearts + '|' + player.coins + '|' + player.weapon + player.armor + (player.relic ? 'R' : '') + '|' + stars + '|' + missionText + '|' + timer + '|' + promptText + '|' + wIcon + phaseIcon + calText + '|' + bossHp + '|' + mcHp + '|' + Math.floor(player.mp) + player.spellIdx + player.spells.length;
   if (key === hudCache) return;
   hudCache = key;
   weatherEl.innerHTML = weatherHTML(seasonIdx(), `${SEASONS[seasonIdx()]}·${seasonDay()}日${sp ? '·' + sp.name : ''}`,
@@ -184,11 +187,14 @@ export function updateHUD() {
       ? `<span class="eq-sep">·</span><span>法力</span>${manaHTML(Math.floor(player.mp), player.maxMp)}` : '');
   promptEl.innerHTML = richText(promptText);
   promptEl.style.display = promptText ? 'block' : 'none';
-  // Boss 血条(仅 Boss 战期间)
-  const boss = questRT.boss;
-  if (boss && !boss.dead && quest.active) {
+  // 顶部大血条:Boss 战期间是巴罗克;护送时是商人巴特(他倒下委托就失败,血量一眼可见)
+  const boss = questRT.boss, mc = questRT.merchant;
+  const bar = boss && !boss.dead && quest.active ? { name: '血斧巴罗克', hp: boss.hp, max: boss.maxHp || boss.hp }
+    : mc && quest.active ? { name: '🧳 商人巴特', hp: mc.hp, max: mc.maxHp } : null;
+  if (bar) {
     bosshpEl.style.display = 'block';
-    bosshpFillEl.style.width = `${Math.max(0, (boss.hp / 12) * 100)}%`;
+    bosshpLabelEl.innerHTML = richText(bar.name);
+    bosshpFillEl.style.width = `${Math.max(0, Math.min(1, bar.hp / bar.max)) * 100}%`;
   } else {
     bosshpEl.style.display = 'none';
   }

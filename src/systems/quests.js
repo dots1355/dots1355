@@ -5,12 +5,14 @@
 import * as THREE from 'three';
 import { sfx } from '../audio.js';
 import { saveGame } from '../core/save.js';
+import { later } from '../core/timers.js';
 import { player, world } from '../core/state.js';
 import { angleLerp, dist2, lambert, makeHumanoid } from '../entities.js';
 import { scene } from '../gfx/core.js';
 import { MISSIONS } from '../story.js';
 import { openDialog } from '../ui/dialog.js';
 import { dropQuestToasts, toast, toastNow, toastQuest } from '../ui/toast.js';
+import { stats } from './achievements.js';
 import { endTrial, inDungeon, trialRT } from './activities.js';
 import { addBandit, addHorse, animateLimbs, bandits, retireEntity } from './actors.js';
 import { dayPhase } from './calendar.js';
@@ -19,13 +21,16 @@ import { remember } from './mind.js';
 import { navNext } from './nav.js';
 import { steward } from './npcs.js';
 import { addPickup } from './pickups.js';
-import { prologue } from './prologue.js';
+import { prologue, setTutor } from './prologue.js';
 
 // ================= 任务系统 =================
 export const missions = MISSIONS;
 export const quest = { idx: 0, active: false, progress: 0, timer: 0 };
 // 任务运行时对象
-export const questRT = { rings: [], ringIdx: 0, merchant: null, specialHorse: null, boss: null, escortSpawned: 0 };
+// mcStriker / mcNextAt:护送时"谁正在砍商人、下一刀最早何时"(ai.js 的伏兵逻辑读写,保证同一时间只有一人下手)
+export const questRT = { rings: [], ringIdx: 0, merchant: null, specialHorse: null, boss: null, escortSpawned: 0,
+  ambush: false, mcStriker: null, mcNextAt: 0 };
+const ESCORT_HP = 6; // 商人每波伏击前回满
 
 // 委托人(金色衣服的老者):人形模型就绪后才能建,启动装配时生成
 export let questGiver = null;
@@ -117,11 +122,14 @@ export function talkQuestGiver(remote = false) {
     } else if (m.type === 'escort') {
       const mc = { ...makeHumanoid({ shirt: 0xb4813f, pants: 0x4a3a26, hair: 0x3a2a1a }),
         pos: new THREE.Vector3(world.escortRoute[0][0], 0, world.escortRoute[0][1]),
-        yaw: 0, hp: 5, wp: 0, walkT: 0 };
+        yaw: 0, hp: ESCORT_HP, maxHp: ESCORT_HP, wp: 0, walkT: 0, crouch: 0, hurtT: 0 };
       mc.group.position.copy(mc.pos);
       scene.add(mc.group);
       questRT.merchant = mc;
       questRT.escortSpawned = 0;
+      questRT.ambush = false;
+      questRT.mcStriker = null;
+      questRT.mcNextAt = 0;
     } else if (m.type === 'boss') {
       questRT.boss = addBandit(world.fortPos.x, world.fortPos.z - 2,
         { boss: true, hp: 12, speed: 6.8, scale: 1.35, dmg: 2 });
@@ -303,35 +311,7 @@ function updateQuestTarget(dt) {
     if (!mc) return;
     setBeacon(mc.pos.x, mc.pos.z);
     if (mc.hp <= 0) { failMission('商人巴特倒下了……回去找埃隆重整旗鼓。'); return; }
-    // 沿路线行进
-    const [tx, tz] = world.escortRoute[mc.wp];
-    const dx = tx - mc.pos.x, dz = tz - mc.pos.z;
-    const d = Math.hypot(dx, dz);
-    if (d < 1.5) {
-      mc.wp++;
-      // 埋伏点:第 2、4 个路点
-      if ((mc.wp === 2 || mc.wp === 4) && questRT.escortSpawned < mc.wp) {
-        questRT.escortSpawned = mc.wp;
-        addBandit(mc.pos.x + 8, mc.pos.z - 6, { escort: true });
-        addBandit(mc.pos.x + 8, mc.pos.z + 6, { escort: true });
-        toast('⚠️ 有埋伏!保护商人!', 2.5);
-        sfx.wanted();
-      }
-      if (mc.wp >= world.escortRoute.length) {
-        retireEntity(mc);
-        questRT.merchant = null;
-        completeMission();
-        return;
-      }
-    } else {
-      mc.pos.x += (dx / d) * 2.4 * dt;
-      mc.pos.z += (dz / d) * 2.4 * dt;
-      mc.yaw = angleLerp(mc.yaw, Math.atan2(dx, dz), dt * 8);
-      mc.walkT += dt * 5;
-    }
-    mc.group.position.copy(mc.pos);
-    mc.group.rotation.y = mc.yaw;
-    animateLimbs(mc.parts, mc.walkT, d >= 1.5, mc.group, 0.5);
+    updateEscort(mc, dt);
   } else if (m.type === 'wolves') {
     setBeacon(-140, -40);
   } else if (m.type === 'boss') {
@@ -341,6 +321,89 @@ function updateQuestTarget(dt) {
       completeMission();
       toastNow('⚔️ 血斧巴罗克倒下了!黑石兄弟会土崩瓦解!', 4); // 不管是刀、箭还是法术收的尾,倒下的这一刻就播
     }
+  }
+}
+// 护送:商人沿路线走;到第 2、4 个路点遭伏击——伏击前给他回满血,伏击中他原地蹲下护住货箱,伏兵清光(或跑远)才起身。
+// 伏兵怎么挑目标(扑商人 / 转来打你、同一时间只一人下手)在 ai.js 的 escortWantsMerchant / escortStrikeMerchant
+const ESCORT_AMBUSH = { 2: [[10, -7], [10, 7]], 4: [[11, -6], [11, 7], [4, 11]] }; // 路点 → 伏兵相对商人的站位
+function updateEscort(mc, dt) {
+  if (mc.hurtT > 0) mc.hurtT -= dt;
+  if (questRT.ambush) {
+    const left = bandits.filter((b) => b.escort && !b.dead && dist2(b.pos.x, b.pos.z, mc.pos.x, mc.pos.z) < 70 * 70);
+    if (!left.length) {
+      questRT.ambush = false;
+      for (let i = bandits.length - 1; i >= 0; i--) { // 跑远了的残兵撤掉(倒下的留着,委托结束时一并收)
+        if (bandits[i].escort && !bandits[i].dead) retireEntity(bandits[i], bandits);
+      }
+      toastQuest('伏兵清干净了!商人拍拍尘土,接着赶路。', 2.5, 'escort');
+      sfx.block();
+    }
+  }
+  let walking = false;
+  if (questRT.ambush) {
+    mc.crouch = Math.min(1, mc.crouch + dt * 4);
+    // 蹲着也盯着最近的伏兵(看得出他在害怕谁)
+    let near = null, nd = Infinity;
+    for (const b of bandits) {
+      if (!b.escort || b.dead) continue;
+      const d2v = dist2(b.pos.x, b.pos.z, mc.pos.x, mc.pos.z);
+      if (d2v < nd) { nd = d2v; near = b; }
+    }
+    if (near) mc.yaw = angleLerp(mc.yaw, Math.atan2(near.pos.x - mc.pos.x, near.pos.z - mc.pos.z), dt * 5);
+  } else {
+    mc.crouch = Math.max(0, mc.crouch - dt * 3);
+    const [tx, tz] = world.escortRoute[mc.wp];
+    const dx = tx - mc.pos.x, dz = tz - mc.pos.z;
+    const d = Math.hypot(dx, dz);
+    if (d < 1.5) {
+      mc.wp++;
+      const spots = ESCORT_AMBUSH[mc.wp];
+      if (spots && questRT.escortSpawned < mc.wp) startAmbush(mc, spots);
+      if (mc.wp >= world.escortRoute.length) {
+        retireEntity(mc);
+        questRT.merchant = null;
+        completeMission();
+        return;
+      }
+    } else if (mc.crouch < 0.2) {
+      mc.pos.x += (dx / d) * 2.4 * dt;
+      mc.pos.z += (dz / d) * 2.4 * dt;
+      mc.yaw = angleLerp(mc.yaw, Math.atan2(dx, dz), dt * 8);
+      mc.walkT += dt * 5;
+      walking = true;
+    }
+  }
+  mc.group.position.copy(mc.pos);
+  mc.group.rotation.y = mc.yaw;
+  animateLimbs(mc.parts, mc.walkT, walking, mc.group, 0.5);
+  // 蹲下:整个人矮下去、上身前倾抱头;挨刀时一哆嗦
+  mc.group.scale.y = 1 - 0.3 * mc.crouch;
+  if (mc.crouch > 0.01 || mc.hurtT > 0) {
+    if (mc.parts.body) mc.parts.body.rotation.x = 0.45 * mc.crouch + (mc.hurtT > 0 ? -0.3 : 0);
+    if (mc.parts.armL) mc.parts.armL.rotation.x = -2.2 * mc.crouch;
+    if (mc.parts.armR) mc.parts.armR.rotation.x = -2.2 * mc.crouch;
+  }
+}
+function startAmbush(mc, spots) {
+  questRT.escortSpawned = mc.wp;
+  questRT.ambush = true;
+  questRT.mcStriker = null;
+  questRT.mcNextAt = 0;
+  mc.hp = mc.maxHp; // 每波伏击前回满:上一波的伤不带进这一波
+  // 伏兵从路线前方两侧杀出(站位按"前进方向 × 侧向"摆)
+  const [nx, nz] = world.escortRoute[Math.min(mc.wp, world.escortRoute.length - 1)];
+  const fx0 = nx - mc.pos.x, fz0 = nz - mc.pos.z, fl = Math.hypot(fx0, fz0) || 1;
+  const fx = fx0 / fl, fz = fz0 / fl;
+  for (const [ahead, side] of spots) {
+    const b = addBandit(mc.pos.x + fx * ahead - fz * side, mc.pos.z + fz * ahead + fx * side, { escort: true });
+    b.yaw = Math.atan2(mc.pos.x - b.pos.x, mc.pos.z - b.pos.z);
+  }
+  toastQuest(`⚠️ 有埋伏!${spots.length} 个伏兵扑向商人——贴上去把他们引到自己身上!`, 3, 'escort');
+  sfx.wanted();
+  if (!stats.escortTip) { // 第一次伏击:教学卡讲清规则
+    stats.escortTip = true;
+    setTutor('护送', '贴近伏兵,把它们引到自己身上', '伏兵挨了你的刀、或你走进 10 米内,就转来打你;红扇形亮起 = 它要砍商人了,砍它一下就能打断');
+    later(7, () => { if (!prologue.on) setTutor(null); });
   }
 }
 // 委托人与目标光柱立进场景(启动装配原位调用)

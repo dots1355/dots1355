@@ -9,6 +9,7 @@ import { colliders, player } from '../core/state.js';
 import { hitStop } from '../core/timefx.js';
 import { simNow } from '../core/timers.js';
 import { angleLerp, dist2, resolveCollisions } from '../entities.js';
+import { callout } from '../ui/feedback.js';
 import { toast } from '../ui/toast.js';
 import {
   addBandit, animHorseLegs, animateLimbs, bandits, entFar, guards, horses, meleeSwing, moveEntity,
@@ -255,18 +256,10 @@ export function updateBandits(dt) {
         continue;
       }
     }
-    // 护送任务的埋伏盗贼优先攻击商人(除非玩家贴脸)
+    // 护送委托的伏兵:没被你缠住时扑商人(见 escortWantsMerchant / escortStrikeMerchant)
     const mc = questRT.merchant;
-    if (b.escort && mc && mc.hp > 0 && pd > 5) {
-      const md = Math.hypot(mc.pos.x - b.pos.x, mc.pos.z - b.pos.z);
-      if (md > 1.4) { moveEntity(b, mc.pos.x, mc.pos.z, b.speed, dt); moving = true; }
-      else if (b.attackCd <= 0) {
-        b.attackCd = 1.0;
-        b.swingT = 0.35;
-        mc.hp--;
-        sfx.hit();
-        toast(`商人受袭!❤ ${Math.max(0, mc.hp)}/5`, 1.5);
-      }
+    if (b.escort && mc && mc.hp > 0 && escortWantsMerchant(b, pd, dt)) {
+      moving = escortStrikeMerchant(b, mc, dt);
     } else if (pd < 30 * sneakFactor() && !player.dead) {
       if (b.windupT > 0) {
         b.windupT -= dt;
@@ -336,6 +329,63 @@ export function updateBandits(dt) {
       meleeSwing(b.parts, Math.min(1, 1 - b.swingT / 0.35));
     }
   }
+}
+// ================= 护送委托的伏兵 =================
+// 伏兵先扑商人;挨了刀(谁打的都算,箭和法术也算)就转来追你 6 秒,你走进 10 米内它就一直缠着你(离开后还追 2.5 秒)
+// ——把它们引到自己身上。同一时间最多一个伏兵对商人下手:先亮红扇形起手 0.9 秒(砍它一下就打断),
+// 两刀之间至少隔 1.6 秒;没轮到的在商人身边游走。
+const MC_WIND = 0.9, MC_GAP = 1.6, AGGRO_IN = 10;
+function escortWantsMerchant(b, pd, dt) {
+  if (b.hp < (b._hpSeen ?? b.hp)) b.aggroT = 6;
+  b._hpSeen = b.hp;
+  if (pd < AGGRO_IN) b.aggroT = Math.max(b.aggroT || 0, 2.5);
+  else if (b.aggroT > 0) b.aggroT -= dt;
+  const aggro = b.aggroT > 0;
+  if (aggro && b.mcStrike) { b.mcStrike = false; b.windupT = 0; } // 转头打你:砍商人的那刀收回
+  if (questRT.mcStriker === b && !b.mcStrike) questRT.mcStriker = null;
+  return !aggro;
+}
+// 对商人:轮到自己(没人在砍、间隔已过)就贴上去起手;起手被打断(踉跄/受击把 windupT 清零)就让出位置。返回是否在走动
+function escortStrikeMerchant(b, mc, dt) {
+  const dx = mc.pos.x - b.pos.x, dz = mc.pos.z - b.pos.z;
+  const md = Math.hypot(dx, dz) || 0.01;
+  if (b.mcStrike) {
+    if (!(b.windupT > 0)) { b.mcStrike = false; questRT.mcStriker = null; return false; } // 被打断了
+    if (b.windupT > 0.2) b.yaw = turnToward(b.yaw, Math.atan2(dx, dz), 3 * dt);
+    b.windupT -= dt;
+    if (b.windupT <= 0) {
+      b.mcStrike = false;
+      questRT.mcStriker = null;
+      questRT.mcNextAt = simNow() + MC_GAP * 1000;
+      b.swingT = 0.3;
+      b.attackCd = 1.0;
+      if (inFrontArc(b, mc.pos, 2.3)) {
+        mc.hp--;
+        mc.hurtT = 0.4;
+        sfx.hit();
+        callout(`商人挨了一刀!❤ ${Math.max(0, mc.hp)}/${mc.maxHp}`, 'red', mc.pos);
+      }
+    }
+    return false;
+  }
+  const holder = questRT.mcStriker;
+  if (holder && (holder.dead || !holder.mcStrike || !bandits.includes(holder))) questRT.mcStriker = null;
+  const myTurn = !questRT.mcStriker && simNow() >= (questRT.mcNextAt || 0);
+  if (!myTurn) { // 没轮到:在商人身边 3.5 米外绕着转,别挤成一团
+    b._orbit = b._orbit || (rand() < 0.5 ? 1 : -1);
+    const a = Math.atan2(-dx, -dz) + b._orbit * 0.6;
+    moveEntity(b, mc.pos.x + Math.sin(a) * 3.5, mc.pos.z + Math.cos(a) * 3.5, b.speed * 0.45, dt);
+    return true;
+  }
+  if (md > 1.6) { moveEntity(b, mc.pos.x, mc.pos.z, b.speed, dt); return true; }
+  if (b.attackCd <= 0) {
+    questRT.mcStriker = b;
+    b.mcStrike = true;
+    b.windupT = MC_WIND;
+    b.yaw = Math.atan2(dx, dz);
+    telegraphFlash(b, MC_WIND);
+  }
+  return false;
 }
 // 序章:狼这一口落空、而你刚翻滚过(1 秒内)= 真的用翻滚躲开了
 function noteDodge(w) {

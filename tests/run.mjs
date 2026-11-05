@@ -557,6 +557,63 @@ const TESTS = {
     if (Math.hypot(r.southFront.x - r.steward.x, r.southFront.z - r.steward.z) > 2) throw new Error(`南门外光柱应直指城里的埃隆,实际 ${JSON.stringify(r.southFront)}`);
     if (Math.hypot(r.southInside.x, r.southInside.z - 62) > 2) throw new Error(`南门内要出城时光柱应给门外点,实际 ${JSON.stringify(r.southInside)}`);
   },
+  // 护送:伏兵没被缠住时扑商人,但同一时间最多一人下手、先亮红扇形、两刀至少隔 1.6 秒;每波伏击前商人回满、原地蹲下;
+  // 你走进 10 米,或者打它一下(哪怕隔得老远),它就转来打你
+  async escort(page) {
+    await boot(page);
+    const r = await page.evaluate(() => {
+      const g = window.__gtm, out = {};
+      g.quest.idx = g.missions.findIndex((m) => m.type === 'escort');
+      g.quest.active = false;
+      g.talkQuestGiver();
+      while (g.dialogOpen()) g.advanceDialog();
+      const mc = g.questRT.merchant;
+      mc.hp = 2; // 伏击前回满要看得出来
+      mc.pos.set(39.5, 0, 0.2); mc.wp = 1; // 第一个伏击点跟前
+      g.player.pos.set(40, 0, 45); // 离得远远的:伏兵只会去扑商人
+      g.step(2);
+      out.ambush = g.questRT.ambush;
+      out.healed = mc.hp === mc.maxHp;
+      const foes = g.bandits.filter((b) => b.escort && !b.dead);
+      out.n = foes.length;
+      let maxStrikers = 0, lastHit = null, minGap = Infinity, hits = 0, hp0 = mc.hp, sawTele = false, crouch = 0;
+      for (let i = 0; i < 60 * 12 && mc.hp > 1; i++) {
+        g.step(1);
+        maxStrikers = Math.max(maxStrikers, foes.filter((b) => b.mcStrike && b.windupT > 0).length);
+        if (g.dangerFX.some((f) => foes.includes(f.e))) sawTele = true;
+        crouch = Math.max(crouch, mc.crouch);
+        if (mc.hp < hp0) {
+          const t = g.simNow();
+          if (lastHit !== null) minGap = Math.min(minGap, t - lastHit);
+          lastHit = t; hits++; hp0 = mc.hp;
+        }
+      }
+      Object.assign(out, { maxStrikers, minGap, hits, sawTele, crouch });
+      // 走进 10 米:这个伏兵转来打你
+      const a = foes[0];
+      g.player.pos.set(a.pos.x + 7, 0, a.pos.z);
+      g.step(30);
+      out.aggroNear = a.aggroT > 0 && !a.mcStrike;
+      out.closing = Math.hypot(a.pos.x - g.player.pos.x, a.pos.z - g.player.pos.z) < 6.5;
+      // 隔着 40 米打另一个一下:它也转来追你
+      const b = foes[1];
+      g.player.pos.set(b.pos.x + 40, 0, b.pos.z);
+      g.step(200); // 先让第一个伏兵的仇恨散掉
+      g.applyDamage(b, 1, { source: 'player' });
+      g.step(2);
+      out.aggroHit = b.aggroT > 0 && !b.mcStrike;
+      return out;
+    });
+    if (!r.ambush || r.n < 2) throw new Error(`没有触发伏击:${JSON.stringify(r)}`);
+    if (!r.healed) throw new Error('伏击前商人没有回满');
+    if (r.crouch < 0.9) throw new Error('伏击中商人没有蹲下');
+    if (r.hits < 2) throw new Error(`12 秒里伏兵只砍了商人 ${r.hits} 刀,测不出间隔`);
+    if (r.maxStrikers > 1) throw new Error(`同时有 ${r.maxStrikers} 个伏兵在砍商人`);
+    if (r.minGap < 1580) throw new Error(`砍商人的两刀只隔了 ${r.minGap} 毫秒`);
+    if (!r.sawTele) throw new Error('砍商人前没有亮预警扇形');
+    if (!r.aggroNear || !r.closing) throw new Error(`走进 10 米伏兵没转来打你:${JSON.stringify(r)}`);
+    if (!r.aggroHit) throw new Error('远远打了伏兵一下,它没转来追你');
+  },
   // 提示分级:同 key 的进度只留最新一条;同一句不排两遍;委托完成/失败/重接时排队的委托提示作废;插队的排最前
   async toasts(page) {
     await boot(page);
