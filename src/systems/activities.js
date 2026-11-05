@@ -12,6 +12,7 @@ import { player, started, world } from '../core/state.js';
 import { dist2, lambert } from '../entities.js';
 import { scene } from '../gfx/core.js';
 import { LORE, VILLAGERS } from '../story.js';
+import { dialog, openDialog } from '../ui/dialog.js';
 import { toast } from '../ui/toast.js';
 import { ACH_DEFS, achUnlocked, stats, unlockAch } from './achievements.js';
 import { addBandit } from './actors.js';
@@ -24,10 +25,9 @@ import { mercs } from './mercs.js';
 import {
   archetype, chronicle, dayTopSurprise, dayTopThought, recallLine, remember, workspace,
 } from './mind.js';
+import { missions, quest, stewardWhere } from './quests.js';
 import { spawnDust, weather } from './weather.js';
-import {
-  crestsFound, dialog, missions, openDialog, quest, saveGame, stewardWhere, wolfKills,
-} from '../main.js';
+import { crestsFound, saveGame, wolfKills } from '../main.js';
 
 // ================= 野外热点:篝火(烤肉)/温泉(泡汤)/教堂(庇佑) =================
 export const wildSpots = [];

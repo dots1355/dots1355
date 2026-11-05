@@ -4,8 +4,8 @@
 // 档位:委托(2)> 一般(1)> 氛围(0);排太久(>7 秒)的过期作废;队列最多 5 条,满了先挤掉低档的旧条。
 import { simNow } from '../core/timers.js';
 import { prologue } from '../systems/prologue.js';
+import { quest } from '../systems/quests.js';
 import { richText } from './hud.js';
-import { quest } from '../main.js';
 
 // 顶部细条通知:队列化,一次一条,不遮挡视野
 const toastEl = document.getElementById('toast');

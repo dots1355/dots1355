@@ -11,8 +11,9 @@ import { addBandit } from './actors.js';
 import { calendar } from './calendar.js';
 import { cam } from './camera.js';
 import { seedLegend } from './evo.js';
+import { refreshTrophies } from './home.js';
 import { remember, workspace } from './mind.js';
-import { dropCoins, refreshTrophies, saveGame, telegraphFlash } from '../main.js';
+import { dropCoins, saveGame, telegraphFlash } from '../main.js';
 
 // ================= 黑石的报复(守城胜利的后续剧情链) =================
 export const vendetta = { stage: 0, boss: null }; // 黑石的报复:0 无仇 → 1 记仇 → 2 伏击上膛 → 3 两清

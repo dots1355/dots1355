@@ -4,8 +4,9 @@
 import { sfx } from '../audio.js';
 import { player } from '../core/state.js';
 import { toast } from '../ui/toast.js';
+import { refreshTrophies } from './home.js';
 import { remember } from './mind.js';
-import { refreshTrophies, saveGame } from '../main.js';
+import { saveGame } from '../main.js';
 
 // ================= 无意义成就(奖励瞎玩) =================
 export const ACH_DEFS = {

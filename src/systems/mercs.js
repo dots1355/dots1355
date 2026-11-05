@@ -6,12 +6,13 @@ import { rand } from '../core/rng.js';
 import { player, world } from '../core/state.js';
 import { dist2, makeHumanoid } from '../entities.js';
 import { scene } from '../gfx/core.js';
+import { openDialog } from '../ui/dialog.js';
 import { toast } from '../ui/toast.js';
 import { stats } from './achievements.js';
 import { animateLimbs, bandits, meleeSwing, moveEntity, retireEntity, wolves } from './actors.js';
 import { calendar } from './calendar.js';
 import { remember } from './mind.js';
-import { applyDamage, openDialog, saveGame } from '../main.js';
+import { applyDamage, saveGame } from '../main.js';
 
 // ================= 佣兵(骑砍式:旅店雇剑士随行,按日发饷) =================
 export const mercs = [];
