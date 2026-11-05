@@ -86,3 +86,45 @@ export function releaseMat(m) {
   m.userData.poolBase = base;
   matPools.get(base).push(m);
 }
+
+// 类型化数组池(荒野区块的地表与烘焙几何用):按约 √2 倍一档的容量分桶复用 ArrayBuffer,取出时给精确长度的视图。
+// 区块卸载时把它独占几何的数组还回来:流式期间不再反复申请、丢弃几 MB 的缓冲
+// (它们算外部内存,丢多了会逼出几十毫秒的 Major GC)。池里闲置的总量有上限,超出的照常交给 GC。
+const ARR_POOL_MAX = 32 << 20; // 闲置上限 32MB
+const arrPool = new Map(); // 容量(字节)→ ArrayBuffer[]
+const arrOut = new WeakSet(); // 从池里借出去的缓冲(只收它们回来,别的数组不碰)
+let arrIdle = 0;
+function arrCap(bytes) { // 容量档位:64KB 以下按 2 倍,以上按 √2 倍(取整到 4KB),浪费不超过约四成
+  let cap = 4096;
+  while (cap < bytes) cap = cap < 65536 ? cap * 2 : Math.ceil((cap * Math.SQRT2) / 4096) * 4096;
+  return cap;
+}
+export function takeArray(Type, n) {
+  const cap = arrCap(n * Type.BYTES_PER_ELEMENT);
+  const list = arrPool.get(cap);
+  let buf = list && list.pop();
+  if (buf) arrIdle -= cap;
+  else buf = new ArrayBuffer(cap);
+  arrOut.add(buf);
+  return new Type(buf, 0, n);
+}
+function giveBackArray(a) {
+  const buf = a && a.buffer;
+  if (!buf || !arrOut.has(buf)) return;
+  arrOut.delete(buf);
+  if (arrIdle + buf.byteLength > ARR_POOL_MAX) return;
+  let list = arrPool.get(buf.byteLength);
+  if (!list) arrPool.set(buf.byteLength, (list = []));
+  list.push(buf);
+  arrIdle += buf.byteLength;
+}
+// 几何体已 dispose(显存已还)之后调用:属性与索引里借自池的数组收回(之后这份几何不能再用)
+export function releaseGeometryArrays(geo) {
+  for (const k in geo.attributes) giveBackArray(geo.attributes[k].array);
+  if (geo.index) giveBackArray(geo.index.array);
+}
+export function arrayPoolStats() {
+  let n = 0;
+  for (const l of arrPool.values()) n += l.length;
+  return { idleMB: +(arrIdle / 1048576).toFixed(1), buffers: n, sizes: arrPool.size };
+}

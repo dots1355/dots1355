@@ -508,13 +508,14 @@ export function getGroundMaterial(normalMap) {
 
 // ---------------- 地表网格烘焙 ----------------
 // 覆盖 [x0, x0+size] × [z0, z0+size],GRID 米一格;UV 走世界坐标,区块之间纹理无缝
-export function buildGroundMesh(x0, z0, size, material) {
+// alloc(Type, n):顶点/索引数组从哪来(荒野区块传池子的 takeArray,卸载时还回去),缺省 new
+export function buildGroundMesh(x0, z0, size, material, alloc = (Type, len) => new Type(len)) {
   const n = Math.round(size / GRID);
   const V = n + 1;
-  const pos = new Float32Array(V * V * 3);
-  const nor = new Float32Array(V * V * 3);
-  const col = new Float32Array(V * V * 3);
-  const uv = new Float32Array(V * V * 2);
+  const pos = alloc(Float32Array, V * V * 3);
+  const nor = alloc(Float32Array, V * V * 3);
+  const col = alloc(Float32Array, V * V * 3);
+  const uv = alloc(Float32Array, V * V * 2);
   const ix0 = Math.round(x0 / GRID), iz0 = Math.round(z0 / GRID);
   for (let j = 0; j < V; j++) {
     for (let i = 0; i < V; i++) {
@@ -532,7 +533,7 @@ export function buildGroundMesh(x0, z0, size, material) {
       uv[k * 2] = x / 7; uv[k * 2 + 1] = z / 7;
     }
   }
-  const idx = new Uint32Array(n * n * 6);
+  const idx = V * V < 65536 ? alloc(Uint16Array, n * n * 6) : alloc(Uint32Array, n * n * 6);
   let p = 0;
   for (let j = 0; j < n; j++) {
     for (let i = 0; i < n; i++) {

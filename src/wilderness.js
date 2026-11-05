@@ -8,6 +8,7 @@ import { buildTree, buildPine, buildDeadTree, buildCactus, buildRock, buildBush,
   buildNatureInstances, releaseNatureInstances, warmNatureTemplate, NIGHT_GLOW } from './flora.js';
 import { dominantBiome, groundH, buildGroundMesh, getGroundMaterial, GRID } from './terrain.js';
 import { plainStandard, vpbrMaterial, bakeVPBRSteps } from './gfx/vpbr.js';
+import { releaseGeometryArrays, takeArray } from './gfx/pools.js';
 
 export const CHUNK = 128;
 // 加载距离(米):区块离玩家最近的一点在这个距离内就装,再远出 64m 才卸(回差)。
@@ -175,7 +176,7 @@ function* chunkJob(cx, cz) {
     if (iz % 9 === 8) yield;
   }
   yield;
-  g.add(buildGroundMesh(baseX, baseZ, CHUNK, getGroundMaterial()));
+  g.add(buildGroundMesh(baseX, baseZ, CHUNK, getGroundMaterial(), takeArray)); // 顶点数组借自池,卸载时还
   yield;
 
   // 植被密度按群系
@@ -448,7 +449,7 @@ function* chunkJob(cx, cz) {
   yield;
   const outs = [];
   for (const b of bins.values()) {
-    const geo = yield* bakeVPBRSteps(b.items, { chunk: 3000 });
+    const geo = yield* bakeVPBRSteps(b.items, { chunk: 3000, alloc: takeArray });
     yield;
     geo.computeBoundingSphere();
     const mesh = new THREE.Mesh(geo, vpbrMaterial({ side: b.side }));
@@ -495,8 +496,9 @@ function unloadChunk(key) {
   scene.remove(c.group);
   if (c.inst) { releaseNatureInstances(c.inst); c.group.remove(c.inst); }
   c.group.traverse((o) => {
-    // flora 库的几何/材质全场共享(userData.shared),不能释放;其余独占资源照常释放
-    if (o.geometry && !o.geometry.userData.shared) o.geometry.dispose();
+    // flora 库的几何/材质全场共享(userData.shared),不能释放;其余独占资源照常释放,
+    // 地表与烘焙网格借自池的顶点数组(显存先还)收回池里给下一块用
+    if (o.geometry && !o.geometry.userData.shared) { o.geometry.dispose(); releaseGeometryArrays(o.geometry); }
     if (o.material && !o.material.userData.shared) o.material.dispose();
   });
   removeCircles(colliders, c.cols);
