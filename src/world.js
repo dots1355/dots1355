@@ -2,7 +2,7 @@
 import * as THREE from 'three';
 import { rand } from './core/rng.js';
 import {
-  buildTree, buildPine, buildDeadTree, buildCactus, buildBush, getBuildingModel, natureTemplate, standingStoneGeo,
+  buildTree, buildPine, buildDeadTree, buildCactus, buildBush, getBuildingModel, natureProp, natureTemplate, standingStoneGeo,
 } from './flora.js';
 import { lambert } from './entities.js';
 import { makeTextures } from './textures.js';
@@ -1077,6 +1077,7 @@ export function buildWorld(scene) {
   menhirMat.userData.wettable = true;
   menhirMat.userData.baseRough = 0.95;
   const menhirGeos = [101, 202, 303].map((sd) => standingStoneGeo(sd, { w: 1.5, h: 3.4, d: 0.6, rubble: 4 }));
+  const graveGeos = [11, 22, 33].map((sd) => standingStoneGeo(sd, { w: 0.78, h: 1.25, d: 0.32, slant: 0.06, rubble: 2 }));
 
   // ---- 苇岸渔村 ----
   house(-110, 58, 90, 5, 4, 2.6, 'HouseC');
@@ -1156,11 +1157,14 @@ export function buildWorld(scene) {
     for (let i = 0; i < 9; i++) {
       const gx = -48 + (i % 3) * 7 + rand() * 2;
       const gz = -127 + Math.floor(i / 3) * 6 + rand() * 2;
-      const stone = new THREE.Mesh(new THREE.BoxGeometry(0.7, 1.1 + rand() * 0.4, 0.18), towerMat);
-      stone.position.set(gx, 0.55, gz);
+      // 墓碑:与立石同一画法的风化石板(青苔、顶部发白),大小不一、歪斜
+      const stone = new THREE.Mesh(graveGeos[i % 3], menhirMat);
+      const hs = 1.1 + rand() * 0.4;
+      stone.scale.set(1, hs / 1.25, 1);
+      stone.position.set(gx, 0, gz);
       stone.rotation.y = (rand() - 0.5) * 0.4;
       stone.rotation.z = (rand() - 0.5) * 0.12;
-      stone.castShadow = true;
+      stone.castShadow = stone.receiveShadow = true;
       scene.add(stone);
     }
     // 枯树
@@ -1425,12 +1429,19 @@ export function buildWorld(scene) {
   for (let i = 0; i < 12; i++) {
     const a = rand() * 6.28, rr = 12 + rand() * 62;
     const dx = -290 + Math.cos(a) * rr, dz = 240 + Math.sin(a) * rr;
-    const dead = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.3, 3 + rand() * 1.5, 5),
-      lambert(0x3a352c, { roughness: 1 }));
-    dead.position.set(dx, 1.6, dz);
-    dead.rotation.z = (rand() - 0.5) * 0.3;
-    dead.castShadow = true;
-    scene.add(dead);
+    // 沼泽里泡死的枯树(nature.glb 的枯树模板;随机数消耗与旧的木桩一致,不打乱后面的布局)
+    const hk = rand(), lean = (rand() - 0.5) * 0.3;
+    const snag = natureProp(i % 2 ? 'DeadTree2' : 'DeadTree1', () => hk, 0.9 + hk * 0.5, a * 3.1);
+    if (snag) {
+      snag.group.position.set(dx, 0, dz);
+      snag.group.rotation.z = lean;
+      scene.add(snag.group);
+    } else {
+      const dead = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.3, 3 + hk * 1.5, 5), lambert(0x3a352c, { roughness: 1 }));
+      dead.position.set(dx, 1.6, dz);
+      dead.rotation.z = lean;
+      scene.add(dead);
+    }
     circle(dx, dz, 0.4);
     feat('tree', dx, dz, 1, 1);
   }
