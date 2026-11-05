@@ -699,6 +699,43 @@ const TESTS = {
     if (r.hp !== r.maxHp) throw new Error('序章结束没有回满血');
     if (!r.horse) throw new Error('序章结束没有送马');
   },
+  // 序章出刀练习(第 4 步):弹反后的处决不算数;轻击打中 3 下 + 蓄力重击打中 1 下才练成,练成那一刀狼倒下、进下一步
+  async prologueDrill(page) {
+    await boot(page, { start: false });
+    await page.click('#title');
+    await page.waitForTimeout(800);
+    const r = await page.evaluate(() => {
+      const g = window.__gtm, P = g.prologue, pl = g.player, out = {};
+      if (!P.on) return { err: '新档没有进入序章' };
+      const w0 = P.wolves[0];
+      w0._hold = false;
+      P.step = 3; P.flags.blocked = true; P.t = 0;
+      g.step(1);
+      out.step = P.step; out.hp0 = w0.hp;
+      const pin = () => { w0.pos.set(pl.pos.x, 0, pl.pos.z + 1.6); w0.yaw = Math.PI; w0.attackCd = 99; w0.lungeCd = 99; w0.biteT = 0; w0.lunging = 0; };
+      const hit = () => { pl.yaw = 0; pl.attackT = 0; pl.strike = null; pl.sta = pl.maxSta; pin(); g.tryAttack(); for (let i = 0; i < 40; i++) { pin(); g.step(1); } w0.hitStunT = 0; w0.armorT = 0; };
+      // 弹反后的处决:狼只是晃一下,不算练刀
+      pin(); w0.stunT = 2; w0.stunSrc = 'parry';
+      hit();
+      out.afterExec = { light: P.flags.light, dead: w0.dead, step: P.step };
+      for (let i = 0; i < 3; i++) hit();
+      out.afterLight = { light: P.flags.light, heavy: P.flags.heavy, dead: w0.dead, step: P.step };
+      // 蓄力重击:按住 1.2 秒满蓄,松手
+      pl.attackT = 0; pl.strike = null; pl.sta = pl.maxSta; pl.chainN = 0;
+      pin(); g.attackDown();
+      for (let i = 0; i < 72; i++) { pin(); g.step(1); }
+      g.attackUp();
+      for (let i = 0; i < 40 && !w0.dead; i++) { pin(); g.step(1); }
+      g.step(2);
+      out.afterHeavy = { heavy: P.flags.heavy, dead: w0.dead, step: P.step };
+      return out;
+    });
+    if (r.err) throw new Error(r.err);
+    if (r.step !== 4 || !(r.hp0 >= 30)) throw new Error(`进入出刀练习时狼应扛得住(hp ${r.hp0},step ${r.step})`);
+    if (r.afterExec.light !== 0 || r.afterExec.dead || r.afterExec.step !== 4) throw new Error(`弹反处决不该算练刀:${JSON.stringify(r.afterExec)}`);
+    if (r.afterLight.light !== 3 || r.afterLight.dead || r.afterLight.step !== 4) throw new Error(`轻击 3 下后还差重击:${JSON.stringify(r.afterLight)}`);
+    if (r.afterHeavy.heavy !== 1 || !r.afterHeavy.dead || r.afterHeavy.step !== 5) throw new Error(`重击打中后应练成并进下一步:${JSON.stringify(r.afterHeavy)}`);
+  },
   // 伤害来源 × 目标矩阵:谁打的决定算不算你的罪、进不进你的连杀
   async damageMatrix(page) {
     await boot(page);

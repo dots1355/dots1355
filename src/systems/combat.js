@@ -30,7 +30,7 @@ import { crime, downGuard, wanted } from './law.js';
 import { remember } from './mind.js';
 import { addPickup, dropCoins } from './pickups.js';
 import { recomputeMaxSta } from './player.js';
-import { prologue, setTutor } from './prologue.js';
+import { notePracticeHit, prologue, setTutor } from './prologue.js';
 import { completeMission, dismissMinions, missions, quest } from './quests.js';
 import { warband } from './warband.js';
 import { spawnDust } from './weather.js';
@@ -618,7 +618,7 @@ function banditMelee(b, h) {
 // 处决封顶:精英/首领一次处决最多掉最大血量的 35%——Boss 战至少要两三次弹反或破防
 const EXEC_ELITE_CAP = 0.35;
 // 近战横扫判定:普通挥击与蓄力重击共用(dmg/范围/角度/击退可调),在出招的判定帧调用。
-// opts.rearDmg:身后半圈的目标只吃这么多(跳劈的冲击波:正面吃满、背后溅到)
+// opts.rearDmg:身后半圈的目标只吃这么多(跳劈的冲击波:正面吃满、背后溅到);opts.kind:'light'|'heavy'(序章练刀计数)
 export function meleeSweep(dmg, range, arcDot, knock, opts = {}) {
   if (dmg > 0) strikeRuneStones(range, arcDot);
   const fx = Math.sin(player.yaw), fz = Math.cos(player.yaw);
@@ -658,8 +658,10 @@ export function meleeSweep(dmg, range, arcDot, knock, opts = {}) {
     }
   }
   cand.sort((a, b) => (b.T.hostile - a.T.hostile) || (a.d - b.d));
+  let foesHit = 0;
   for (const { e, T } of cand.slice(0, maxHits)) {
     if (!T.alive(e)) continue;
+    if (T.hostile && e !== h.execTarget) foesHit++;
     T.melee(e, h);
     if (e === h.execTarget && !e.dead && !(e.downT > 0)) {
       // 处决后没死:晃一下缓过神(0.5 秒),之后一段霸体——别想趁势轻刀连控
@@ -671,6 +673,7 @@ export function meleeSweep(dmg, range, arcDot, knock, opts = {}) {
     if (T.hostile && !e.dead && !(e.downT > 0) && dmg > 0) flinch(e, heavy);
   }
   const execTarget = h.execTarget, executed = !!execTarget;
+  if (foesHit && dmg > 0 && !executed && opts.kind) notePracticeHit(opts.kind); // 序章的出刀练习按"打中"计
   if (executed) { // 处决演出:时停 + 震屏 + 镜头急推;目击者胆寒;按武器各有终结技
     hitStop(0.22);
     cam.shake = Math.max(cam.shake, 0.45);

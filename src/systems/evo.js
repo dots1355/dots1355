@@ -63,7 +63,7 @@ export function evolveTactics() {
     EVO.tactics.block = Math.min(0.6, EVO.tactics.block + 0.1 * (melee / total));
     EVO.tactics.dodge = Math.min(0.6, EVO.tactics.dodge + 0.1 * (arrow / total));
     if (b0 < 0.25 && EVO.tactics.block >= 0.25) {
-      toast('🧠 黑石兄弟会学乖了——他们开始格挡刀剑!(重击和跳劈可以破防)', 5);
+      toast('🧠 黑石兄弟会学乖了——他们开始格挡刀剑!(蓄力重击和下劈可以破防)', 5);
       remember('盗贼们学会了格挡,和从前不一样了');
     }
     if (d0 < 0.25 && EVO.tactics.dodge >= 0.25) {

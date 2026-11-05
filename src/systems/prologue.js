@@ -83,6 +83,25 @@ export function skipPrologue(silent) {
   prologue.step = 9;
   if (!silent) { toast('(序章已跳过)', 1.5); showTitleCard(); }
 }
+// 出刀练习(第 4 步)的教学卡:实时显示练到了哪一步
+function drillTutor(F) {
+  setTutor('F', `出刀练习:轻击打中 ${F.light || 0}/3 · 蓄力重击打中 ${F.heavy || 0}/1`,
+    '轻点 F(或左键)快斩;按住蓄力、松手重击 · W+F 突刺 · S+F 下劈(能截断敌人起手)');
+}
+// 近战每刀打中敌人时由 combat.meleeSweep 报一声(处决不算):轻击(横斩/突刺/下劈)记 3 下、蓄力重击记 1 下,
+// 练成的那一刻这只狼应声倒下,进入下一步
+export function notePracticeHit(kind) {
+  if (!prologue.on || prologue.step !== 4) return;
+  const F = prologue.flags;
+  if (kind === 'light') F.light = Math.min(3, (F.light || 0) + 1);
+  else if (kind === 'heavy') F.heavy = 1;
+  else return;
+  drillTutor(F);
+  if (F.light >= 3 && F.heavy >= 1) {
+    const w0 = prologue.wolves[0];
+    if (w0 && !w0.dead) killWolf(w0);
+  }
+}
 // 一步一步教:锁定 → 翻滚 → 格挡 → 出刀(轻点/按住) → 魔光弹 → 自由战斗。做到了才进下一步
 function prologueRelease(i) {
   const w = prologue.wolves[i];
@@ -111,7 +130,10 @@ export function updatePrologue(dt) {
   } else if (P.step === 3 && (F.blocked || P.t > 25)) {
     P.step = 4; P.t = 0;
     callout(F.parried ? '完美弹反!' : '挡住了!', 'gold');
-    setTutor('F', '出刀!轻点 F(或左键)快斩,按住蓄力、松手重击', 'W+F 突刺 · S+F 下劈(慢但重) · 敌人起手时砍它能打断');
+    // 出刀练习:这只狼先别倒(弹反后的处决也只是把它打晃),轻击打中 3 下 + 蓄力重击打中 1 下才算练成
+    F.light = 0; F.heavy = 0;
+    if (w0 && !w0.dead) w0.hp = Math.max(w0.hp, 30);
+    drillTutor(F);
   } else if (P.step === 4 && w0 && w0.dead) {
     P.step = 5; P.t = 0;
     F.sparked = false;

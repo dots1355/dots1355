@@ -340,7 +340,7 @@ export function tryAttack() {
       def.knock * (third ? 1.8 : 1) * (sprinting ? 1.3 : 1) *
         (stance === 'overhead' ? 1.5 : stance === 'thrust' ? 0.6 : 1),
       { maxHits: whirl ? 4 : stance === 'thrust' ? 1 : stance === 'overhead' ? 2 : 3,
-        guardBreak: stance === 'overhead' ? 'counter' : null,
+        guardBreak: stance === 'overhead' ? 'counter' : null, kind: 'light',
         execBase: Math.round(meleeBonus(base + bonus)) });
     if (stance === 'overhead') cam.shake = Math.max(cam.shake, 0.14); // 下劈坠着劲
     if (whirl) { cam.shake = Math.max(cam.shake, 0.2); spawnDust(player.pos.x, 0.5, player.pos.z, 10, 2, 1.6); }
@@ -383,7 +383,7 @@ export function heavyAttack(k = 1) {
     if (full) spawnDust(player.pos.x + Math.sin(player.yaw) * 1.6, 0.2, player.pos.z + Math.cos(player.yaw) * 1.6, 12, 1.4, 1.8);
     meleeSweep(Math.round(meleeBonus((def.dmg + (player.swordLv >= 2 ? 1 : 0) + (player.relic ? 1 : 0)) * mul)),
       def.range + 0.7, wide ? -0.6 : -0.1, def.knock * (wide ? 2.3 : 1.8) * (0.8 + 0.4 * k),
-      { maxHits: wide ? 4 : 3, heavy: true, guardBreak: full ? 'full' : 'counter',
+      { maxHits: wide ? 4 : 3, heavy: true, guardBreak: full ? 'full' : 'counter', kind: 'heavy',
         execBase: Math.round(meleeBonus(def.dmg + (player.swordLv >= 2 ? 1 : 0) + (player.relic ? 1 : 0))) });
   });
   skillXp('onehand', 1);
