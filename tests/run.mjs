@@ -528,6 +528,14 @@ const TESTS = {
       const i = names.findIndex((n, k) => n !== want[k]);
       throw new Error(`系统表顺序变了(第 ${i} 项:${names[i]} ≠ ${want[i]})`);
     }
+    // E 键交互规则表:顺序就是优先级
+    const rules = await page.evaluate(() => window.__gtm.interactionRules());
+    const wantRules = ['duel', 'remoteQuest', 'reelIn', 'throwCarried', 'dismount', 'mountFirst', 'namedNPCs',
+      'mysticTrader', 'wiseCow', 'wishThief', 'eventChicken', 'arenaHost', 'funnyNPCs', 'mailbox', 'dragonSkull', 'home',
+      'bountyBoard', 'noticeBoard', 'choreBoard', 'loreStones', 'cryptHatch', 'crypt', 'ferryPier', 'ferryIsle', 'moonAltar',
+      'fishPier', 'fishIsle', 'timeTrial', 'tameFrostfang', 'campfire', 'chapel', 'mirror', 'mushrooms', 'pickChicken',
+      'villagers', 'fountain', 'chests'];
+    if (rules.join(',') !== wantRules.join(',')) throw new Error(`交互规则表顺序变了:${rules.join(',')}`);
     // 隔帧系统按帧计数错开:一步 = 一帧
     const r = await page.evaluate(() => { const g = window.__gtm; const n0 = g.frameNo(); g.step(5); return g.frameNo() - n0; });
     if (r !== 5) throw new Error(`帧计数不对:5 步走了 ${r}`);

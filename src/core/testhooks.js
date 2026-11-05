@@ -35,7 +35,7 @@ import { chickens, deers, frostfang, mushrooms, respawnMushrooms, revengeT } fro
 import { WEAPONS, cycleWeapon, openShop, refreshShop } from '../systems/gear.js';
 import { HOME, fireflyMesh, homeInteract, homeRT, refreshTrophies } from '../systems/home.js';
 import { keys } from '../systems/input.js';
-import { computePrompt, promptText, tryInteract } from '../systems/interact.js';
+import { computePrompt, interactionRules, promptText, tryInteract } from '../systems/interact.js';
 import { crime, downGuard, lawlessT, wanted } from '../systems/law.js';
 import {
   DRAGON_SKULL, SKILL_DEFS, SPELLS, castBigFire, castSpell, cycleSpell, doShout, dragonAim, explodeAt,
@@ -112,6 +112,7 @@ export function installTestHooks({ tick, systems, worldTops }) {
   },
   systems: () => systems.map((s) => s.name), // 主循环系统表(按执行顺序)
   frameNo: () => frame.n,
+  interactionRules, // E 键交互规则表(按优先级)
   prologue, startPrologue, skipPrologue, spendSta,
   downGuard, getLawless: () => lawlessT, getAch: (k) => achUnlocked.includes(k),
   frightenBandits, banditSlain,

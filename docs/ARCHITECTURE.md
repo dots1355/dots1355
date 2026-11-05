@@ -82,7 +82,7 @@ core/state.js  core/frame.js  core/rng.js  core/timers.js  core/timefx.js  core/
 | `systems/fauna.js` | 鸡、羊、鹿、蘑菇、白狼「霜牙」`initFauna` |
 | `systems/activities.js` | 篝火/温泉/教堂、梦、手账、拍照、湖心岛、赛马计时、地窖、村务、铭文、公告、钓鱼 `initActivities` |
 | `systems/home.js` | 湖畔小屋、信箱、战利品墙、萤火 `initHome` |
-| `systems/interact.js` | E 键交互的唯一来源 `tryInteract(probe)`;`computePrompt` 是它的试运行;交互目标标记 `initInteract` |
+| `systems/interact.js` | E 键交互的唯一来源 `tryInteract(probe)`:有序规则表 `INTERACTIONS`(顺序即优先级);`computePrompt` 是它的试运行;交互目标标记 `initInteract` |
 | `systems/input.js` | 输入入队 `queueInput` / tick 开头 `drainInput`;键鼠监听 `initInput` |
 | `systems/calendar.js` | 季节与日子、节庆、来信、换日 `newDay`、时辰 `dayPhase`、环境氛围音 |
 | `systems/mind.js` | 编年史、回响之镜 `initMirror`、全局工作空间、可塑心智、发呆低语、夜间巩固 |
@@ -186,8 +186,10 @@ tick(dt, now) ── drainInput()          输入先入队,在这里按发生顺
 - 受击:`flinch` 打断起手并给短暂霸体;精英只吃重击。处决基准伤害作为 `meleeSweep` 的参数传入。
 
 ### 5. 交互
-`tryInteract(probe)` 是 E 键交互的唯一来源:每条分支自带提示文字;`probe=true` 时只返回提示不改状态。
-`computePrompt` 就是它的试运行——提示与实际行为不可能再不一致。各玩法的状态留在各自模块
+`tryInteract(probe)` 是 E 键交互的唯一来源:按优先级逐条试有序规则表 `INTERACTIONS`(`systems/interact.js`,
+37 条 `{ name, run(probe) }`,从"阵前单挑"到"宝箱",最后是墓志铭与上马);每条规则自带提示文字,
+`probe=true` 时只返回提示不改状态,不归它管就返回 `PASS` 交给下一条。`computePrompt` 就是它的试运行——
+提示与实际行为不可能再不一致。规则表的顺序由 `systems` 用例锁着。各玩法的状态留在各自模块
 (例如教堂庇佑 `blessedToday / prayAtChapel`、墓志铭 `readEpitaph`),交互只调用。
 
 ### 6. 存档
