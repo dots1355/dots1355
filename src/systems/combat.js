@@ -618,7 +618,8 @@ function banditMelee(b, h) {
 // 处决封顶:精英/首领一次处决最多掉最大血量的 35%——Boss 战至少要两三次弹反或破防
 const EXEC_ELITE_CAP = 0.35;
 // 近战横扫判定:普通挥击与蓄力重击共用(dmg/范围/角度/击退可调),在出招的判定帧调用。
-// opts.rearDmg:身后半圈的目标只吃这么多(跳劈的冲击波:正面吃满、背后溅到);opts.kind:'light'|'heavy'(序章练刀计数)
+// opts.rearDmg:身后半圈的目标只吃这么多(跳劈的冲击波:正面吃满、背后溅到);opts.kind:'light'|'heavy'(序章练刀计数);
+// opts.stun:撞个踉跄(盾击:不开处决窗口),先于结算挂上
 export function meleeSweep(dmg, range, arcDot, knock, opts = {}) {
   if (dmg > 0) strikeRuneStones(range, arcDot);
   const fx = Math.sin(player.yaw), fz = Math.cos(player.yaw);
@@ -661,6 +662,7 @@ export function meleeSweep(dmg, range, arcDot, knock, opts = {}) {
   let foesHit = 0;
   for (const { e, T } of cand.slice(0, maxHits)) {
     if (!T.alive(e)) continue;
+    if (opts.stun && T.hostile && e.stunT !== undefined) { e.stunT = Math.max(e.stunT || 0, opts.stun); e.stunSrc = 'bash'; }
     if (T.hostile && e !== h.execTarget) foesHit++;
     T.melee(e, h);
     if (e === h.execTarget && !e.dead && !(e.downT > 0)) {

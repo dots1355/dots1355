@@ -16,7 +16,7 @@ import { callout } from '../ui/feedback.js';
 import { paused } from '../ui/pause.js';
 import { toast } from '../ui/toast.js';
 import { stats, unlockAch } from './achievements.js';
-import { bandits, guards, meleeSwing, wolves } from './actors.js';
+import { meleeSwing } from './actors.js';
 import { cam } from './camera.js';
 import { faceNearestFoe, lockFoe, meleeSweep, swingTrail, swingTrailV, whiteHot } from './combat.js';
 import { WEAPONS } from './gear.js';
@@ -224,18 +224,7 @@ export function tryAttack() {
     player.attackDur = 0.7;
     sfx.clank();
     cam.shake = Math.max(cam.shake, 0.2);
-    for (const list of [bandits, guards, wolves]) {
-      for (const e of list) {
-        if (e.dead || e.downT > 0 || e.stunT === undefined) continue;
-        const dx = e.pos.x - player.pos.x, dz = e.pos.z - player.pos.z;
-        const d = Math.hypot(dx, dz);
-        if (d < 2.4 && (dx * Math.sin(player.yaw) + dz * Math.cos(player.yaw)) / (d || 1) > 0.25) {
-          e.stunT = Math.max(e.stunT || 0, 0.8);
-          e.stunSrc = 'bash'; // 盾击只撞个踉跄,不开处决窗口
-        }
-      }
-    }
-    meleeSweep(0, 2.2, 0.25, 1.6);
+    meleeSweep(0, 2.4, 0.25, 1.6, { stun: 0.8 }); // 盾击只撞个踉跄(stunSrc 'bash'),不开处决窗口
     return true;
   }
   if (!started || player.dead || player.attackT > 0 || player.carrying ||

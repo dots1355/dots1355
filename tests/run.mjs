@@ -47,9 +47,11 @@ async function boot(page, { clear = true, start = true } = {}) {
 }
 
 // 战斗用例的空场地:清走野外的狼和盗贼,玩家站在 (0,180) 面朝 +Z、镜头在身后;A.foes(n) 复用开局的盗贼当靶子
-// (50 血、不出手,摆在玩家周围),A.reset() 把玩家和靶子都复位;学来的格挡/闪箭关掉,结果才可复现
+// (50 血、不出手,摆在玩家周围),A.reset() 把玩家和靶子都复位、清掉残留的打击停顿/慢镜(开局跳过序章杀狼会留一段
+// 时停,机器慢时它会拖到用例里,把"这一帧刀落下"拖成好几帧);学来的格挡/闪箭关掉,结果才可复现
 async function installArena(page) {
-  await page.evaluate(() => {
+  await page.evaluate(async () => {
+    const { timeFX } = await import('/src/core/timefx.js');
     const g = window.__gtm, P = g.player, X = 0, Z = 180;
     g.seedRng(7);
     g.EVO.tactics.block = 0; g.EVO.tactics.dodge = 0;
@@ -81,6 +83,7 @@ async function installArena(page) {
         P.pos.set(X, 0, Z);
         for (const k of ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ShiftLeft', 'Space']) g.keys[k] = false;
         g.setCamView(Math.PI, 0.35);
+        timeFX.hitStop = 0; timeFX.slowMo = 0;
         g.step(1);
       },
     });
@@ -91,7 +94,9 @@ async function installArena(page) {
 // 只留第一个活着的普通盗贼当靶子:它的同伙和野狼都藏起来(否则会在测试中途冲上来砍人、打断蓄力,结果看运气);
 // 随机数定种子,结果才可复现
 async function soloBandit(page) {
-  await page.evaluate(() => {
+  await page.evaluate(async () => {
+    const { timeFX } = await import('/src/core/timefx.js');
+    timeFX.hitStop = 0; timeFX.slowMo = 0; // 开局跳过序章杀狼留下的时停
     const g = window.__gtm;
     g.seedRng(7);
     const b = g.bandits.find((x) => !x.dead && !x.boss);
@@ -521,6 +526,14 @@ const TESTS = {
       // 6) 紫圈:正面举盾(弹反窗内)也弹不开,吃满 3 伤 + 0.6 秒硬直
       fresh(); raise(); const hp0 = P.hp; g.damagePlayer(3, b, true);
       out.pierceParried = b.stunSrc === 'parry'; out.pierceDmg = hp0 - P.hp; out.pierceStagger = P.staggerT;
+      // 7) 盾击:面前的人撞个踉跄(约 0.8 秒、不开处决:接着砍只是普通一刀),身后的不受影响
+      fresh(); const [, back] = A.foes(2); A.place(back, 0, -1.5, 0); A.place(b, 0, 1.5, Math.PI);
+      raise(); g.step(2);
+      P.attackT = 0; g.tryAttack(); g.step(1);
+      out.bash = { front: +b.stunT.toFixed(2), src: b.stunSrc, back: back.stunT, hp: b.hp };
+      lower(); g.step(10); A.place(b, 0, 1.5, Math.PI); // 盾击的大击退把人撞出了刀长:摆回面前再砍
+      P.attackT = 0; P.strike = null; g.tryAttack(); g.step(40);
+      out.bash.afterHit = out.bash.hp - b.hp;
       return out;
     });
     if (!r.win133) throw new Error('举盾 133ms 内挨刀没判成弹反');
@@ -534,6 +547,9 @@ const TESTS = {
     if (r.pierceParried) throw new Error('紫圈破盾重击被弹反了');
     if (r.pierceDmg !== 3) throw new Error(`举盾挡紫圈应吃满 3 伤,实际 ${r.pierceDmg}`);
     if (!(r.pierceStagger > 0.55)) throw new Error(`挡紫圈应有 0.6 秒硬直,实际 ${r.pierceStagger}`);
+    const bs = r.bash;
+    if (!(bs.front > 0.7 && bs.front <= 0.8) || bs.src !== 'bash' || bs.back > 0) throw new Error(`盾击应只撞晕面前的人约 0.8 秒:${JSON.stringify(bs)}`);
+    if (bs.afterHit !== 1) throw new Error(`盾击的踉跄不开处决,接着砍应只掉 1:${JSON.stringify(bs)}`);
   },
   // 敌人出招:预警 = 判定(锚在起手站位,半径 = 刀长 + 跟步突进,±60°);起手末段真的往前冲;起手后 40% 轻击打不断;
   // 紫圈是双手过顶的独立架势;吓跑即收刀(扇形熄灭);踉跄会晃;狼扑画 5.4×2.4 的走廊且与判定一致;举刀扎马能扎到疾驰的骑手
