@@ -316,7 +316,7 @@ function makeMaterial(u = uniforms) {
           // 黄昏的草是金色而不是褐色尖刺;逆光时叶尖透光发亮;再给一层最低环境光
           vec3 sunV = normalize((viewMatrix * vec4(uSunDir, 0.0)).xyz);
           float back = pow(clamp(dot(-normalize(vViewPosition), sunV), 0.0, 1.0), 2.5);
-          float side = (1.0 - clamp(uSunDir.y, 0.0, 1.0)) * 0.9;
+          float side = (1.0 - clamp(uSunDir.y, 0.0, 1.0)) * 0.6;
           float tipK = 0.35 + 0.65 * vVegH;
           outgoingLight += diffuseColor.rgb * uSunCol * (0.12 + side + 0.5 * back) * tipK;
           outgoingLight = max(outgoingLight, diffuseColor.rgb * uAmbMin);
